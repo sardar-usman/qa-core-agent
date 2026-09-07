@@ -393,6 +393,30 @@ export function splitGate<S extends { name: string }>(
   return { kept, rejected, rework };
 }
 
+/**
+ * Split scenarios for a resumed run's critic step: a scenario whose verdict
+ * already exists in the checkpoint carries it (the critic is never billed
+ * twice for the same trace); only scenarios with no carried verdict are
+ * reviewed. Matching is the tolerant claim-based assignment, so a carried
+ * verdict for a restored scenario never leaks onto a new sibling. A stale
+ * carried verdict matching no current scenario is dropped.
+ */
+export function splitCarriedVerdicts<S extends { name: string }>(
+  scenarios: S[],
+  carried: ScenarioVerdict[],
+): { toReview: S[]; carriedVerdicts: ScenarioVerdict[] } {
+  if (carried.length === 0) return { toReview: scenarios, carriedVerdicts: [] };
+  const assigned = assignVerdicts(scenarios.map((s) => s.name), carried);
+  const toReview: S[] = [];
+  const carriedVerdicts: ScenarioVerdict[] = [];
+  for (const s of scenarios) {
+    const v = assigned.get(s.name);
+    if (v) carriedVerdicts.push(v);
+    else toReview.push(s);
+  }
+  return { toReview, carriedVerdicts };
+}
+
 /** What the repair-pass entry decision resolved to. The line ALWAYS prints. */
 export interface RepairDecision<S> {
   run: boolean;

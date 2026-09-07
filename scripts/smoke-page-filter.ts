@@ -19,7 +19,10 @@ import {
   MAX_PAGES_WITH_FEATURES,
   MAX_PAGES_NO_FEATURES,
 } from '../src/agent/page-filter.js';
-import type { DiscoveredPage } from '../src/agent/discovery.js';
+import { capVolatile } from '../src/agent/page-filter.js';
+import { isVolatilePath, type DiscoveredPage } from '../src/agent/discovery.js';
+import { VOLATILE_PAGE_GUIDANCE } from '../src/agent/planner.js';
+import fs from 'node:fs';
 
 let pass = 0;
 let fail = 0;
@@ -59,7 +62,7 @@ check('B4. ties keep discovery order (stable)', tie[0]?.url.endsWith('/b') === t
 {
   const few = [page('https://s.example/login'), page('https://s.example/cart')];
   const r = await filterPages({ pages: few, features: ['login'], apiKey: undefined });
-  check('C1. a set under the cap passes through untouched', r.method === 'passthrough' && r.pages === few && r.costUsd === 0);
+  check('C1. a set under the cap passes through untouched', r.method === 'passthrough' && JSON.stringify(r.pages) === JSON.stringify(few) && r.costUsd === 0);
 }
 {
   const saved = process.env.ANTHROPIC_API_KEY;
@@ -124,6 +127,45 @@ check('E2. SRS and user page sets are never trimmed', !FILTERED_SOURCES.has('srs
     if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
   }
 }
+
+/* ─── F. volatile-page detection and preference ────────────────────────────── */
+check('F1. a uuid segment is volatile', isVolatilePath('/product/3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c'));
+check('F2. a 24-char hex id is volatile', isVolatilePath('/product/507f1f77bcf86cd799439011'));
+check('F3. a 26-char ulid-style id is volatile', isVolatilePath('/product/01jx8f2k9d3m7q5w8r2t4y6z'));
+check('F4. stable paths are not volatile',
+  !isVolatilePath('/login') && !isVolatilePath('/contact') && !isVolatilePath('/product-category/rakes') && !isVolatilePath('/checkout/payment'));
+check('F5. a long pure-alpha segment is not volatile (words are not ids)', !isVolatilePath('/internationalization'));
+
+const vol = (id: string): DiscoveredPage => ({ url: `https://s.example/product/${id}`, source: 'browser-crawl', volatile: true });
+const stable = (p: string): DiscoveredPage => ({ url: `https://s.example${p}`, source: 'browser-crawl' });
+{
+  // A volatile detail page listed FIRST must still lose to stable pages.
+  const mixed = [vol('01jx8f2k9d3m7q5w8r2t4y6z'), stable('/login'), vol('01jx8f2k9d3m7q5w8r2t4y7a'), stable('/contact'), vol('01jx8f2k9d3m7q5w8r2t4y8b'), stable('/category/rakes')];
+  const picked = fallbackFilter(mixed, 4);
+  check('F6. the fallback prefers stable-path pages over volatile detail pages',
+    picked.slice(0, 3).every((p) => !p.volatile), JSON.stringify(picked.map((p) => p.url)));
+  check('F7. at most ONE volatile page survives the filter',
+    picked.filter((p) => p.volatile).length === 1, JSON.stringify(picked.map((p) => p.url)));
+}
+check('F8. capVolatile keeps the first volatile page and every stable one',
+  JSON.stringify(capVolatile([stable('/a'), vol('01jx8f2k9d3m7q5w8r2t4y6z'), vol('01jx8f2k9d3m7q5w8r2t4y7a'), stable('/b')]).map((p) => new URL(p.url).pathname))
+    === JSON.stringify(['/a', '/product/01jx8f2k9d3m7q5w8r2t4y6z', '/b']));
+{
+  // Passthrough (under the cap) still applies the one-volatile rule.
+  const r = await filterPages({ pages: [vol('01jx8f2k9d3m7q5w8r2t4y6z'), vol('01jx8f2k9d3m7q5w8r2t4y7a'), stable('/login')], features: undefined, apiKey: undefined });
+  check('F9. passthrough sets keep at most one volatile page', r.pages.filter((p) => p.volatile).length === 1 && r.pages.length === 2);
+}
+
+/* ─── G. the durable-navigation prompt text exists (presence, not behavior) ── */
+check('G1. the LLM filter guidance prefers stable paths and caps volatile picks',
+  /STABLE-PATH pages/.test(fs.readFileSync('src/agent/page-filter.ts', 'utf8')) &&
+  /at most ONE such volatile detail page/.test(fs.readFileSync('src/agent/page-filter.ts', 'utf8')));
+check('G2. the Planner volatile-page guidance instructs the durable path',
+  /DURABLE INTERACTION/.test(VOLATILE_PAGE_GUIDANCE) && /VISIBLE NAME/.test(VOLATILE_PAGE_GUIDANCE) && /Never plan a scenario that hardcodes this URL/.test(VOLATILE_PAGE_GUIDANCE));
+check('G3. the Explorer doctrine bans direct generated-id navigation',
+  /Never navigate directly to a URL that carries a generated id/.test(fs.readFileSync('src/agent/runtime.ts', 'utf8')));
+check('G4. the plan text marks volatile pages for the Explorer',
+  /VOLATILE generated-id URL/.test(fs.readFileSync('src/agent/runtime.ts', 'utf8')));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

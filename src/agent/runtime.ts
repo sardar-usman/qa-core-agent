@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js'
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, type PlannedScenario } from './planner.js';
-import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
+import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitCarriedVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -14,6 +14,18 @@ import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCovera
 import type { RequirementsMap } from './requirements.js';
 import { discoverPages } from './discovery.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
+import {
+  CHECKPOINT_VERSION,
+  checkpointPath,
+  classifyRunError,
+  priorSpend,
+  remainingPlan,
+  stopMessage,
+  writeCheckpoint,
+  type Checkpoint,
+  type CheckpointPhase,
+  type StopClassification,
+} from './checkpoint.js';
 import { installEvalShim } from './eval-shim.js';
 import type { CascadeLevel } from './selectors.js';
 import { writeCsv } from './csv.js';
@@ -94,6 +106,7 @@ ASSERTION DOCTRINE — the five weaknesses the Critic rejects every run. Violati
 4. Capture a value ONLY if a later assert_compare reads it. The gate strips unused captures; a capture with no compare is wasted work.
 5. Count checks after an async action must poll: assert_compare with source="count" (polls with the compare timeout), or toHaveCount with an explicit timeout. Never a one-shot read.
 6. Never assert or capture a specific catalog-item test id (product-01JX..., sku-8842 style generated ids): they rot when the data reseeds. Prefer text content, counts, relations between values, or stable structural ids (search-query, sort-select).
+7. Never navigate directly to a URL that carries a generated id (product/<long-id>). Reach a detail page the way a user does: navigate to the listing, click the item by its VISIBLE NAME. The recorded trace replays that durable path; a hardcoded GUID URL breaks on the next data reseed.
 
 Assertion economy:
 - One strong, specific assertion (an exact error string, the destination URL, a concrete element count) is worth more than several weak ones.
@@ -194,6 +207,14 @@ export interface ExploreOptions {
   discover?: boolean;
   /** Explicit page list from --urls. Feeds the discovery ladder's user rung. */
   urls?: string[];
+  /**
+   * Resume state loaded from a checkpoint (--resume). Discovery and planning
+   * are skipped, completed traces are restored, spend carries over, and the
+   * Explorer continues on the scenarios the checkpoint does not account for.
+   */
+  resume?: Checkpoint;
+  /** CLI-level flags recorded into the checkpoint so --resume can restore them. */
+  checkpointFlags?: { pom?: boolean; srsPath?: string };
   onEvent?: (event: AgentEvent) => void;
 }
 
@@ -256,6 +277,12 @@ export function salvageOnCostCeiling(opts: {
   current?: string;
   costUsd: number;
   ceilingUsd: number;
+  /**
+   * When the stop is not the ceiling (billing exhaustion, persistent API
+   * failure), the cause replaces the ceiling wording in the summary. The
+   * bookkeeping is identical either way.
+   */
+  cause?: string;
 }): CostCeilingSalvage {
   const begunKeys = opts.begun.map(scenarioNameKey).filter((k) => k.length > 0);
   const wasBegun = (plannedName: string): boolean => {
@@ -271,10 +298,13 @@ export function salvageOnCostCeiling(opts: {
   for (const name of unexplored) {
     incomplete.push({ scenario: name, reason: 'never explored: cost ceiling hit before this scenario started' });
   }
-  const summary =
-    `Cost ceiling hit ($${opts.costUsd.toFixed(4)} > $${opts.ceilingUsd}). ` +
-    `${opts.completed} scenario(s) completed and kept, ${unexplored.length} planned scenario(s) never explored. ` +
-    `Continuing the pipeline with the survivors. Raise QA_CORE_COST_CEILING for broader runs.`;
+  const summary = opts.cause
+    ? `Run stopped (${opts.cause}). ` +
+      `${opts.completed} scenario(s) completed and kept, ${unexplored.length} planned scenario(s) never explored. ` +
+      `Continuing the pipeline with the survivors.`
+    : `Cost ceiling hit ($${opts.costUsd.toFixed(4)} > $${opts.ceilingUsd}). ` +
+      `${opts.completed} scenario(s) completed and kept, ${unexplored.length} planned scenario(s) never explored. ` +
+      `Continuing the pipeline with the survivors. Raise QA_CORE_COST_CEILING for broader runs.`;
   return {
     ...(opts.current ? { discardedInProgress: opts.current } : {}),
     unexplored,
@@ -525,18 +555,86 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     fillableFields: 0,
   };
 
+  // ── Checkpoint state ─────────────────────────────────────────────────────
+  // Mutable snapshot of everything a resume needs. saveCheckpoint() writes it
+  // atomically after every completed scenario and at each phase boundary; it
+  // is deleted (by the CLI) only when the framework was actually written.
+  const restoredCompleted: Scenario[] = opts.resume ? [...opts.resume.completedScenarios] : [];
+  const cpState = {
+    phase: 'discovery' as CheckpointPhase,
+    plan: opts.resume?.plan ?? ([] as PlannedScenario[]),
+    fillableFields: opts.resume?.fillableFields ?? 0,
+    discovery: opts.resume?.discovery as RunReport['discovery'],
+    completed: [...restoredCompleted],
+    verdicts: opts.resume?.verdicts as ScenarioVerdict[] | undefined,
+    spend: opts.resume
+      ? { ...opts.resume.spentUsd }
+      : { planner: 0, explorer: 0, critic: 0, repair: 0 },
+  };
+  const runStartedAt = opts.resume?.startedAt ?? startedAt;
+  const saveCheckpoint = (): string => writeCheckpoint(opts.outDir, {
+    version: CHECKPOINT_VERSION,
+    url: opts.url,
+    flags: {
+      lang: opts.language,
+      pom: opts.checkpointFlags?.pom !== false,
+      features: opts.features ?? [],
+      ...(opts.checkpointFlags?.srsPath ? { srs: opts.checkpointFlags.srsPath } : {}),
+      discover: Boolean(opts.discover),
+      urls: opts.urls ?? [],
+    },
+    ...(cpState.discovery ? { discovery: cpState.discovery } : {}),
+    ...(opts.requirements ? { requirementsMap: opts.requirements } : {}),
+    plan: cpState.plan,
+    fillableFields: cpState.fillableFields,
+    completedScenarios: cpState.completed,
+    ...(cpState.verdicts && cpState.verdicts.length > 0 ? { verdicts: cpState.verdicts } : {}),
+    spentUsd: { ...cpState.spend },
+    phase: cpState.phase,
+    nextScenarioIndex: cpState.completed.length,
+    startedAt: runStartedAt,
+    updatedAt: new Date().toISOString(),
+  });
+  // SIGINT: save what we have and exit with the resume hint, so an
+  // interrupted run never loses its completed scenarios.
+  const onSigint = (): void => {
+    try {
+      const p = saveCheckpoint();
+      process.stderr.write('\n' + stopMessage('interrupted (SIGINT)', p) + '\n');
+    } catch { /* saving is best effort on the way out */ }
+    process.exit(130);
+  };
+  process.once('SIGINT', onSigint);
+
   // Multi-page discovery activates ONLY when the caller asked for it via
   // --discover, --urls, or --srs. With none of the three, the single plan()
-  // call below runs exactly as before, byte for byte.
+  // call below runs exactly as before, byte for byte. A resumed run restores
+  // its recorded discovery instead of re-running it.
   const discoveryActive =
-    !opts.fromPlan && !opts.skipPlan &&
+    !opts.resume && !opts.fromPlan && !opts.skipPlan &&
     Boolean(opts.discover || (opts.urls && opts.urls.length > 0) || opts.requirements);
   let discoveryInfo: RunReport['discovery'];
   // True when planning stopped at a scenario cap (per-page or global). Turns
   // derivation skips into 'budget' instead of 'no-matching-control'.
   let planCapHit = false;
 
-  if (discoveryActive) {
+  if (opts.resume) {
+    // ── Resume: restore instead of re-doing ─────────────────────────────────
+    // Discovery, the requirements map, the plan, completed traces, and spend
+    // all come from the checkpoint. Nothing completed is ever re-explored.
+    const cp = opts.resume;
+    planResult = { scenarios: cp.plan, usd: cp.spentUsd.planner, fillableFields: cp.fillableFields };
+    discoveryInfo = cp.discovery;
+    const toGo = remainingPlan(cp.plan, restoredCompleted);
+    opts.onEvent?.({
+      type: 'message',
+      text: `Resuming: ${restoredCompleted.length} completed scenario(s) restored, continuing at scenario ${restoredCompleted.length + 1} of ${cp.plan.length}, spend so far $${priorSpend(cp.spentUsd).toFixed(4)}`,
+    });
+    if (toGo.length === 0) {
+      opts.onEvent?.({ type: 'message', text: 'Resume: every planned scenario is already completed; skipping straight to review.' });
+    }
+    opts.onEvent?.({ type: 'plan_done', scenarios: cp.plan, usd: 0 });
+  } else if (discoveryActive) {
     opts.onEvent?.({ type: 'plan_started' });
     const disc = await discoverPages({
       entryUrl: opts.url,
@@ -573,6 +671,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     }
     opts.onEvent?.({ type: 'message', text: `discovery: ${pages.length} page(s) via ${disc.method}` });
     discoveryInfo = { method: disc.method, pages, warnings: disc.warnings };
+    // Phase boundary: discovery done.
+    cpState.discovery = discoveryInfo;
+    cpState.phase = 'discovery';
+    saveCheckpoint();
 
     // Per-page planning: up to PER_PAGE_SCENARIO_CAP scenarios per page,
     // GLOBAL_PLAN_CAP total. Cost is itemized per page. A page whose plan
@@ -597,8 +699,23 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           apiKey,
           features: pg.feature ? [pg.feature] : opts.features,
           requirements: subMapFor(opts.requirements, pg.feature),
+          ...(pg.volatile ? { volatilePage: true } : {}),
         });
       } catch (err) {
+        // Billing/credit exhaustion or a persistent API failure must not be
+        // silently absorbed as a per-page skip (the loop would skip EVERY
+        // page and bill nothing but noise). Save state, say how to resume,
+        // stop cleanly.
+        const cls = classifyRunError(err);
+        if (cls.kind !== 'other') {
+          cpState.plan = combined;
+          cpState.spend.planner = plannerUsd;
+          cpState.phase = 'planning';
+          const cpFile = saveCheckpoint();
+          opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
+          process.removeListener('SIGINT', onSigint);
+          throw new Error(stopMessage(cls.reason, cpFile));
+        }
         opts.onEvent?.({
           type: 'message',
           text: `Planner failed on ${pg.url} (${(err as Error).message}); page skipped.`,
@@ -608,6 +725,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       let scen = p.scenarios.map((s): PlannedScenario => ({
         ...s,
         pageUrl: pg.url,
+        ...(pg.volatile ? { volatilePage: true } : {}),
         ...(pg.feature && !s.feature ? { feature: pg.feature } : {}),
       }));
       if (scen.length > PER_PAGE_SCENARIO_CAP) {
@@ -638,6 +756,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       );
     }
     planResult = { scenarios: combined, usd: plannerUsd, fillableFields: fillableMax };
+    // Phase boundary: plan done.
+    cpState.plan = combined;
+    cpState.fillableFields = fillableMax;
+    cpState.spend.planner = plannerUsd;
+    cpState.phase = 'planning';
+    saveCheckpoint();
     opts.onEvent?.({ type: 'plan_done', scenarios: combined, usd: plannerUsd });
     for (const d of combinedDropped) {
       opts.onEvent?.({
@@ -652,6 +776,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
     }
     if (opts.review) {
+      process.removeListener('SIGINT', onSigint);
       fs.mkdirSync(opts.outDir, { recursive: true });
       const planPath = path.join(opts.outDir, 'plan.csv');
       fs.writeFileSync(planPath, scenariosToCsv(opts.url, combined));
@@ -670,9 +795,22 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // A planner failure in the default path is fatal. We do NOT swallow it and
     // fall back to a blind Explorer run — improvising without a plan is exactly
     // the expensive wandering this pipeline exists to prevent (a blind register
-    // run burned the whole budget). Let plan()'s error propagate and stop the
-    // run with its reason intact.
-    const p = await plan({ url: opts.url, apiKey, features: opts.features, requirements: opts.requirements });
+    // run burned the whole budget). Billing/API exhaustion additionally saves
+    // the checkpoint and prints the resume hint before stopping.
+    let p: Awaited<ReturnType<typeof plan>>;
+    try {
+      p = await plan({ url: opts.url, apiKey, features: opts.features, requirements: opts.requirements });
+    } catch (err) {
+      const cls = classifyRunError(err);
+      if (cls.kind !== 'other') {
+        const cpFile = saveCheckpoint();
+        opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
+        process.removeListener('SIGINT', onSigint);
+        throw new Error(stopMessage(cls.reason, cpFile));
+      }
+      process.removeListener('SIGINT', onSigint);
+      throw err;
+    }
 
     // A genuinely empty plan must also stop the run. Handing a blank plan to the
     // Explorer makes it design scenarios on the fly at full Opus cost. Fail loud
@@ -686,6 +824,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     }
 
     planResult = { scenarios: p.scenarios, usd: p.costUsd, fillableFields: p.fillableFields };
+    // Phase boundary: plan done.
+    cpState.plan = p.scenarios;
+    cpState.fillableFields = p.fillableFields;
+    cpState.spend.planner = p.costUsd;
+    cpState.phase = 'planning';
+    saveCheckpoint();
     opts.onEvent?.({ type: 'plan_done', scenarios: p.scenarios, usd: p.costUsd });
     for (const d of p.dropped) {
       opts.onEvent?.({
@@ -702,6 +846,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
 
     // Review mode — write the CSV and pause. The caller resumes via fromPlan.
     if (opts.review) {
+      process.removeListener('SIGINT', onSigint);
       fs.mkdirSync(opts.outDir, { recursive: true });
       const planPath = path.join(opts.outDir, 'plan.csv');
       fs.writeFileSync(planPath, scenariosToCsv(opts.url, p.scenarios));
@@ -747,6 +892,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // discarded, and which planned scenarios were never started. Flows into the
   // reconciliation funnel (as incomplete entries) and rule coverage.
   let ceilingSalvage: CostCeilingSalvage | undefined;
+  // Set on any abnormal end (ceiling, billing, API failure). Carried on the
+  // report so the CLI keeps the checkpoint instead of deleting it.
+  let stopped: RunReport['stopped'];
 
   try {
     browser = await chromium.launch({ headless: true });
@@ -757,24 +905,43 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     await installEvalShim(context);
     const page: Page = await context.newPage();
 
+    // A resumed run explores only what the checkpoint does not account for.
+    const toExplore = opts.resume
+      ? remainingPlan(planResult.scenarios, restoredCompleted)
+      : planResult.scenarios;
+
     // Resolve the effective budget now that the plan size is known. An override
     // (opts or env) always wins; otherwise scale to the plan AND the form
     // complexity so a long-form page does not run dry mid-fill.
-    const maxSteps = maxStepsOverride ?? stepBudgetFor(planResult.scenarios.length, planResult.fillableFields);
+    const maxSteps = maxStepsOverride ?? stepBudgetFor(toExplore.length, planResult.fillableFields);
     if (maxStepsOverride === undefined) {
       opts.onEvent?.({
         type: 'message',
-        text: `Step budget: ${maxSteps} (${planResult.scenarios.length} scenario(s), ${planResult.fillableFields} fillable field(s) on the page)`,
+        text: `Step budget: ${maxSteps} (${toExplore.length} scenario(s), ${planResult.fillableFields} fillable field(s) on the page)`,
       });
     }
 
+    // Prior spend counts against the SAME total ceiling on resume; the loop
+    // gets whatever is left of the explorer share (the env ceiling read now
+    // may be higher than at the original run, which is the top-up flow).
+    const loopBudgetUsd = Math.max(0, explorerUsd - (opts.resume ? priorSpend(cpState.spend) : 0));
+
     const ctx = createContext(page, maxSteps);
-    const explorerLoop = await runAgentLoop({
-      client, model, maxUsd: explorerUsd, price, maxSteps,
-      ctx, url: opts.url,
-      plan: planResult.scenarios,
-      onEvent: opts.onEvent,
-    });
+    const explorerLoop = toExplore.length === 0
+      ? { cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, endedReason: 'finished' as const }
+      : await runAgentLoop({
+          client, model, maxUsd: loopBudgetUsd, price, maxSteps,
+          ctx, url: opts.url,
+          plan: toExplore,
+          onEvent: opts.onEvent,
+          // Per-scenario checkpoint: crash-safe by construction, trivial cost.
+          onScenarioComplete: (loopUsd) => {
+            cpState.completed = [...restoredCompleted, ...ctx.scenarios];
+            cpState.spend.explorer = (opts.resume?.spentUsd.explorer ?? 0) + loopUsd;
+            cpState.phase = 'exploring';
+            saveCheckpoint();
+          },
+        });
     const explorerCost = explorerLoop.cost;
 
     // The agent must call finish; if it didn't, decide what to do with the
@@ -796,7 +963,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     //       is kept, ONLY the in-progress one is discarded, and each planned
     //       scenario that never started is recorded as incomplete so nothing
     //       vanishes from the funnel. The pipeline continues on the survivors.
-    if (explorerLoop.endedReason === 'cost_ceiling') {
+    if (explorerLoop.endedReason === 'cost_ceiling' || explorerLoop.endedReason === 'run_stopped') {
       const begun = [
         ...ctx.scenarios.map((s) => s.name),
         ...ctx.brokenByGate.map((b) => b.scenario),
@@ -805,17 +972,23 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         ...ctx.skipped.map((s) => s.scenario),
         ...(ctx.current ? [ctx.current.name] : []),
       ];
+      const stop = explorerLoop.endedReason === 'run_stopped' ? explorerLoop.stop : undefined;
       ceilingSalvage = salvageOnCostCeiling({
-        planned: planResult.scenarios,
+        planned: toExplore,
         begun,
         completed: ctx.scenarios.length,
         ...(ctx.current ? { current: ctx.current.name } : {}),
         costUsd: explorerLoop.cost.usd,
-        ceilingUsd: explorerUsd,
+        ceilingUsd: loopBudgetUsd,
+        ...(stop ? { cause: stop.reason } : {}),
       });
       ctx.incomplete.push(...ceilingSalvage.incomplete);
       ctx.current = null;
       opts.onEvent?.({ type: 'message', text: ceilingSalvage.summary });
+      // 'other' never reaches here: the loop rethrows genuine bugs.
+      stopped = stop && stop.kind !== 'other'
+        ? { kind: stop.kind, reason: stop.reason }
+        : { kind: 'cost_ceiling', reason: `cost ceiling hit ($${explorerLoop.cost.usd.toFixed(4)} against the explorer share); raise QA_CORE_COST_CEILING and resume` };
     } else if (ctx.current) {
       const budgetHit = explorerLoop.endedReason === 'budget' || ctx.steps >= maxSteps;
       if (budgetHit) {
@@ -850,16 +1023,33 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         }
       }
     }
-    scenarios = ctx.scenarios;
+    // A resumed run's pipeline sees the UNION of restored and new scenarios,
+    // exactly as a single run would.
+    scenarios = opts.resume ? [...restoredCompleted, ...ctx.scenarios] : ctx.scenarios;
     cascadeStats = ctx.cascadeStats;
     steps = ctx.steps;
     cost = { ...explorerCost, plannerUsd: planResult.usd };
+    if (opts.resume) {
+      // Spend carries over: prior explorer + repair fold into the explorer
+      // bucket; prior critic seeds criticUsd (the critic block accumulates).
+      cost.usd += opts.resume.spentUsd.explorer + opts.resume.spentUsd.repair;
+      if (opts.resume.spentUsd.critic > 0) cost.criticUsd = opts.resume.spentUsd.critic;
+    }
     brokenByGate = ctx.brokenByGate;
     gateInjectionLog = ctx._gateInjectionLog;
     incomplete = ctx.incomplete;
     findings = ctx.findings;
     heals = ctx.heals;
     skipped = ctx.skipped;
+    // Phase boundary: explorer done. On an abnormal stop this is the state a
+    // resume continues from; print the hint alongside.
+    cpState.completed = scenarios;
+    cpState.spend.explorer = (opts.resume?.spentUsd.explorer ?? 0) + explorerCost.usd;
+    cpState.phase = 'explored';
+    const cpFileAfterExplore = saveCheckpoint();
+    if (stopped) {
+      opts.onEvent?.({ type: 'message', text: stopMessage(stopped.reason, cpFileAfterExplore) });
+    }
   } finally {
     await context?.close();
     await browser?.close();
@@ -882,16 +1072,31 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     });
   }
 
-  // Step 3 — Critic (Sonnet). Reviews what the Explorer recorded.
+  // Step 3 — Critic (Sonnet). Reviews what the Explorer recorded. A resumed
+  // run carries the verdicts the original run already paid for: only the
+  // scenarios with no checkpoint verdict are reviewed, never a double spend.
   let review: RunReport['review'];
   if (!opts.skipCritic && scenarios.length > 0) {
     opts.onEvent?.({ type: 'critic_started' });
     try {
-      const c = await critique({ scenarios, url: opts.url, apiKey });
-      review = { verdicts: c.verdicts, summary: c.summary };
-      cost.criticUsd = c.costUsd;
-      opts.onEvent?.({ type: 'critic_done', verdicts: c.verdicts, usd: c.costUsd });
-      if (c.verdicts.length === 0) {
+      const { toReview, carriedVerdicts } = splitCarriedVerdicts(scenarios, opts.resume?.verdicts ?? []);
+      if (carriedVerdicts.length > 0) {
+        opts.onEvent?.({
+          type: 'message',
+          text: `Resume: ${carriedVerdicts.length} verdict(s) carried from the original run; reviewing ${toReview.length} new scenario(s).`,
+        });
+      }
+      if (toReview.length === 0) {
+        review = { verdicts: carriedVerdicts, summary: 'All verdicts carried from the checkpoint; no new scenarios to review.' };
+        opts.onEvent?.({ type: 'critic_done', verdicts: carriedVerdicts, usd: 0 });
+      } else {
+        const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
+        review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        // Accumulate (a resumed run seeds criticUsd with the prior spend).
+        cost.criticUsd = (cost.criticUsd ?? 0) + c.costUsd;
+        opts.onEvent?.({ type: 'critic_done', verdicts: review.verdicts, usd: c.costUsd });
+      }
+      if (review.verdicts.length === 0) {
         // The call succeeded and was paid for, but nothing parsed. That means
         // the response format drifted and the critic gate cannot act this run.
         // Say so loudly instead of printing "0 verdicts" as if it were normal.
@@ -901,6 +1106,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         });
       }
     } catch (err) {
+      // The pipeline continues either way (replay/stability are LLM-free),
+      // but billing/API exhaustion marks the run stopped so the checkpoint
+      // survives and the resume hint prints.
+      const cls = classifyRunError(err);
+      if (cls.kind !== 'other') {
+        stopped ??= { kind: cls.kind, reason: cls.reason };
+        cpState.phase = 'reviewing';
+        const cpFile = saveCheckpoint();
+        opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
+      }
       opts.onEvent?.({ type: 'message', text: `Critic skipped: ${(err as Error).message}` });
     }
   }
@@ -952,6 +1167,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           cost.cacheCreationTokens += repair.cost.cacheCreationTokens;
           cost.usd += repair.cost.usd;
           steps += repair.steps;
+          cpState.spend.repair += repair.cost.usd;
           // Heals carry over (no funnel impact). The repair attempt's own
           // incomplete/finding entries are NOT merged: each rework scenario is
           // already accounted for once, by its FINAL verdict, and adding them
@@ -970,6 +1186,13 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           }
           kept = [...kept, ...repair.scenarios.filter((s) => verdictFor(secondVerdicts ?? [], s.name)?.verdict === 'pass')];
         } catch (err) {
+          const cls = classifyRunError(err);
+          if (cls.kind !== 'other') {
+            stopped ??= { kind: cls.kind, reason: cls.reason };
+            cpState.phase = 'reviewing';
+            const cpFile = saveCheckpoint();
+            opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
+          }
           opts.onEvent?.({
             type: 'message',
             text: `Repair pass failed (${(err as Error).message}); rework scenario(s) dropped.`,
@@ -1180,9 +1403,19 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     attachRuleIds(emittedScenarios, planResult.scenarios);
   }
 
+  // Review boundary: final spend + verdict snapshot into the checkpoint (kept
+  // on any abnormal end; the CLI deletes it only after the framework is
+  // written). Carrying the FINAL verdicts means a resume never re-reviews a
+  // scenario the original run already paid the critic for.
+  cpState.spend.critic = cost.criticUsd ?? 0;
+  if (review?.verdicts.length) cpState.verdicts = review.verdicts;
+  cpState.phase = 'reviewing';
+  saveCheckpoint();
+
   const report: RunReport = {
     url: opts.url,
     language: opts.language,
+    ...(stopped ? { stopped } : {}),
     ...(discoveryInfo ? { discovery: discoveryInfo } : {}),
     scenarios: emittedScenarios,
     cascadeStats,
@@ -1261,6 +1494,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     process.stderr.write(`[qa-core] memory save failed: ${(err as Error).message}\n`);
   }
 
+  process.removeListener('SIGINT', onSigint);
   opts.onEvent?.({ type: 'done', scenarios: scenarios.length });
   return report;
 }
@@ -1327,7 +1561,18 @@ export async function runAgentLoop(args: {
    */
   repairNote?: string;
   onEvent?: ExploreOptions['onEvent'];
-}): Promise<{ cost: RunReport['cost']; endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' }> {
+  /**
+   * Called after every tool round in which a scenario completed, with the
+   * loop's cost so far. The runtime writes the checkpoint here, so a crash
+   * loses at most the scenario in progress.
+   */
+  onScenarioComplete?: (loopCostUsd: number) => void;
+}): Promise<{
+  cost: RunReport['cost'];
+  endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped';
+  /** Set when endedReason is 'run_stopped': why the API call could not continue. */
+  stop?: StopClassification;
+}> {
   const { client, model, maxUsd, price, maxSteps, ctx, url, onEvent } = args;
 
   // Plan enforcement: finish() consults this list and is rejected while any
@@ -1357,7 +1602,11 @@ export async function runAgentLoop(args: {
       args.plan
         .map((p, i) => {
           const tag = p.feature ? `[${p.feature}][${p.category}]` : `[${p.category}]`;
-          const pageNote = p.pageUrl ? `\n     page: ${p.pageUrl}` : '';
+          const pageNote = p.pageUrl
+            ? p.volatilePage
+              ? `\n     page: ${p.pageUrl} (VOLATILE generated-id URL — do NOT navigate to it directly; start from the entry/listing page and click through to the item by its visible name)`
+              : `\n     page: ${p.pageUrl}`
+            : '';
           return `  ${i + 1}. ${tag} ${p.name} — ${p.rationale}${pageNote}`;
         })
         .join('\n')
@@ -1386,7 +1635,9 @@ export async function runAgentLoop(args: {
   // silently before the step budget could nudge the model to finish(). The
   // margin covers the final finish() turn plus any thinking-only turns.
   const maxTurns = maxSteps + 8;
-  let endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' = 'budget';
+  let endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped' = 'budget';
+  let stop: StopClassification | undefined;
+  let completedSeen = ctx.scenarios.length;
   // How many 'heal' events have already been surfaced. In-run selector
   // recoveries are recorded on ctx by resolveAndRecord (deep inside a tool
   // call); we drain new ones after each tool runs so each shows up as its own
@@ -1408,13 +1659,27 @@ export async function runAgentLoop(args: {
 
     onEvent?.({ type: 'thinking_started' });
 
-    const response = await client.messages.create({
-      model,
-      max_tokens: 16000,
-      system: systemBlocks,
-      tools: TOOL_DEFS as unknown as Anthropic.Tool[],
-      messages,
-    });
+    let response: Anthropic.Message;
+    try {
+      response = await client.messages.create({
+        model,
+        max_tokens: 16000,
+        system: systemBlocks,
+        tools: TOOL_DEFS as unknown as Anthropic.Tool[],
+        messages,
+      });
+    } catch (err) {
+      // Billing exhaustion and persistent API failures (the SDK's own retries
+      // are behind us if the error surfaced here) stop the loop CLEANLY so
+      // the caller can salvage completed work and write the checkpoint. A
+      // genuine bug still throws.
+      const cls = classifyRunError(err);
+      if (cls.kind === 'other') throw err;
+      endedReason = 'run_stopped';
+      stop = cls;
+      onEvent?.({ type: 'message', text: `Explorer stopped: ${cls.reason}; salvaging completed scenarios.` });
+      break;
+    }
 
     const u = response.usage as Anthropic.Usage & {
       cache_read_input_tokens?: number;
@@ -1473,10 +1738,16 @@ export async function runAgentLoop(args: {
     }
 
     messages.push({ role: 'user', content: toolResults });
+    // Per-scenario checkpoint hook: fire once per round in which the
+    // completed-scenario count grew.
+    if (ctx.scenarios.length > completedSeen) {
+      completedSeen = ctx.scenarios.length;
+      args.onScenarioComplete?.(cost.usd);
+    }
     if (finished) { endedReason = 'finished'; break; }
   }
   // If the for-loop ran to completion without a break, endedReason stays
   // 'budget' — the turn cap (which tracks the step budget) was reached.
 
-  return { cost, endedReason };
+  return { cost, endedReason, ...(stop ? { stop } : {}) };
 }

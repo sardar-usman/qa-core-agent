@@ -27,6 +27,23 @@ export const MAX_PAGES_NO_FEATURES = 5;
  */
 export const FILTERED_SOURCES: ReadonlySet<string> = new Set(['sitemap', 'crawl', 'browser-crawl']);
 
+/**
+ * At most ONE volatile-id page in a final page set. Detail pages behind
+ * generated ids (product/<20-char-id>) all exercise the same template, and
+ * their URLs rot when the site reseeds, so one representative is plenty.
+ * First volatile page in order wins; stable pages pass through untouched.
+ * Exported for the smoke.
+ */
+export function capVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
+  let seen = false;
+  return pages.filter((p) => {
+    if (!p.volatile) return true;
+    if (seen) return false;
+    seen = true;
+    return true;
+  });
+}
+
 const HAIKU_MODEL = 'claude-haiku-4-5';
 const PRICE = { in: 1.0, out: 5.0 };
 
@@ -68,10 +85,14 @@ export function fallbackFilter(pages: DiscoveredPage[], cap: number): Discovered
     seen.add(pathname);
     unique.push({ p, depth: pathname.split('/').filter(Boolean).length, i });
   }
-  return unique
-    .sort((a, b) => a.depth - b.depth || a.i - b.i)
-    .slice(0, cap)
-    .map((x) => x.p);
+  // Stable-path pages first (volatile generated-id URLs rot when the site
+  // reseeds), then shallowest, then discovery order. capVolatile then keeps
+  // at most one volatile survivor.
+  return capVolatile(
+    unique
+      .sort((a, b) => Number(a.p.volatile ?? false) - Number(b.p.volatile ?? false) || a.depth - b.depth || a.i - b.i)
+      .map((x) => x.p),
+  ).slice(0, cap);
 }
 
 const SYSTEM = `You pick the most test-worthy pages from a list of URLs discovered on one site.
@@ -82,6 +103,7 @@ Rules:
 - When a FEATURES list is given: pick the single most relevant page per feature (skip a feature no URL plausibly serves), and never exceed the stated cap.
 - When no FEATURES list is given: pick pages that look like DISTINCT features of the site (login, search, product, cart, contact, registration) over near-duplicates of each other. Never exceed the stated cap.
 - Prefer functional pages (forms, flows) over marketing/blog/legal pages.
+- Prefer STABLE-PATH pages (login, contact, category listings, search) over detail pages whose URL carries a generated id (product/<long-random-id>): those URLs rot when the site reseeds its data. Pick at most ONE such volatile detail page, and only when nothing stable covers the feature.
 - Never invent a URL that is not in the input list.`;
 
 /**
@@ -93,7 +115,9 @@ Rules:
 export async function filterPages(opts: FilterPagesOptions): Promise<FilterPagesResult> {
   const cap = pageCapFor(opts.features);
   if (opts.pages.length <= cap) {
-    return { pages: opts.pages, method: 'passthrough', costUsd: 0 };
+    // Under the cap the set passes through, but the one-volatile-page rule
+    // still applies: three generated-id detail pages are one template.
+    return { pages: capVolatile(opts.pages), method: 'passthrough', costUsd: 0 };
   }
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -129,7 +153,7 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
     if (picked.length === 0) {
       return { pages: fallbackFilter(opts.pages, cap), method: 'fallback', costUsd };
     }
-    return { pages: picked, method: 'llm', costUsd };
+    return { pages: capVolatile(picked), method: 'llm', costUsd };
   } catch {
     return { pages: fallbackFilter(opts.pages, cap), method: 'fallback', costUsd: 0 };
   }
