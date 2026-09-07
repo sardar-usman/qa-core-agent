@@ -239,6 +239,10 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
 
             // Bail if the LLM gives up or identifies a semantic defect.
             if (proposal.kind === 'none' || proposal.kind === 'broken') {
+              // Record the bail as an attempt BEFORE breaking, so the
+              // "gave up after N attempts" summary counts the proposal the
+              // run just printed as "attempt 1" instead of reporting 0.
+              history.push({ proposal, pattern: latestPattern });
               // 'broken' overrides the classification — this is a spec defect,
               // not a timing race. Don't re-run; mark it broken and drop it.
               if (proposal.kind === 'broken') classification = 'broken';

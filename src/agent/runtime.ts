@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js'
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, type PlannedScenario } from './planner.js';
-import { critique, describeStep, mergeRepairVerdicts, splitGate, type ScenarioVerdict } from './critic.js';
+import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -93,6 +93,7 @@ ASSERTION DOCTRINE — the five weaknesses the Critic rejects every run. Violati
 3. A negative scenario asserts a USER-VISIBLE failure signal: the error message text, aria-invalid, or the error element becoming visible. "The URL did not change" or an input attribute alone proves nothing a user can see.
 4. Capture a value ONLY if a later assert_compare reads it. The gate strips unused captures; a capture with no compare is wasted work.
 5. Count checks after an async action must poll: assert_compare with source="count" (polls with the compare timeout), or toHaveCount with an explicit timeout. Never a one-shot read.
+6. Never assert or capture a specific catalog-item test id (product-01JX..., sku-8842 style generated ids): they rot when the data reseeds. Prefer text content, counts, relations between values, or stable structural ids (search-query, sort-select).
 
 Assertion economy:
 - One strong, specific assertion (an exact error string, the destination URL, a concrete element count) is worth more than several weak ones.
@@ -307,9 +308,8 @@ async function repairPass(args: {
   /** Human-readable notes about repair-internal outcomes (findings, incompletes). */
   notes: string[];
 }> {
-  const byName = new Map(args.verdicts.map((v) => [v.scenario, v]));
   const plan: PlannedScenario[] = args.rework.map((s) => {
-    const v = byName.get(s.name);
+    const v = verdictFor(args.verdicts, s.name);
     return {
       name: s.name,
       category: s.category ?? 'happy',
@@ -323,7 +323,7 @@ async function repairPass(args: {
     '- Strengthen exactly the named weaknesses: add the missing outcome assertion, replace the vacuous one.',
     '',
     ...args.rework.map((s) => {
-      const v = byName.get(s.name);
+      const v = verdictFor(args.verdicts, s.name);
       const fixes = v?.required_fixes?.length ? `\n  required fixes: ${v.required_fixes.join('; ')}` : '';
       return `"${s.name}"\n  critic reasons: ${(v?.reasons ?? []).join('; ') || '(none given)'}${fixes}\n  recorded steps: ${s.steps.map(describeStep).join(' -> ')}`;
     }),
@@ -921,25 +921,28 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
     }
     let kept = split.kept;
-    if (split.rework.length > 0) {
-      const spentSoFar = cost.usd + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0);
-      const remainingUsd = maxUsd - spentSoFar;
+    // The single entry decision for the repair pass. decideRepairPass returns
+    // null only when NO rework verdicts exist; otherwise its line is ALWAYS
+    // printed (run or skip, with the reason), so silent non-execution is
+    // impossible. The budget is the TOTAL ceiling minus actual spend — never
+    // the explorer sub-ceiling, which the last API call legitimately
+    // overshoots.
+    const spentSoFar = cost.usd + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0);
+    const decision = decideRepairPass({
+      scenarios,
+      verdicts: review.verdicts,
+      spentUsd: spentSoFar,
+      ceilingUsd: maxUsd,
+    });
+    if (decision) {
+      opts.onEvent?.({ type: 'message', text: decision.line });
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
-      if (remainingUsd <= 0.05) {
-        opts.onEvent?.({
-          type: 'message',
-          text: `No budget left for a repair pass ($${Math.max(0, remainingUsd).toFixed(4)} remaining); ${split.rework.length} rework scenario(s) dropped.`,
-        });
-      } else {
-        opts.onEvent?.({
-          type: 'message',
-          text: `Repair pass: re-exploring ${split.rework.length} rework scenario(s) with the critic's reasons ($${remainingUsd.toFixed(2)} of budget remaining).`,
-        });
+      if (decision.run) {
         try {
           const repair = await repairPass({
-            client, model, price, remainingUsd,
+            client, model, price, remainingUsd: decision.budgetUsd,
             url: opts.url,
-            rework: split.rework,
+            rework: decision.rework,
             verdicts: review.verdicts,
             onEvent: opts.onEvent,
           });
@@ -965,8 +968,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           } else {
             secondVerdicts = [];
           }
-          const passNames = new Set((secondVerdicts ?? []).filter((v) => v.verdict === 'pass').map((v) => v.scenario));
-          kept = [...kept, ...repair.scenarios.filter((s) => passNames.has(s.name))];
+          kept = [...kept, ...repair.scenarios.filter((s) => verdictFor(secondVerdicts ?? [], s.name)?.verdict === 'pass')];
         } catch (err) {
           opts.onEvent?.({
             type: 'message',

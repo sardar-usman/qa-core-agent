@@ -21,7 +21,8 @@ import { chromium } from 'playwright';
 import { createContext, runTool } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { transcribe } from '../src/agent/transcriber.js';
-import type { RunReport, Scenario } from '../src/agent/trace.js';
+import { awaitCaptureReady, replayScenarioOnce } from '../src/agent/replay.js';
+import type { RunReport, Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
 let pass = 0;
 let fail = 0;
@@ -101,6 +102,64 @@ await runTool(ctx, { name: 'begin_scenario', input: { name: 'compare with no cap
 const cmpE = await runTool(ctx, { name: 'assert_compare', input: { name: 'neverCaptured', relation: 'changed' } });
 check('E1. assert_compare with an unknown name is rejected', cmpE.ok === false && /No capture named/.test(cmpE.error ?? ''));
 ctx.current = null;
+
+/* ─── G. capture readiness: replay waits for a delayed render ─────────────── */
+// A live replay read a list count of 0 before the SPA rendered, then failed a
+// correct assert_compare(less), because nothing can be less than 0. The
+// capture read must wait for the target to have at least one match before
+// reading, except for 'absent' relations where zero is a legitimate baseline.
+{
+  const delayedHtml = `
+    <html><body>
+      <button id="remove" onclick="document.querySelector('li.product') && document.querySelector('li.product').remove()">remove</button>
+      <ul id="list"></ul>
+      <script>
+        setTimeout(function () {
+          var ul = document.getElementById('list');
+          ul.innerHTML = '<li class="product">A</li><li class="product">B</li><li class="product">C</li>';
+        }, 700);
+      </script>
+    </body></html>`;
+  const dataUrl = 'data:text/html,' + encodeURIComponent(delayedHtml);
+  const listTarget: SelectorRecord = { level: 'css', arg: 'li.product', intent: 'product rows' };
+  const delayedScenario: Scenario = {
+    name: 'removing a product lowers the count',
+    category: 'happy',
+    steps: [
+      { kind: 'navigate', url: dataUrl },
+      { kind: 'capture', varName: 'cap_items', source: 'count', target: listTarget, intent: 'product rows' },
+      { kind: 'click', target: { level: 'css', arg: '#remove', intent: 'remove button' } },
+      { kind: 'assert_compare', varName: 'cap_items', relation: 'less', source: 'count', target: listTarget, intent: 'product rows', readVar: 'cap_items_after' },
+    ],
+  };
+  const verdict = await replayScenarioOnce(browser, delayedScenario, undefined, 8000);
+  check('G1. the capture waits for the delayed render and the less-relation replay passes',
+    verdict.passed === true, JSON.stringify(verdict));
+
+  // Direct readiness checks on the helper.
+  await page.setContent('<div id="static">here</div>');
+  const missing: SelectorRecord = { level: 'css', arg: '.never-rendered', intent: 'ghost' };
+  const capOf = (target: SelectorRecord): Extract<TraceStep, { kind: 'capture' }> =>
+    ({ kind: 'capture', varName: 'v', source: 'count', target, intent: target.intent });
+
+  let t0 = Date.now();
+  await awaitCaptureReady(page, capOf(missing), 'absent', 3000);
+  check('G2. an absent-relation capture does not wait (zero is a legitimate baseline)', Date.now() - t0 < 400, `${Date.now() - t0}ms`);
+
+  t0 = Date.now();
+  await awaitCaptureReady(page, capOf(missing), undefined, 3000);
+  check('G3. a capture no compare reads does not wait', Date.now() - t0 < 400, `${Date.now() - t0}ms`);
+
+  await page.setContent('<ul id="l"></ul><script>setTimeout(function(){document.getElementById("l").innerHTML="<li class=late>x</li>";},500);</script>');
+  t0 = Date.now();
+  await awaitCaptureReady(page, capOf({ level: 'css', arg: 'li.late', intent: 'late rows' }), 'less', 5000);
+  const waited = Date.now() - t0;
+  check('G4. a less-relation capture waits for the target to render', waited >= 350 && waited < 4000, `${waited}ms`);
+
+  t0 = Date.now();
+  await awaitCaptureReady(page, capOf(missing), 'greater', 1200);
+  check('G5. the wait is a grace: on timeout it falls through instead of throwing', Date.now() - t0 >= 1000, `${Date.now() - t0}ms`);
+}
 
 await browser.close();
 

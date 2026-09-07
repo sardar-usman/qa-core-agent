@@ -14,6 +14,7 @@
  * No browser.
  */
 import { runAgentLoop, salvageOnCostCeiling, splitCeiling, DEFAULT_REPAIR_RESERVE } from '../src/agent/runtime.js';
+import { decideRepairPass, type ScenarioVerdict } from '../src/agent/critic.js';
 import { createContext } from '../src/agent/tools.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { Scenario } from '../src/agent/trace.js';
@@ -235,6 +236,50 @@ const g2Loop = await runAgentLoop({
 });
 check('G3. without the reserve the repair budget rounds to nothing (the live-run failure)',
   CEILING - g2Loop.cost.usd <= 0.05, `leftover $${(CEILING - g2Loop.cost.usd).toFixed(2)}`);
+
+/* ─── H. the repair pass runs on TOTAL remaining budget, never silently ────── */
+// The exact live shape that produced silent non-execution: ceiling $6,
+// reserve 15%, explorer overshot its $5.10 sub-ceiling to $5.1840, critic
+// $0.0314, 5 rework verdicts whose names the critic echoed with the
+// "[category]" prefix from its input rendering, ~$0.75 remaining. The old
+// exact-name gate matched nothing, so the whole repair block (including both
+// print branches) was skipped.
+const liveNames = [
+  'sorted products by price ascending',
+  'searched for a product by name',
+  'added a product to the cart',
+  'rejected an empty search with a message',
+  'filtered products by category',
+];
+const liveScenarios = liveNames.map((name) => ({ name }));
+const rw = (scenario: string): ScenarioVerdict => ({ scenario, verdict: 'rework', reasons: ['assertion too weak'], required_fixes: ['assert the outcome'] });
+const echoedVerdicts = [
+  rw('[happy] sorted products by price ascending'),
+  rw('2. searched for a product by name'),
+  rw('[happy] Added a product to the cart'),
+  rw('[negative] rejected an empty search with a message'),
+  rw('5. [happy] filtered products by category'),
+];
+const liveSpent = 5.1840 + 0.0314 + 0.0350; // explorer + critic + planner
+const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: liveSpent, ceilingUsd: 6 });
+check('H1. the live shape now RUNS the repair pass', h?.run === true, JSON.stringify(h));
+check('H2. all 5 prefix-echoed rework verdicts match their scenarios', h?.rework.length === 5, String(h?.rework.length));
+check('H3. the budget is the TOTAL ceiling minus actual spend (~$0.75), not the overshot sub-ceiling',
+  h !== null && Math.abs(h.budgetUsd - (6 - liveSpent)) < 1e-9 && h.budgetUsd > 0.7, String(h?.budgetUsd));
+check('H4. the run line states count and budget', h?.line === `repair pass: 5 scenario(s), budget $${(6 - liveSpent).toFixed(2)}`, h?.line);
+
+// Exhausted budget: still a line, never silence.
+const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: 6.01, ceilingUsd: 6 });
+check('H5. zero budget skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no budget remaining'), hBroke?.line);
+
+// Verdict names that match nothing: still a line naming the orphans.
+const hAlien = decideRepairPass({ scenarios: liveScenarios, verdicts: [rw('a verdict about something else entirely')], spentUsd: 1, ceilingUsd: 6 });
+check('H6. unmatched rework verdicts skip WITH a printed reason naming them',
+  hAlien?.run === false && hAlien.line.includes('matched no recorded scenario') && hAlien.line.includes('something else'), hAlien?.line);
+
+// No rework verdicts at all: nothing to decide, nothing to print.
+const hNone = decideRepairPass({ scenarios: liveScenarios, verdicts: [{ scenario: liveNames[0]!, verdict: 'pass', reasons: [], required_fixes: [] }], spentUsd: 1, ceilingUsd: 6 });
+check('H7. no rework verdicts -> null (no decision line needed)', hNone === null);
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

@@ -136,12 +136,15 @@ export async function replayScenarioOnce(
   // capture's varName; assert_compare reads back from here so it compares
   // against a value that was actually on the page this run, never a literal.
   const captures = new Map<string, string>();
+  // What relation each captured var feeds, so the capture read can wait for
+  // the target to render first (see awaitCaptureReady).
+  const captureRelations = relationsByVarName(scenario.steps);
 
   try {
     let j = 0;
     for (const step of scenario.steps) {
       try {
-        await runStep(page, step, timeoutMs, captures);
+        await runStep(page, step, timeoutMs, captures, captureRelations);
       } catch (err) {
         failedStep = j;
         stepKind = step.kind;
@@ -164,11 +167,49 @@ export async function replayScenarioOnce(
   };
 }
 
+/** varName -> the relation its later assert_compare uses (first one wins). */
+export function relationsByVarName(steps: TraceStep[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of steps) {
+    if (s.kind === 'assert_compare' && !out.has(s.varName)) out.set(s.varName, s.relation);
+  }
+  return out;
+}
+
+/**
+ * Capture readiness grace. A capture that races the render reads 0 (count) or
+ * empty (text/attribute) and poisons the later comparison: a live replay read
+ * a list count of 0 before the page rendered, then failed a correct
+ * assert_compare(less), because nothing can be less than 0. So before the
+ * read, poll the target to at least one match. This is a GRACE, not an
+ * assertion: on timeout the read proceeds with whatever is there, so a
+ * legitimately empty baseline (capture 0, add an item, assert greater) still
+ * works — it just reads after the wait. Skipped when the relation is 'absent'
+ * (zero is a legitimate immediate baseline there) and when no assert_compare
+ * reads the var at all (nothing downstream to poison).
+ */
+export async function awaitCaptureReady(
+  page: Page,
+  step: Extract<TraceStep, { kind: 'capture' }>,
+  relation: string | undefined,
+  timeoutMs: number,
+): Promise<void> {
+  if (relation === undefined || relation === 'absent') return;
+  const loc = step.source === 'count'
+    ? baseLocator(page, step.target)
+    : locatorFromRecord(page, step.target).first();
+  await pollUntil(timeoutMs, async () => (await loc.count()) >= 1, 'capture target never appeared').catch(() => {
+    // Grace expired — fall through to the immediate read.
+  });
+}
+
 export async function runStep(
   page: Page,
   step: TraceStep,
   timeoutMs: number,
   captures: Map<string, string>,
+  /** varName -> relation map from relationsByVarName; drives capture readiness. */
+  captureRelations?: Map<string, string>,
 ): Promise<void> {
   switch (step.kind) {
     case 'navigate':
@@ -219,6 +260,7 @@ export async function runStep(
       await runAssertion(page, step.assertion, timeoutMs);
       return;
     case 'capture': {
+      await awaitCaptureReady(page, step, captureRelations?.get(step.varName), timeoutMs);
       const value = await readStepValue(page, step.source, step.target, step.attribute);
       captures.set(step.varName, value);
       return;
