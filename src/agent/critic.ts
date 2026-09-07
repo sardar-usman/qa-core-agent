@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Scenario, TraceStep } from './trace.js';
+import { scenarioNameKey } from './rule-coverage.js';
 
 /**
  * Critic — Step 3 of the multi-agent pipeline.
@@ -49,6 +50,8 @@ Flagging rules — apply to every scenario:
 3. a11y without ARIA: an a11y scenario that only checks visible text or element presence is automatically "rework". It must assert ARIA attributes (role, aria-valuenow, aria-valuemin, aria-valuemax, aria-label, aria-expanded) via toHaveAttribute, or prove keyboard operability produced a meaningful outcome.
 
 4. Missing outcome assertion: a scenario where the key action (submit, navigate, toggle) has no assertion on its outcome is "rework" or "reject".
+
+5. Volatile identifiers: an assertion or capture pinned to a specific catalog-item test id (a generated id like product-01JX8F2K or sku-8842) is "rework" — such ids rot when the data reseeds. The required_fix names a durable anchor instead: text content, a count, a relation between values, or a stable structural id (search-query, sort-select).
 
 Return a JSON array with one element per scenario in the same order as the input, then a <summary> paragraph:
 
@@ -108,15 +111,32 @@ export async function critique(opts: {
   return { verdicts: parseVerdicts(text), summary: parseSummary(text), costUsd };
 }
 
+/**
+ * Values reach the Critic intact up to this cap. The old rendering sliced the
+ * QUOTED string (`JSON.stringify(v).slice(0, 30)`), which cut the closing
+ * quote off any value over ~28 chars, so the Critic reviewed mangled data and
+ * reported phantom truncation errors (a live run flagged a login email as
+ * "truncated with a stray quote" that was filled whole on the page). Longer
+ * values are cut BEFORE quoting, with an explicit marker, so the quotes stay
+ * balanced and a cap can never masquerade as page data.
+ */
+const VALUE_RENDER_CAP = 200;
+
+/** Render a recorded string value for the Critic: quotes balanced, cap explicit. */
+export function renderValueForCritic(v: string): string {
+  if (v.length <= VALUE_RENDER_CAP) return JSON.stringify(v);
+  return `${JSON.stringify(v.slice(0, VALUE_RENDER_CAP))} …[value continues, ${v.length} chars total]`;
+}
+
 // Exported: the repair pass renders each rework scenario's recorded steps
 // with this same compact notation so the Explorer starts from what it did.
 export function describeStep(step: TraceStep): string {
   switch (step.kind) {
     case 'navigate': return `navigate(${step.url})`;
     case 'click':    return `click(${step.target.intent} via ${step.target.level})`;
-    case 'fill':     return `fill(${step.target.intent}, ${JSON.stringify(step.value).slice(0, 30)})`;
+    case 'fill':     return `fill(${step.target.intent}, ${renderValueForCritic(step.value)})`;
     case 'press':    return `press(${step.key} on ${step.target.intent})`;
-    case 'select_option': return `select_option(${step.target.intent}, ${step.by}=${JSON.stringify(step.option).slice(0, 30)})`;
+    case 'select_option': return `select_option(${step.target.intent}, ${step.by}=${renderValueForCritic(step.option)})`;
     case 'set_checked':   return `set_checked(${step.target.intent}, ${step.checked ? 'check' : 'uncheck'})`;
     case 'set_input_files': return `set_input_files(${step.target.intent}, ${step.files.length} file(s))`;
     case 'wait':          return `wait(${step.ms}ms)`;
@@ -271,25 +291,160 @@ export function gateByVerdicts<S extends { name: string }>(
 }
 
 /**
+ * Strip the "N. [category] " prefix the Critic sometimes echoes back from its
+ * input rendering (`1. [negative] rejected a wrong password`). The prompt asks
+ * for the exact name, but the echo is not guaranteed, and an exact-equality
+ * match on a prefixed echo silently emptied a live run's rework list.
+ */
+function stripVerdictPrefix(name: string): string {
+  return name.replace(/^\s*\d+[.)]\s*/, '').replace(/^\s*(\[[^\]]*\]\s*)+/, '').trim();
+}
+
+/** Normalized comparison key for a verdict or scenario name. */
+function verdictNameKey(name: string): string {
+  return scenarioNameKey(stripVerdictPrefix(name));
+}
+
+/**
+ * Tolerant verdict-name matching: prefixes stripped, then the same normalized
+ * key + containment treatment attachRuleIds uses, so a small rephrasing or an
+ * echoed "[category]" prefix never orphans a verdict from its scenario.
+ */
+export function verdictMatchesScenario(verdictName: string, scenarioName: string): boolean {
+  const v = verdictNameKey(verdictName);
+  const s = verdictNameKey(scenarioName);
+  if (!v || !s) return false;
+  return v === s || v.includes(s) || s.includes(v);
+}
+
+/**
+ * The verdict for a scenario name: exact normalized key first, containment
+ * only as a fallback. Exact-first matters when two sibling scenarios share a
+ * name prefix ("logged in" / "logged in and landed on inventory"): each must
+ * claim its own verdict before containment can blur them together.
+ */
+export function verdictFor(verdicts: ScenarioVerdict[], scenarioName: string): ScenarioVerdict | undefined {
+  const k = verdictNameKey(scenarioName);
+  if (!k) return undefined;
+  const exact = verdicts.find((v) => verdictNameKey(v.scenario) === k);
+  if (exact) return exact;
+  return verdicts.find((v) => {
+    const vk = verdictNameKey(v.scenario);
+    return vk.length > 0 && (vk.includes(k) || k.includes(vk));
+  });
+}
+
+/**
+ * Assign at most one verdict to each scenario name: an exact-key pass first,
+ * then a containment pass over what is left, each verdict claimable once.
+ * This is what keeps a verdict for "s-rework-a" from also gating its sibling
+ * "s-rework-b" when the sibling's own verdict is missing.
+ */
+function assignVerdicts(names: string[], verdicts: ScenarioVerdict[]): Map<string, ScenarioVerdict> {
+  const out = new Map<string, ScenarioVerdict>();
+  const claimed = new Set<ScenarioVerdict>();
+  for (const name of names) {
+    const k = verdictNameKey(name);
+    if (!k) continue;
+    const v = verdicts.find((x) => !claimed.has(x) && verdictNameKey(x.scenario) === k);
+    if (v) {
+      out.set(name, v);
+      claimed.add(v);
+    }
+  }
+  for (const name of names) {
+    if (out.has(name)) continue;
+    const k = verdictNameKey(name);
+    if (!k) continue;
+    const v = verdicts.find((x) => {
+      if (claimed.has(x)) return false;
+      const vk = verdictNameKey(x.scenario);
+      return vk.length > 0 && (vk.includes(k) || k.includes(vk));
+    });
+    if (v) {
+      out.set(name, v);
+      claimed.add(v);
+    }
+  }
+  return out;
+}
+
+/**
  * Split the gate three ways instead of two: reject drops for good, rework
  * earns ONE repair pass, pass continues. A scenario with no verdict counts
- * as pass (the Critic did not flag it).
+ * as pass (the Critic did not flag it). Matching is tolerant (see
+ * verdictMatchesScenario): the live run where the Critic echoed prefixed
+ * names bucketed every scenario as kept and silently skipped the repair pass.
  */
 export function splitGate<S extends { name: string }>(
   scenarios: S[],
   verdicts: ScenarioVerdict[],
 ): { kept: S[]; rejected: S[]; rework: S[] } {
-  const byName = new Map(verdicts.map((v) => [v.scenario, v.verdict]));
+  const assigned = assignVerdicts(scenarios.map((s) => s.name), verdicts);
   const kept: S[] = [];
   const rejected: S[] = [];
   const rework: S[] = [];
   for (const s of scenarios) {
-    const v = byName.get(s.name);
+    const v = assigned.get(s.name)?.verdict;
     if (v === 'reject') rejected.push(s);
     else if (v === 'rework') rework.push(s);
     else kept.push(s);
   }
   return { kept, rejected, rework };
+}
+
+/** What the repair-pass entry decision resolved to. The line ALWAYS prints. */
+export interface RepairDecision<S> {
+  run: boolean;
+  /** The recorded scenarios matched to rework verdicts. */
+  rework: S[];
+  /** Total ceiling minus actual spend — the budget the repair pass may use. */
+  budgetUsd: number;
+  /** "repair pass: N scenario(s), budget $X" or "repair pass skipped: <reason>". */
+  line: string;
+}
+
+/**
+ * The single entry decision for the repair pass. Returns null ONLY when no
+ * rework verdicts exist (there is nothing to repair and nothing to report).
+ * Otherwise the caller MUST print `line` — silent non-execution cost a live
+ * run its whole repair budget with no trace of why. The budget compares the
+ * TOTAL ceiling against actual spend: the Explorer legitimately overshoots
+ * its own sub-ceiling by up to one API call, and that overshoot must never
+ * disqualify a repair the reserve was created to fund.
+ */
+export function decideRepairPass<S extends { name: string }>(opts: {
+  scenarios: S[];
+  verdicts: ScenarioVerdict[];
+  spentUsd: number;
+  ceilingUsd: number;
+}): RepairDecision<S> | null {
+  const reworkVerdicts = opts.verdicts.filter((v) => v.verdict === 'rework');
+  if (reworkVerdicts.length === 0) return null;
+  const { rework } = splitGate(opts.scenarios, opts.verdicts);
+  const budgetUsd = opts.ceilingUsd - opts.spentUsd;
+  if (rework.length === 0) {
+    return {
+      run: false,
+      rework,
+      budgetUsd,
+      line: `repair pass skipped: ${reworkVerdicts.length} rework verdict(s) matched no recorded scenario by name (verdicts: ${reworkVerdicts.map((v) => `"${v.scenario}"`).join(', ')}).`,
+    };
+  }
+  if (budgetUsd <= 0) {
+    return {
+      run: false,
+      rework,
+      budgetUsd,
+      line: `repair pass skipped: no budget remaining ($${budgetUsd.toFixed(4)} of the total ceiling left); ${rework.length} rework scenario(s) dropped.`,
+    };
+  }
+  return {
+    run: true,
+    rework,
+    budgetUsd,
+    line: `repair pass: ${rework.length} scenario(s), budget $${budgetUsd.toFixed(2)}`,
+  };
 }
 
 /** One rework scenario's journey through the single repair pass. */
@@ -313,15 +468,19 @@ export function mergeRepairVerdicts(
   original: ScenarioVerdict[],
   repaired: ScenarioVerdict[] | null,
 ): { final: ScenarioVerdict[]; history: RepairHistoryEntry[] } {
-  const secondByName = new Map((repaired ?? []).map((v) => [v.scenario, v]));
   const final: ScenarioVerdict[] = [];
   const history: RepairHistoryEntry[] = [];
+  // Tolerant pairing: either round's echo may carry a prefix or a rephrasing,
+  // and each second verdict is claimable once (exact key wins over containment)
+  // so sibling rework names never swap verdicts.
+  const reworkNames = original.filter((v) => v.verdict === 'rework').map((v) => v.scenario);
+  const secondByOriginal = assignVerdicts(reworkNames, repaired ?? []);
   for (const v of original) {
     if (v.verdict !== 'rework') {
       final.push(v);
       continue;
     }
-    const second = secondByName.get(v.scenario);
+    const second = secondByOriginal.get(v.scenario);
     if (!second) {
       final.push(v);
       history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped' });

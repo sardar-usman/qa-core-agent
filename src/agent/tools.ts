@@ -10,7 +10,7 @@ import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
 import { runGate } from './gate.js';
 import { scenarioNameKey } from './rule-coverage.js';
-import { adaptiveTimeout, ADAPTIVE_CEILING_MS } from './adaptive-timeout.js';
+import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import {
   chooseStateAssertion,
   SEMANTIC_STATE_ATTRS,
@@ -1224,8 +1224,18 @@ export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolRe
         if (source === 'count') {
           // Count reads the multi-match locator, so build it from hints without
           // forcing a single resolve — a count of 0, 1, or N are all valid.
+          // Readiness grace: a count read that races the render sees 0 and
+          // poisons the later assert_compare baseline (the replay engine does
+          // the same wait, see awaitCaptureReady in replay.ts). Poll to >=1
+          // match first; on timeout fall through and read whatever is there,
+          // so a legitimately empty list still captures 0.
           record = recordFromHints({ ...(call.input as object), intent: String(call.input.intent ?? 'elements') });
-          value = String(await baseLocator(ctx.page, record).count());
+          const loc = baseLocator(ctx.page, record);
+          const deadline = Date.now() + ADAPTIVE_FLOOR_MS;
+          while ((await loc.count()) === 0 && Date.now() < deadline) {
+            await ctx.page.waitForTimeout(200);
+          }
+          value = String(await loc.count());
         } else {
           const resolved = await resolveAndRecord(ctx, {
             intent: String(call.input.intent ?? 'element'),

@@ -12,7 +12,7 @@
  *
  * Fixture verdicts only. No live calls. No browser.
  */
-import { splitGate, mergeRepairVerdicts, type ScenarioVerdict } from '../src/agent/critic.js';
+import { splitGate, mergeRepairVerdicts, verdictMatchesScenario, verdictFor, type ScenarioVerdict } from '../src/agent/critic.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -89,6 +89,37 @@ check('E1. the repaired-to-pass scenario is generated, not a critic drop',
 check('E2. the second-time rework and the reject each count exactly one critic drop',
   rec.dropped.filter((d) => d.stage === 'critic').length === 2);
 check('E3. the funnel balances: planned 5 = generated 3 + dropped 2', rec.balanced === true && rec.accountedFor === 5);
+
+/* ─── F. tolerant verdict-name matching (the silent-skip live bug) ─────────── */
+check('F1. an echoed "[category]" prefix still matches',
+  verdictMatchesScenario('[negative] rejected a wrong password', 'rejected a wrong password'));
+check('F2. an echoed "N." numbering still matches',
+  verdictMatchesScenario('3. rejected an empty username', 'rejected an empty username'));
+check('F3. combined prefix, casing, and article drift still match',
+  verdictMatchesScenario('2. [happy] Added product to the cart', 'added a product to the cart'));
+check('F4. unrelated names do NOT match',
+  !verdictMatchesScenario('[happy] sorted by price', 'rejected a wrong password'));
+
+const prefixed = [
+  v('[happy] s-pass', 'pass'),
+  v('1. [negative] s-reject', 'reject', ['tests nothing meaningful']),
+  v('[edge] s-rework-a', 'rework', ['assertion is vacuous']),
+];
+const tolerantSplit = splitGate(scenarios, prefixed);
+check('F5. splitGate buckets by tolerant match, not exact string',
+  tolerantSplit.rejected.length === 1 && tolerantSplit.rejected[0]?.name === 's-reject' &&
+  tolerantSplit.rework.length === 1 && tolerantSplit.rework[0]?.name === 's-rework-a',
+  JSON.stringify({ rejected: tolerantSplit.rejected, rework: tolerantSplit.rework }));
+
+const tolerantMerge = mergeRepairVerdicts(
+  [v('[edge] s-rework-a', 'rework', ['weak'])],
+  [v('s-rework-a', 'pass')],
+);
+check('F6. mergeRepairVerdicts pairs first and second verdicts tolerantly',
+  tolerantMerge.history[0]?.outcome === 'kept' && tolerantMerge.final[0]?.verdict === 'pass',
+  JSON.stringify(tolerantMerge));
+check('F7. verdictFor finds a scenario\'s verdict through the prefix',
+  verdictFor(prefixed, 's-rework-a')?.verdict === 'rework');
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

@@ -12,7 +12,8 @@
  *
  * Pure in-code fixtures. No network. No LLM. No browser.
  */
-import { parseVerdicts, gateByVerdicts } from '../src/agent/critic.js';
+import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic } from '../src/agent/critic.js';
+import type { TraceStep } from '../src/agent/trace.js';
 import { attachRuleIds, computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
@@ -139,6 +140,41 @@ check('G1. the surviving scenario keeps its rule covered',
 check('G2. the critic-gated scenario\'s rule classifies planned-but-dropped',
   coverage.uncovered.length === 1 && coverage.uncovered[0]?.ruleId === 'R5' && coverage.uncovered[0]?.reason === 'planned-but-dropped',
   JSON.stringify(coverage.uncovered));
+
+/* ─── H. critic input fidelity: values reach the critic intact ─────────────── */
+// A live run's critic flagged a login email as "truncated with a stray quote"
+// while the console showed the full value filled and the login passing. Root
+// cause: describeStep sliced the QUOTED value at 30 chars, cutting the closing
+// quote. Long values must reach the critic whole; only extreme lengths are
+// capped, BEFORE quoting, with an explicit marker.
+const longEmail = 'quality.assurance.fidelity.check+2026-09-07@subdomain.example-company-name.com'; // 79 chars
+const fillStep: TraceStep = {
+  kind: 'fill',
+  target: { level: 'label', arg: 'Email', intent: 'email input' },
+  value: longEmail,
+};
+const rendered = describeStep(fillStep);
+check('H1. a 60+ char fill value reaches the critic rendering intact',
+  rendered.includes(JSON.stringify(longEmail)), rendered);
+check('H2. the rendered quotes are balanced (no stray-quote artifact)',
+  (rendered.match(/"/g) ?? []).length % 2 === 0, rendered);
+
+const huge = 'x'.repeat(250);
+const hugeRendered = renderValueForCritic(huge);
+check('H3. an extreme value is cut BEFORE quoting, quotes balanced, cap explicit',
+  hugeRendered.startsWith(JSON.stringify(huge.slice(0, 200))) && hugeRendered.includes('250 chars total'),
+  hugeRendered.slice(0, 60) + '…');
+check('H4. values at the cap are untouched', renderValueForCritic('y'.repeat(200)) === JSON.stringify('y'.repeat(200)));
+
+const selectStep: TraceStep = {
+  kind: 'select_option',
+  target: { level: 'label', arg: 'Country', intent: 'country dropdown' },
+  by: 'label',
+  option: 'Saint Vincent and the Grenadines (Kingstown metropolitan region)',
+};
+check('H5. a long select_option label renders intact too',
+  describeStep(selectStep).includes(JSON.stringify('Saint Vincent and the Grenadines (Kingstown metropolitan region)')),
+  describeStep(selectStep));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

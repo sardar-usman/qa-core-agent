@@ -13,7 +13,8 @@
  * the ceiling after the first turn) and a stub page. No network. No LLM.
  * No browser.
  */
-import { runAgentLoop, salvageOnCostCeiling } from '../src/agent/runtime.js';
+import { runAgentLoop, salvageOnCostCeiling, splitCeiling, DEFAULT_REPAIR_RESERVE } from '../src/agent/runtime.js';
+import { decideRepairPass, type ScenarioVerdict } from '../src/agent/critic.js';
 import { createContext } from '../src/agent/tools.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { Scenario } from '../src/agent/trace.js';
@@ -151,6 +152,134 @@ check('E2. an explored-but-dropped rule stays planned-but-dropped',
 check('E3. rules cited only by never-started scenarios classify planned-not-explored',
   coverage.uncovered.find((u) => u.ruleId === 'R3')?.reason === 'planned-not-explored' &&
   coverage.uncovered.find((u) => u.ruleId === 'R4')?.reason === 'planned-not-explored', JSON.stringify(coverage.uncovered));
+
+/* ─── F. repair reserve: splitCeiling math and env handling ────────────────── */
+const savedReserve = process.env.QA_CORE_REPAIR_RESERVE;
+delete process.env.QA_CORE_REPAIR_RESERVE;
+try {
+  const def = splitCeiling(2);
+  check('F1. default reserve is 15%: $2 -> explorer $1.70, reserve $0.30',
+    Math.abs(def.explorerUsd - 1.7) < 1e-9 && Math.abs(def.reserveUsd - 0.3) < 1e-9 && DEFAULT_REPAIR_RESERVE === 0.15,
+    JSON.stringify(def));
+  process.env.QA_CORE_REPAIR_RESERVE = '0.25';
+  const custom = splitCeiling(2);
+  check('F2. QA_CORE_REPAIR_RESERVE=0.25 -> explorer $1.50, reserve $0.50',
+    Math.abs(custom.explorerUsd - 1.5) < 1e-9 && Math.abs(custom.reserveUsd - 0.5) < 1e-9);
+  process.env.QA_CORE_REPAIR_RESERVE = 'garbage';
+  check('F3. a junk value falls back to the default', Math.abs(splitCeiling(2).reserveUsd - 0.3) < 1e-9);
+  process.env.QA_CORE_REPAIR_RESERVE = '-1';
+  check('F4. a negative value clamps to 0 (explorer keeps the full ceiling)', splitCeiling(2).reserveUsd === 0);
+  process.env.QA_CORE_REPAIR_RESERVE = '0.9';
+  check('F5. more than half clamps to 0.5', Math.abs(splitCeiling(2).reserveUsd - 1.0) < 1e-9);
+} finally {
+  if (savedReserve !== undefined) process.env.QA_CORE_REPAIR_RESERVE = savedReserve;
+  else delete process.env.QA_CORE_REPAIR_RESERVE;
+}
+
+/* ─── G. the explorer stops at the reduced ceiling; the repair gets the rest ── */
+// Fake cost tracker: ~$0.30 per call (4k in, 11.2k out at Opus prices), so
+// the explorer accumulates in small steps like a real run.
+function smallCostClient(): { client: Anthropic; calls: () => number } {
+  let n = 0;
+  const client = {
+    messages: {
+      create: async () => {
+        n++;
+        return {
+          usage: { input_tokens: 4_000, output_tokens: 11_200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          content: [{ type: 'tool_use', id: `g${n}`, name: 'bogus_tool_never_touches_the_page', input: {} }],
+          stop_reason: 'tool_use',
+        };
+      },
+    },
+  } as unknown as Anthropic;
+  return { client, calls: () => n };
+}
+
+const CEILING = 2;
+const gSplit = splitCeiling(CEILING, 0.15);
+
+// WITH the reserve: the explorer runs under $1.70 and stops there.
+const reserved = smallCostClient();
+const gCtx = createContext(stubPage, 200);
+const gLoop = await runAgentLoop({
+  client: reserved.client,
+  model: 'claude-opus-4-7',
+  maxUsd: gSplit.explorerUsd,
+  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  maxSteps: 200,
+  ctx: gCtx,
+  url: 'https://shop.example/',
+  plan: [],
+});
+const repairBudget = CEILING - gLoop.cost.usd;
+check('G1. the explorer stops at the REDUCED ceiling, not the full one',
+  gLoop.endedReason === 'cost_ceiling' && gLoop.cost.usd > gSplit.explorerUsd && gLoop.cost.usd < CEILING,
+  `usd=${gLoop.cost.usd.toFixed(2)} after ${reserved.calls()} calls`);
+check('G2. the repair pass receives the reserve (minus one call of overshoot)',
+  repairBudget > 0.05 && repairBudget <= gSplit.reserveUsd,
+  `repair budget $${repairBudget.toFixed(2)} of $${gSplit.reserveUsd.toFixed(2)} reserved`);
+
+// WITHOUT the reserve (the old behavior): exploration eats the full ceiling
+// and the repair pass is left with nothing.
+const unreserved = smallCostClient();
+const g2Ctx = createContext(stubPage, 200);
+const g2Loop = await runAgentLoop({
+  client: unreserved.client,
+  model: 'claude-opus-4-7',
+  maxUsd: CEILING,
+  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  maxSteps: 200,
+  ctx: g2Ctx,
+  url: 'https://shop.example/',
+  plan: [],
+});
+check('G3. without the reserve the repair budget rounds to nothing (the live-run failure)',
+  CEILING - g2Loop.cost.usd <= 0.05, `leftover $${(CEILING - g2Loop.cost.usd).toFixed(2)}`);
+
+/* ─── H. the repair pass runs on TOTAL remaining budget, never silently ────── */
+// The exact live shape that produced silent non-execution: ceiling $6,
+// reserve 15%, explorer overshot its $5.10 sub-ceiling to $5.1840, critic
+// $0.0314, 5 rework verdicts whose names the critic echoed with the
+// "[category]" prefix from its input rendering, ~$0.75 remaining. The old
+// exact-name gate matched nothing, so the whole repair block (including both
+// print branches) was skipped.
+const liveNames = [
+  'sorted products by price ascending',
+  'searched for a product by name',
+  'added a product to the cart',
+  'rejected an empty search with a message',
+  'filtered products by category',
+];
+const liveScenarios = liveNames.map((name) => ({ name }));
+const rw = (scenario: string): ScenarioVerdict => ({ scenario, verdict: 'rework', reasons: ['assertion too weak'], required_fixes: ['assert the outcome'] });
+const echoedVerdicts = [
+  rw('[happy] sorted products by price ascending'),
+  rw('2. searched for a product by name'),
+  rw('[happy] Added a product to the cart'),
+  rw('[negative] rejected an empty search with a message'),
+  rw('5. [happy] filtered products by category'),
+];
+const liveSpent = 5.1840 + 0.0314 + 0.0350; // explorer + critic + planner
+const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: liveSpent, ceilingUsd: 6 });
+check('H1. the live shape now RUNS the repair pass', h?.run === true, JSON.stringify(h));
+check('H2. all 5 prefix-echoed rework verdicts match their scenarios', h?.rework.length === 5, String(h?.rework.length));
+check('H3. the budget is the TOTAL ceiling minus actual spend (~$0.75), not the overshot sub-ceiling',
+  h !== null && Math.abs(h.budgetUsd - (6 - liveSpent)) < 1e-9 && h.budgetUsd > 0.7, String(h?.budgetUsd));
+check('H4. the run line states count and budget', h?.line === `repair pass: 5 scenario(s), budget $${(6 - liveSpent).toFixed(2)}`, h?.line);
+
+// Exhausted budget: still a line, never silence.
+const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: 6.01, ceilingUsd: 6 });
+check('H5. zero budget skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no budget remaining'), hBroke?.line);
+
+// Verdict names that match nothing: still a line naming the orphans.
+const hAlien = decideRepairPass({ scenarios: liveScenarios, verdicts: [rw('a verdict about something else entirely')], spentUsd: 1, ceilingUsd: 6 });
+check('H6. unmatched rework verdicts skip WITH a printed reason naming them',
+  hAlien?.run === false && hAlien.line.includes('matched no recorded scenario') && hAlien.line.includes('something else'), hAlien?.line);
+
+// No rework verdicts at all: nothing to decide, nothing to print.
+const hNone = decideRepairPass({ scenarios: liveScenarios, verdicts: [{ scenario: liveNames[0]!, verdict: 'pass', reasons: [], required_fixes: [] }], spentUsd: 1, ceilingUsd: 6 });
+check('H7. no rework verdicts -> null (no decision line needed)', hNone === null);
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
