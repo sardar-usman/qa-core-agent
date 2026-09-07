@@ -87,6 +87,13 @@ ASSERTION RULES — apply before every end_scenario:
 
 9. Unverified success signals. A happy-path assertion is only as good as the signal it checks. If the plan says "lands on /auth/login" or "redirects to /dashboard" but you submit and the page stays put, the redirect was assumed, not real. Do NOT re-fill the whole form and resubmit again and again hoping it works the next time. After one honest retry, stop. Look at what the page ACTUALLY did: read the URL with get_dom, look for a visible success or error message, a toast, an inline validation error. Then assert the real signal you can see (the confirmation message, the cleared form, the error that explains the rejection). If the expected outcome genuinely did not occur, that is a real finding, not something to retry: the system records what the page did. Once a scenario is recorded as a finding, do NOT re-attempt that same flow with different data. Move on to the OTHER planned scenarios (the negative and edge cases) first, so a single expensive happy path does not starve them. Come back to re-attempt the flow only if every other scenario is already done and budget remains. Never burn the budget thrashing one scenario on a success signal that may be wrong. Do NOT call wait() to let the page settle after a submit; wait() is rejected inside a scenario. Use wait_for_text for the state you expect, or assert with a timeout and let Playwright poll. To just re-read the page, call get_dom.
 
+ASSERTION DOCTRINE — the five weaknesses the Critic rejects every run. Violating one costs a repair pass:
+1. Every assertion after a state-changing action carries an explicit timeout (10000-15000 for async outcomes; the gate floors missing ones at 5000ms, but say what you expect).
+2. Proving a sort needs a comparable relation: capture the first value, sort, assert_compare greater/less against the re-read — or assert the known expected first item. "The first item changed" proves a shuffle, not an order.
+3. A negative scenario asserts a USER-VISIBLE failure signal: the error message text, aria-invalid, or the error element becoming visible. "The URL did not change" or an input attribute alone proves nothing a user can see.
+4. Capture a value ONLY if a later assert_compare reads it. The gate strips unused captures; a capture with no compare is wasted work.
+5. Count checks after an async action must poll: assert_compare with source="count" (polls with the compare timeout), or toHaveCount with an explicit timeout. Never a one-shot read.
+
 Assertion economy:
 - One strong, specific assertion (an exact error string, the destination URL, a concrete element count) is worth more than several weak ones.
 - If you have already asserted the definitive outcome of the scenario, DO NOT pad with redundant toBeVisible / toHaveURL checks on the same state. Padding adds noise and weakens the suite.
@@ -193,6 +200,30 @@ export interface ExploreOptions {
 export const PER_PAGE_SCENARIO_CAP = 4;
 /** Global cap on planned scenarios per run; planning stops once reached. */
 export const GLOBAL_PLAN_CAP = 20;
+
+/** Default fraction of the cost ceiling reserved for the repair pass. */
+export const DEFAULT_REPAIR_RESERVE = 0.15;
+
+/**
+ * Split the cost ceiling between exploration and the repair pass. The last
+ * live run spent the whole ceiling exploring, so the repair pass received $0
+ * and every rework verdict dropped unrepaired. Reserving a fraction
+ * (QA_CORE_REPAIR_RESERVE, default 0.15) caps the Explorer at
+ * ceiling * (1 - reserve); the repair pass may spend the remainder. When no
+ * rework verdicts exist the reserve goes unused — it is never re-opened for
+ * exploration (simplicity wins). The fraction is clamped to [0, 0.5]: zero
+ * disables the reserve, and more than half the ceiling for repairs would
+ * starve the exploration that produces anything to repair.
+ */
+export function splitCeiling(
+  ceilingUsd: number,
+  reserveFraction?: number,
+): { explorerUsd: number; reserveUsd: number; reserve: number } {
+  const raw = reserveFraction ?? Number(process.env.QA_CORE_REPAIR_RESERVE ?? DEFAULT_REPAIR_RESERVE);
+  const reserve = Number.isFinite(raw) ? Math.min(0.5, Math.max(0, raw)) : DEFAULT_REPAIR_RESERVE;
+  const reserveUsd = ceilingUsd * reserve;
+  return { explorerUsd: ceilingUsd - reserveUsd, reserveUsd, reserve };
+}
 
 /** What the run keeps and loses when the cost ceiling stops the Explorer. */
 export interface CostCeilingSalvage {
@@ -458,6 +489,19 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // should set a higher ceiling; hitting it no longer aborts the run (the
   // completed scenarios are salvaged, see salvageOnCostCeiling).
   const maxUsd = opts.maxUsd ?? Number(process.env.QA_CORE_COST_CEILING ?? process.env.QA_CORE_MAX_USD ?? 2);
+  // Repair reserve: the Explorer runs under a reduced ceiling so the repair
+  // pass is never handed $0 (the last live run spent the whole ceiling
+  // exploring and every rework verdict dropped unrepaired). With the critic
+  // skipped there is no repair pass, so the Explorer keeps the full ceiling.
+  const { explorerUsd, reserveUsd } = opts.skipCritic
+    ? { explorerUsd: maxUsd, reserveUsd: 0 }
+    : splitCeiling(maxUsd);
+  opts.onEvent?.({
+    type: 'message',
+    text: reserveUsd > 0
+      ? `Cost ceiling: $${maxUsd.toFixed(2)} total — explorer $${explorerUsd.toFixed(2)}, repair reserve $${reserveUsd.toFixed(2)} (QA_CORE_REPAIR_RESERVE)`
+      : `Cost ceiling: $${maxUsd.toFixed(2)} (no repair reserve)`,
+  });
   // Both env names are honored: QA_CORE_EXPLORER_MODEL (documented) and the
   // older QA_CORE_MODEL_EXPLORE. Default unchanged.
   const model = opts.model ?? process.env.QA_CORE_EXPLORER_MODEL ?? process.env.QA_CORE_MODEL_EXPLORE ?? 'claude-opus-4-7';
@@ -726,7 +770,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
 
     const ctx = createContext(page, maxSteps);
     const explorerLoop = await runAgentLoop({
-      client, model, maxUsd, price, maxSteps,
+      client, model, maxUsd: explorerUsd, price, maxSteps,
       ctx, url: opts.url,
       plan: planResult.scenarios,
       onEvent: opts.onEvent,
@@ -767,7 +811,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         completed: ctx.scenarios.length,
         ...(ctx.current ? { current: ctx.current.name } : {}),
         costUsd: explorerLoop.cost.usd,
-        ceilingUsd: maxUsd,
+        ceilingUsd: explorerUsd,
       });
       ctx.incomplete.push(...ceilingSalvage.incomplete);
       ctx.current = null;

@@ -322,6 +322,59 @@ const afOnlySc = makeScenario([
 const afOnlyResult = runGate(afOnlySc);
 check('BL. assert_freeze on stable #id — gate accepts (no violations)', afOnlyResult.violations.length === 0);
 
+/* ─── RULE 2 extension: toHaveCount and toBeHidden also get the floor ──────── */
+
+const countAssert: TraceStep = {
+  kind: 'assert',
+  name: 'row count',
+  assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3 },
+};
+const hiddenAssert: TraceStep = {
+  kind: 'assert',
+  name: 'spinner gone',
+  assertion: { type: 'toBeHidden', target: { level: 'role', arg: { role: 'status', name: '' }, intent: 'spinner' } },
+};
+const r2ExtSc = makeScenario([NAV, CLICK_ROLE, countAssert, hiddenAssert]);
+const r2Ext = runGate(r2ExtSc);
+check('BM. RULE 2 — toHaveCount after an action gets the floor timeout',
+  (r2ExtSc.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000 &&
+  r2Ext.injections.some((i) => i.assertionType === 'toHaveCount'), JSON.stringify(r2Ext.injections));
+check('BN. RULE 2 — toBeHidden after an action gets the floor timeout',
+  (r2ExtSc.steps[3] as { assertion: { timeout?: number } }).assertion.timeout === 5000 &&
+  r2Ext.injections.some((i) => i.assertionType === 'toBeHidden'));
+
+/* ─── RULE 5: unused captures are stripped ─────────────────────────────────── */
+
+const deadCapture: TraceStep = {
+  kind: 'capture',
+  varName: 'firstPrice',
+  source: 'text',
+  target: { level: 'css', arg: '[data-testid="price"]', intent: 'first price' },
+  intent: 'first price',
+};
+const r5Sc = makeScenario([NAV, deadCapture, CLICK_ROLE, ASSERT_ROLE]);
+const r5 = runGate(r5Sc);
+check('BO. RULE 5 — a capture no assert_compare reads is stripped from the steps',
+  !r5Sc.steps.some((s) => s.kind === 'capture'), JSON.stringify(r5Sc.steps.map((s) => s.kind)));
+check('BP. RULE 5 — the strip is logged as an injection naming the variable',
+  r5.injections.some((i) => i.assertionType === 'capture' && i.detail.includes('firstPrice') && i.detail.includes('unused capture')),
+  JSON.stringify(r5.injections));
+check('BQ. RULE 5 — stripping is not a violation (the scenario still ships)', r5.violations.length === 0);
+
+const usedCapture: TraceStep = {
+  kind: 'capture',
+  varName: 'cap',
+  source: 'attribute',
+  target: { level: 'css', arg: '#bar', intent: 'bar' },
+  attribute: 'aria-valuenow',
+  intent: 'bar',
+};
+const r5UsedSc = makeScenario([NAV, usedCapture, CLICK_ROLE, freezeCompare({ level: 'css', arg: '#bar', intent: 'bar' }, 'bar')]);
+const r5Used = runGate(r5UsedSc);
+check('BR. RULE 5 — a capture read by assert_compare is kept',
+  r5UsedSc.steps.some((s) => s.kind === 'capture') && !r5Used.injections.some((i) => i.detail.includes('unused capture')),
+  JSON.stringify(r5UsedSc.steps.map((s) => s.kind)));
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms), RULE 4 (intermediate value), assert_freeze counting.');
+console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms, all timeout-bearing types), RULE 4 (intermediate value), RULE 5 (unused captures stripped), assert_freeze counting.');

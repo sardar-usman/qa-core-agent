@@ -108,15 +108,32 @@ export async function critique(opts: {
   return { verdicts: parseVerdicts(text), summary: parseSummary(text), costUsd };
 }
 
+/**
+ * Values reach the Critic intact up to this cap. The old rendering sliced the
+ * QUOTED string (`JSON.stringify(v).slice(0, 30)`), which cut the closing
+ * quote off any value over ~28 chars, so the Critic reviewed mangled data and
+ * reported phantom truncation errors (a live run flagged a login email as
+ * "truncated with a stray quote" that was filled whole on the page). Longer
+ * values are cut BEFORE quoting, with an explicit marker, so the quotes stay
+ * balanced and a cap can never masquerade as page data.
+ */
+const VALUE_RENDER_CAP = 200;
+
+/** Render a recorded string value for the Critic: quotes balanced, cap explicit. */
+export function renderValueForCritic(v: string): string {
+  if (v.length <= VALUE_RENDER_CAP) return JSON.stringify(v);
+  return `${JSON.stringify(v.slice(0, VALUE_RENDER_CAP))} …[value continues, ${v.length} chars total]`;
+}
+
 // Exported: the repair pass renders each rework scenario's recorded steps
 // with this same compact notation so the Explorer starts from what it did.
 export function describeStep(step: TraceStep): string {
   switch (step.kind) {
     case 'navigate': return `navigate(${step.url})`;
     case 'click':    return `click(${step.target.intent} via ${step.target.level})`;
-    case 'fill':     return `fill(${step.target.intent}, ${JSON.stringify(step.value).slice(0, 30)})`;
+    case 'fill':     return `fill(${step.target.intent}, ${renderValueForCritic(step.value)})`;
     case 'press':    return `press(${step.key} on ${step.target.intent})`;
-    case 'select_option': return `select_option(${step.target.intent}, ${step.by}=${JSON.stringify(step.option).slice(0, 30)})`;
+    case 'select_option': return `select_option(${step.target.intent}, ${step.by}=${renderValueForCritic(step.option)})`;
     case 'set_checked':   return `set_checked(${step.target.intent}, ${step.checked ? 'check' : 'uncheck'})`;
     case 'set_input_files': return `set_input_files(${step.target.intent}, ${step.files.length} file(s))`;
     case 'wait':          return `wait(${step.ms}ms)`;

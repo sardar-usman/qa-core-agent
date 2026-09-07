@@ -23,6 +23,11 @@ import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
  *   RULE 4: No intermediate numeric text assertion on a known-animated element.
  *           Asserting "50%" on a progress bar that is also the target of
  *           assert_freeze will almost certainly be flaky.
+ *   RULE 5: Unused captures are stripped. A capture whose varName no
+ *           assert_compare ever reads is dead weight the Critic flags every
+ *           run; nothing can reference it later (assert_compare is the only
+ *           reader), so removing it is a safe deterministic fix. Applied
+ *           in-place like RULE 2, logged as an injection.
  *
  * The gate is pure and synchronous: no network, no LLM. It reads and
  * optionally mutates the Scenario object that end_scenario is about to push
@@ -170,6 +175,22 @@ export function runGate(scenario: Scenario): GateResult {
   // floor, raising it to the floor so nothing ships with a too-short budget.
   const injections: GateInjection[] = [];
   if (violations.length === 0) {
+    // RULE 5 runs BEFORE the timeout pass so the timeout injections report
+    // indices into the final (post-strip) step list.
+    for (let i = scenario.steps.length - 1; i >= 0; i--) {
+      const step = scenario.steps[i]!;
+      if (step.kind !== 'capture') continue;
+      const used = scenario.steps.some((s) => s.kind === 'assert_compare' && s.varName === step.varName);
+      if (used) continue;
+      scenario.steps.splice(i, 1);
+      injections.push({
+        stepIndex: i,
+        assertionType: 'capture',
+        detail: `step ${i + 1}: removed unused capture "${step.varName}" — a captured value must feed a later assert_compare, or not be captured at all`,
+      });
+    }
+    injections.reverse(); // strips were collected back-to-front
+
     const hasAction = scenario.steps.some(
       (s) => s.kind === 'click' || s.kind === 'fill' || s.kind === 'press' || s.kind === 'navigate'
         || s.kind === 'select_option' || s.kind === 'set_checked' || s.kind === 'set_input_files',
@@ -179,7 +200,11 @@ export function runGate(scenario: Scenario): GateResult {
         const step = scenario.steps[i]!;
         if (step.kind !== 'assert') continue;
         const a = step.assertion;
-        if (a.type !== 'toHaveText' && a.type !== 'toContainText' && a.type !== 'toHaveAttribute' && a.type !== 'toHaveValue' && a.type !== 'toBeVisible') continue;
+        // Every timeout-bearing assertion type is floored, including
+        // toBeHidden (absence waits for the element to leave) and toHaveCount
+        // (counts settle after async actions). toHaveURL has no element and
+        // polls on its own.
+        if (a.type === 'toHaveURL') continue;
         const current = (a as { timeout?: number }).timeout;
         if (!current || current < ASYNC_TIMEOUT_FLOOR) {
           (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
