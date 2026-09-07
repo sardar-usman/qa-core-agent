@@ -20,10 +20,12 @@ import {
   loadCheckpoint,
   priorSpend,
   remainingPlan,
+  resumeHintForRun,
   stopMessage,
   writeCheckpoint,
   type Checkpoint,
 } from '../src/agent/checkpoint.js';
+import { splitCarriedVerdicts, type ScenarioVerdict } from '../src/agent/critic.js';
 import { runAgentLoop } from '../src/agent/runtime.js';
 import { createContext } from '../src/agent/tools.js';
 import type { Scenario } from '../src/agent/trace.js';
@@ -197,6 +199,80 @@ check('F6. spend carries over: prior checkpoint spend + resumed loop cost',
 const msg = stopMessage('billing/credit exhaustion', p1);
 check('G1. the stop message carries reason, state note, and the resume command',
   msg.startsWith('Run stopped: billing/credit exhaustion.') && msg.includes('State saved') && msg.includes(`npm run explore -- --resume ${p1}`), msg);
+
+/* ─── H. the resume hint fires on the ceiling path, exactly once, last ─────── */
+// The live gap: the ceiling stop wrote the checkpoint but the hint never
+// printed (the CLI's 240-char message cap ate the mid-run event). The CLI now
+// suppresses mid-run copies and prints resumeHintForRun as the LAST line.
+{
+  // A real ceiling stop through the real loop, with the checkpoint on disk.
+  const hCtx = createContext(stubPage, 40);
+  hCtx.scenarios.push(done(PLAN[0]!.name));
+  const hClient = {
+    messages: {
+      create: async () => ({
+        usage: { input_tokens: 100_000, output_tokens: 60_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        content: [{ type: 'tool_use', id: 'h1', name: 'bogus_tool', input: {} }],
+        stop_reason: 'tool_use',
+      }),
+    },
+  } as unknown as Anthropic;
+  const hRun = await runAgentLoop({
+    client: hClient, model: 'claude-opus-4-7', maxUsd: 1,
+    price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+    maxSteps: 40, ctx: hCtx, url: 'https://shop.example/', plan: [],
+  });
+  writeCheckpoint(dir, baseCp({ completedScenarios: [...hCtx.scenarios], phase: 'explored' }));
+  check('H1. the loop hit the ceiling and the checkpoint is on disk',
+    hRun.endedReason === 'cost_ceiling' && fs.existsSync(p1));
+  const ceilingStop = { kind: 'cost_ceiling', reason: 'cost ceiling hit ($1.6000 against the explorer share); raise QA_CORE_COST_CEILING and resume' };
+  const hint = resumeHintForRun({ stopped: ceilingStop, emptyCause: null, checkpointExists: fs.existsSync(p1), cpPath: p1 });
+  check('H2. the CEILING stop produces the specced hint line',
+    hint === `Run stopped: ${ceilingStop.reason}. State saved. Resume with: npm run explore -- --resume ${p1}`, hint ?? 'null');
+  check('H3. billing and api stops produce the same hint shape',
+    resumeHintForRun({ stopped: { kind: 'billing', reason: 'billing/credit exhaustion' }, emptyCause: null, checkpointExists: true, cpPath: p1 })?.startsWith('Run stopped: billing/credit exhaustion.') === true);
+  check('H4. critic-gated-all and replay-dropped-all empty runs get the hint too',
+    resumeHintForRun({ emptyCause: 'critic-gated-all', checkpointExists: true, cpPath: p1 })?.includes('the critic gated every recorded scenario') === true &&
+    resumeHintForRun({ emptyCause: 'replay-dropped-all', checkpointExists: true, cpPath: p1 })?.includes('replay/stability dropped every survivor') === true);
+  check('H5. no checkpoint on disk means no hint', resumeHintForRun({ stopped: ceilingStop, emptyCause: null, checkpointExists: false, cpPath: p1 }) === null);
+  check('H6. planner-none (nothing to resume) means no hint', resumeHintForRun({ emptyCause: 'planner-none', checkpointExists: true, cpPath: p1 }) === null);
+  const cli = fs.readFileSync('src/cli/explore.ts', 'utf8');
+  check('H7. the CLI suppresses mid-run hint copies (the 240-char cap ate them live)',
+    cli.includes(`startsWith('Run stopped:')`));
+  check('H8. the CLI prints the hint on BOTH end paths (success tail + empty guard)',
+    (cli.match(/resumeHintForRun\(/g) ?? []).length >= 2);
+}
+
+/* ─── I. carried verdicts: a resume never re-bills the critic ──────────────── */
+{
+  const v = (scenario: string, verdict: ScenarioVerdict['verdict']): ScenarioVerdict =>
+    ({ scenario, verdict, reasons: ['r'], required_fixes: [] });
+  const carried = [
+    v(`[happy] ${PLAN[0]!.name}`, 'pass'),      // prefixed echo still matches
+    v(PLAN[1]!.name, 'rework'),
+    v('a scenario that no longer exists', 'pass'), // stale: dropped
+  ];
+  const cpV = baseCp({ completedScenarios: [done(PLAN[0]!.name), done(PLAN[1]!.name)], verdicts: carried, phase: 'reviewing' });
+  writeCheckpoint(dir, cpV);
+  const loaded = loadCheckpoint(p1);
+  check('I1. verdicts round-trip through the checkpoint', loaded.verdicts?.length === 3);
+
+  const allFour = PLAN.map((s) => ({ name: s.name }));
+  const split = splitCarriedVerdicts(allFour, loaded.verdicts ?? []);
+  check('I2. scenarios with a carried verdict are NOT re-reviewed',
+    split.toReview.length === 2 && split.toReview[0]?.name === PLAN[2]!.name && split.toReview[1]?.name === PLAN[3]!.name,
+    JSON.stringify(split.toReview.map((s) => s.name)));
+  check('I3. the carried verdicts survive (prefixed echo matched, verdict kept)',
+    split.carriedVerdicts.length === 2 && split.carriedVerdicts.some((x) => x.verdict === 'rework'),
+    JSON.stringify(split.carriedVerdicts));
+  check('I4. a stale verdict for a vanished scenario is dropped',
+    !split.carriedVerdicts.some((x) => x.scenario.includes('no longer exists')));
+  const allCarried = splitCarriedVerdicts(allFour.slice(0, 2), loaded.verdicts ?? []);
+  check('I5. with every scenario carried, nothing is left to review (critic spend $0)',
+    allCarried.toReview.length === 0 && allCarried.carriedVerdicts.length === 2);
+  const none = splitCarriedVerdicts(allFour, []);
+  check('I6. a fresh run (no carried verdicts) reviews everything', none.toReview.length === 4 && none.carriedVerdicts.length === 0);
+}
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);

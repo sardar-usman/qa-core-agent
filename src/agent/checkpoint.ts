@@ -3,6 +3,8 @@ import path from 'node:path';
 import type { PlannedScenario } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
 import type { RunReport, Scenario } from './trace.js';
+import type { ScenarioVerdict } from './critic.js';
+import type { EmptyRunCause } from './reconcile.js';
 import { scenarioNameKey } from './rule-coverage.js';
 
 /**
@@ -54,6 +56,12 @@ export interface Checkpoint {
   fillableFields: number;
   /** Full traces of every scenario completed so far. */
   completedScenarios: Scenario[];
+  /**
+   * Critic verdicts from the original run, when the run got that far. A
+   * resume carries these instead of re-reviewing the same scenarios, so the
+   * critic is never billed twice for the same trace.
+   */
+  verdicts?: ScenarioVerdict[];
   spentUsd: CheckpointSpend;
   phase: CheckpointPhase;
   /** completedScenarios.length, as an index into plan (for the resume banner). */
@@ -136,6 +144,7 @@ export function loadCheckpoint(file: string): Checkpoint {
     plan: cp.plan,
     fillableFields: typeof cp.fillableFields === 'number' ? cp.fillableFields : 0,
     completedScenarios: cp.completedScenarios,
+    ...(Array.isArray(cp.verdicts) ? { verdicts: cp.verdicts } : {}),
     spentUsd: {
       planner: Number(spend.planner) || 0,
       explorer: Number(spend.explorer) || 0,
@@ -172,6 +181,36 @@ export function priorSpend(spend: CheckpointSpend): number {
 /** The one message printed on every clean stop that leaves a checkpoint behind. */
 export function stopMessage(reason: string, cpPath: string): string {
   return `Run stopped: ${reason}. State saved. Resume with: npm run explore -- --resume ${cpPath}`;
+}
+
+/**
+ * The SINGLE resume hint the CLI prints as the LAST line of an abnormal end,
+ * or null when no hint is due (no checkpoint on disk, or a planner-none run
+ * where there is nothing to resume). Every abnormal end that retains a
+ * checkpoint gets exactly one hint: an explicit stop (ceiling / billing /
+ * api), or an empty pipeline outcome (explorer-none / critic-gated-all /
+ * replay-dropped-all). The CLI suppresses any mid-run "Run stopped:" event
+ * text and prints only this, so the hint is always exactly once and always
+ * last. Pure and exported so smoke-checkpoint locks every branch.
+ */
+export function resumeHintForRun(opts: {
+  stopped?: { kind: string; reason: string };
+  emptyCause?: EmptyRunCause | null;
+  checkpointExists: boolean;
+  cpPath: string;
+}): string | null {
+  if (!opts.checkpointExists) return null;
+  if (opts.stopped) return stopMessage(opts.stopped.reason, opts.cpPath);
+  switch (opts.emptyCause) {
+    case 'critic-gated-all':
+      return stopMessage('the critic gated every recorded scenario (traces and verdicts are in the checkpoint)', opts.cpPath);
+    case 'replay-dropped-all':
+      return stopMessage('replay/stability dropped every survivor', opts.cpPath);
+    case 'explorer-none':
+      return stopMessage('the explorer recorded no scenarios', opts.cpPath);
+    default:
+      return null;
+  }
 }
 
 /** How an error at an Anthropic call site should end the run. */

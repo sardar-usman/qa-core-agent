@@ -10,7 +10,7 @@ import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } f
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
-import { deleteCheckpoint, loadCheckpoint, type Checkpoint } from '../agent/checkpoint.js';
+import { deleteCheckpoint, loadCheckpoint, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import type { PlannedScenario } from '../agent/planner.js';
 
 /**
@@ -407,6 +407,12 @@ async function main(): Promise<void> {
         case 'tool_result':
           if (!e.ok) console.log(`        ✗ ${e.error}`); break;
         case 'message':
+          // Resume hints are printed exactly once, as the LAST line of output
+          // (see resumeHintForRun at the end of main). The mid-run copies the
+          // runtime emits for the gateway are suppressed here; without this,
+          // the 240-char cap below also silently ate them, which is how two
+          // live ceiling runs ended with no hint at all.
+          if (e.text.startsWith('Run stopped:')) break;
           if (e.text.length < 240) console.log(`      ${e.text.trim()}`); break;
         case 'usage':
           process.stdout.write(`      $${e.usd.toFixed(4)} · ${e.tokens} tok\r`); break;
@@ -501,6 +507,16 @@ async function main(): Promise<void> {
       console.error(`  Kept ${path.relative(process.cwd(), path.join(outDir, 'run-report.json'))} — full verdicts and trace, the spend is not lost.`);
     }
     console.error(`  Cost so far: $${totalUsd.toFixed(4)}`);
+    // The one resume hint, always the LAST line of an abnormal end that
+    // retains a checkpoint (critic-gated-all, replay-dropped-all, and any
+    // explicit stop the report carries).
+    const guardHint = resumeHintForRun({
+      ...(result.stopped ? { stopped: result.stopped } : {}),
+      emptyCause: diag?.cause ?? null,
+      checkpointExists: fs.existsSync(path.join(outDir, 'checkpoint.json')),
+      cpPath: path.relative(process.cwd(), path.join(outDir, 'checkpoint.json')),
+    });
+    if (guardHint) console.error(guardHint);
     process.exit(2);
   }
 
@@ -556,7 +572,6 @@ async function main(): Promise<void> {
     if (heldCheckpoint !== undefined) {
       fs.writeFileSync(cpFile, heldCheckpoint);
       console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped?.reason})`);
-      console.log(`                resume with: npm run explore -- --resume ${path.relative(process.cwd(), cpFile)}`);
     }
   } else {
     const r = transcribe({ report: result, outDir, name: specName });
@@ -619,6 +634,21 @@ async function main(): Promise<void> {
     }
   } else {
     console.log('\nRun: npx playwright test ' + path.relative(process.cwd(), primaryPath));
+  }
+
+  // The one resume hint, always the LAST line when the run stopped early
+  // (ceiling, billing, api). The framework above still shipped with whatever
+  // completed; the checkpoint continues the rest.
+  const finalCpPath = path.join(outDir, 'checkpoint.json');
+  const finalHint = resumeHintForRun({
+    ...(result.stopped ? { stopped: result.stopped } : {}),
+    emptyCause: null,
+    checkpointExists: fs.existsSync(finalCpPath),
+    cpPath: path.relative(process.cwd(), finalCpPath),
+  });
+  if (finalHint) {
+    console.log('');
+    console.log(finalHint);
   }
 }
 

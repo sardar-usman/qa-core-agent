@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js'
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, type PlannedScenario } from './planner.js';
-import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
+import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitCarriedVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -566,6 +566,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     fillableFields: opts.resume?.fillableFields ?? 0,
     discovery: opts.resume?.discovery as RunReport['discovery'],
     completed: [...restoredCompleted],
+    verdicts: opts.resume?.verdicts as ScenarioVerdict[] | undefined,
     spend: opts.resume
       ? { ...opts.resume.spentUsd }
       : { planner: 0, explorer: 0, critic: 0, repair: 0 },
@@ -587,6 +588,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     plan: cpState.plan,
     fillableFields: cpState.fillableFields,
     completedScenarios: cpState.completed,
+    ...(cpState.verdicts && cpState.verdicts.length > 0 ? { verdicts: cpState.verdicts } : {}),
     spentUsd: { ...cpState.spend },
     phase: cpState.phase,
     nextScenarioIndex: cpState.completed.length,
@@ -712,7 +714,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           const cpFile = saveCheckpoint();
           opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
           process.removeListener('SIGINT', onSigint);
-          throw new Error(`Run stopped: ${cls.reason}. State saved to ${cpFile}.`);
+          throw new Error(stopMessage(cls.reason, cpFile));
         }
         opts.onEvent?.({
           type: 'message',
@@ -804,7 +806,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         const cpFile = saveCheckpoint();
         opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
         process.removeListener('SIGINT', onSigint);
-        throw new Error(`Run stopped: ${cls.reason}. State saved to ${cpFile}.`);
+        throw new Error(stopMessage(cls.reason, cpFile));
       }
       process.removeListener('SIGINT', onSigint);
       throw err;
@@ -1070,17 +1072,31 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     });
   }
 
-  // Step 3 — Critic (Sonnet). Reviews what the Explorer recorded.
+  // Step 3 — Critic (Sonnet). Reviews what the Explorer recorded. A resumed
+  // run carries the verdicts the original run already paid for: only the
+  // scenarios with no checkpoint verdict are reviewed, never a double spend.
   let review: RunReport['review'];
   if (!opts.skipCritic && scenarios.length > 0) {
     opts.onEvent?.({ type: 'critic_started' });
     try {
-      const c = await critique({ scenarios, url: opts.url, apiKey });
-      review = { verdicts: c.verdicts, summary: c.summary };
-      // Accumulate (a resumed run seeds criticUsd with the prior spend).
-      cost.criticUsd = (cost.criticUsd ?? 0) + c.costUsd;
-      opts.onEvent?.({ type: 'critic_done', verdicts: c.verdicts, usd: c.costUsd });
-      if (c.verdicts.length === 0) {
+      const { toReview, carriedVerdicts } = splitCarriedVerdicts(scenarios, opts.resume?.verdicts ?? []);
+      if (carriedVerdicts.length > 0) {
+        opts.onEvent?.({
+          type: 'message',
+          text: `Resume: ${carriedVerdicts.length} verdict(s) carried from the original run; reviewing ${toReview.length} new scenario(s).`,
+        });
+      }
+      if (toReview.length === 0) {
+        review = { verdicts: carriedVerdicts, summary: 'All verdicts carried from the checkpoint; no new scenarios to review.' };
+        opts.onEvent?.({ type: 'critic_done', verdicts: carriedVerdicts, usd: 0 });
+      } else {
+        const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
+        review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        // Accumulate (a resumed run seeds criticUsd with the prior spend).
+        cost.criticUsd = (cost.criticUsd ?? 0) + c.costUsd;
+        opts.onEvent?.({ type: 'critic_done', verdicts: review.verdicts, usd: c.costUsd });
+      }
+      if (review.verdicts.length === 0) {
         // The call succeeded and was paid for, but nothing parsed. That means
         // the response format drifted and the critic gate cannot act this run.
         // Say so loudly instead of printing "0 verdicts" as if it were normal.
@@ -1387,9 +1403,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     attachRuleIds(emittedScenarios, planResult.scenarios);
   }
 
-  // Review boundary: final spend snapshot into the checkpoint (kept on any
-  // abnormal end; the CLI deletes it only after the framework is written).
+  // Review boundary: final spend + verdict snapshot into the checkpoint (kept
+  // on any abnormal end; the CLI deletes it only after the framework is
+  // written). Carrying the FINAL verdicts means a resume never re-reviews a
+  // scenario the original run already paid the critic for.
   cpState.spend.critic = cost.criticUsd ?? 0;
+  if (review?.verdicts.length) cpState.verdicts = review.verdicts;
   cpState.phase = 'reviewing';
   saveCheckpoint();
 
