@@ -102,6 +102,12 @@ Output is then transcribed by `pom.ts` (default — full POM framework) or `tran
 
 39. **A capture read waits for its target to render before reading.** A replay read a list count of 0 before the SPA rendered, then failed a correct `assert_compare(less)` (nothing is less than 0). `awaitCaptureReady` (replay.ts) polls the capture target to at least one match before the read, driven by the relation the var feeds (`relationsByVarName`): skipped for 'absent' (zero is a legitimate immediate baseline) and for a var no assert_compare reads. The wait is a GRACE, not an assertion — on timeout the read proceeds with whatever is there, so a legitimately empty baseline (capture 0, add, assert greater) still works. The live count-capture tool applies the same grace (tools.ts, `ADAPTIVE_FLOOR_MS` cap); text/attribute captures were already covered by the resolver's own polling. Locked by `smoke-capture-compare`.
 
+40. **Every abnormal end leaves a resumable checkpoint; billing errors never lose completed work.** `checkpoint.json` is written ATOMICALLY (temp + rename, `writeCheckpoint` in `src/agent/checkpoint.ts`) into the run output directory after every completed scenario and at each phase boundary (discovery done, plan done, explorer done, review). It carries the url, flags, discovery result, requirements map, plan, full completed traces, itemized spend, and phase. It is deleted ONLY on fully successful completion (framework written); a cost-ceiling stop, a billing/credit exhaustion, a persistent API failure (classified by `classifyRunError`; a generic error still throws), and SIGINT all keep it and print one line: `Run stopped: <reason>. State saved. Resume with: npm run explore -- --resume <path>` (`stopMessage`). Billing/API failures stop the loop CLEANLY like the ceiling path (salvage, `endedReason: 'run_stopped'`), never crash. `RunReport.stopped` tells the CLI to keep the checkpoint (held aside during zipping so it never ships inside the framework zip). Locked by `smoke-checkpoint` and `smoke-failure-classify`.
+
+41. **`--resume` never re-explores a completed scenario.** Resume restores flags, discovery, the map, the plan, completed traces, and spend from the checkpoint; `remainingPlan` (name-key matching, rename-tolerant) picks what is left; the Explorer runs ONLY that remainder; the pipeline then runs on the UNION of restored + new scenarios exactly as a single run would. Spend carries over under the SAME total ceiling accounting (the env ceiling read at resume time may be higher, which is the top-up flow). Conflicting flags (different URL, `--srs`, `--features`, `--urls`, `--discover`, a different `--lang`/pom mode, `--review`, `--from-plan`) are an error naming the conflict. The console banner states: resumed count, continuing position, spend so far. Locked by `smoke-checkpoint`.
+
+42. **A volatile generated-id page is reached by durable interaction, never by its URL.** Discovery tags pages whose path carries a generated id (`isVolatilePath`: uuid, 16+ hex, or 20+ alphanumeric-with-digits segment) as `volatile`; the page filter prefers stable-path pages and keeps AT MOST ONE volatile page (`capVolatile`, applied to the LLM pick, the fallback, and passthrough sets). The Planner receives `VOLATILE_PAGE_GUIDANCE` for such a page and the Explorer's plan text marks the URL `VOLATILE ... do NOT navigate to it directly`: scenarios start from the entry/listing page and click through by the item's VISIBLE NAME, so the recorded trace (and therefore the emitted spec) replays the durable path. Doctrine rule 7 states the same ban. Locked by `smoke-page-filter` (detection, preference, cap, prompt presence).
+
 ---
 
 ## Standard verification (run before claiming "done")
@@ -128,7 +134,8 @@ for s in smoke-tools smoke-finish smoke-hascount smoke-planner-parse \
          smoke-srs-parse smoke-plan-rule-tags smoke-rule-coverage \
          smoke-critic-parse smoke-discovery-ladder smoke-page-filter \
          smoke-derivation-report smoke-cost-ceiling smoke-plan-enforcement \
-         smoke-repair-pass smoke-empty-diagnosis smoke-css-prefix; do
+         smoke-repair-pass smoke-empty-diagnosis smoke-css-prefix \
+         smoke-checkpoint smoke-failure-classify; do
   echo "=== $s ==="
   npx tsx scripts/$s.ts
 done

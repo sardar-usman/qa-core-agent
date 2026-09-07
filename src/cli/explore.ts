@@ -10,6 +10,7 @@ import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } f
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { deleteCheckpoint, loadCheckpoint, type Checkpoint } from '../agent/checkpoint.js';
 import type { PlannedScenario } from '../agent/planner.js';
 
 /**
@@ -62,6 +63,12 @@ interface ParsedArgs {
   discover: boolean;
   /** Explicit page list from --urls (comma-separated). */
   urls: string[];
+  /** Path to a checkpoint.json to resume from (--resume). */
+  resume?: string;
+  /** True when --lang was passed explicitly (resume conflict detection). */
+  langProvided: boolean;
+  /** True when --pom / --no-pom / --inline was passed explicitly. */
+  pomProvided: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -78,16 +85,26 @@ function parseArgs(argv: string[]): ParsedArgs {
     features: [],
     discover: false,
     urls: [],
+    langProvided: false,
+    pomProvided: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--lang') { const v = args[++i]; parsed.lang = (v === 'js' ? 'js' : 'ts'); }
+    if (a === '--lang') { const v = args[++i]; parsed.lang = (v === 'js' ? 'js' : 'ts'); parsed.langProvided = true; }
     else if (a === '--name') parsed.name = args[++i];
     else if (a === '--out') parsed.outBase = args[++i];
     else if (a === '--review') parsed.review = true;
     else if (a === '--from-plan') parsed.fromPlan = args[++i];
-    else if (a === '--no-pom' || a === '--inline') parsed.pom = false;
-    else if (a === '--pom') parsed.pom = true;
+    else if (a === '--no-pom' || a === '--inline') { parsed.pom = false; parsed.pomProvided = true; }
+    else if (a === '--pom') { parsed.pom = true; parsed.pomProvided = true; }
+    else if (a === '--resume') {
+      const v = args[++i];
+      if (!v) {
+        console.error('✗ --resume expects a checkpoint.json path');
+        process.exit(1);
+      }
+      parsed.resume = v;
+    }
     else if (a === '--no-replay') parsed.replay = false;
     else if (a === '--replay') parsed.replay = true;
     else if (a === '--no-stability') parsed.stability = false;
@@ -136,13 +153,14 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
     else if (a && !parsed.url) parsed.url = a;
   }
-  if (!parsed.url && !parsed.fromPlan) {
+  if (!parsed.url && !parsed.fromPlan && !parsed.resume) {
     console.error('Usage:');
     console.error('  npm run explore -- <url> [--lang ts|js] [--name foo] [--out dir] [--review]');
     console.error('                          [--features login,cart] [--srs requirements.md] [--discover]');
     console.error('                          [--urls /login,/cart] [--no-pom] [--no-replay]');
     console.error('                          [--no-stability] [--stability N] [--no-stabilize]');
     console.error('                          [--stabilize-attempts N]');
+    console.error('  npm run explore -- --resume <checkpoint.json>   (continue an interrupted run)');
     console.error('  npm run explore -- --from-plan <plan.csv> [--lang ts|js] [--name foo] [--no-pom]');
     console.error('                                            [--no-replay] [--no-stability] [--stability N]');
     console.error('                                            [--no-stabilize] [--stabilize-attempts N]');
@@ -209,11 +227,66 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv);
   const base = args.outBase ?? path.join(process.cwd(), 'output');
 
+  // Checkpoint resume (--resume): load, check conflicts, restore flags.
+  let resumeCp: Checkpoint | undefined;
+  if (args.resume) {
+    try {
+      resumeCp = loadCheckpoint(args.resume);
+    } catch (err) {
+      console.error(`✗ ${(err as Error).message}`);
+      process.exit(1);
+    }
+    const conflicts: string[] = [];
+    if (args.url) {
+      const check = normalizeAndValidateUrl(args.url);
+      if (check.ok && check.url !== resumeCp.url) {
+        conflicts.push(`URL ${check.url} conflicts with the checkpoint's ${resumeCp.url}`);
+      }
+    }
+    if (args.langProvided && args.lang !== resumeCp.flags.lang) {
+      conflicts.push(`--lang ${args.lang} conflicts with the checkpoint's ${resumeCp.flags.lang}`);
+    }
+    if (args.pomProvided && args.pom !== resumeCp.flags.pom) {
+      conflicts.push(`--${args.pom ? 'pom' : 'no-pom'} conflicts with the checkpoint's ${resumeCp.flags.pom ? 'pom' : 'no-pom'} mode`);
+    }
+    if (args.srs) conflicts.push('--srs conflicts with --resume (the checkpoint already carries the requirements map)');
+    if (args.features.length > 0) conflicts.push('--features conflicts with --resume (features are recorded in the checkpoint)');
+    if (args.urls.length > 0) conflicts.push('--urls conflicts with --resume (the page set is recorded in the checkpoint)');
+    if (args.discover) conflicts.push('--discover conflicts with --resume (discovery is recorded in the checkpoint)');
+    if (args.review) conflicts.push('--review conflicts with --resume');
+    if (args.fromPlan) conflicts.push('--from-plan conflicts with --resume');
+    if (conflicts.length > 0) {
+      console.error('✗ Cannot resume:');
+      for (const c of conflicts) console.error(`  • ${c}`);
+      process.exit(1);
+    }
+    // Reachability: a resume against a URL that no longer answers should fail
+    // fast and free, before any model call.
+    try {
+      await fetch(resumeCp.url, { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+    } catch (err) {
+      console.error(`✗ Cannot resume: ${resumeCp.url} is not reachable (${(err as Error).message}). Check the network and try again.`);
+      process.exit(1);
+    }
+    args.lang = resumeCp.flags.lang;
+    args.pom = resumeCp.flags.pom;
+    args.features = resumeCp.flags.features;
+  }
+
   // Resolve URL + scenarios depending on mode (review-resume vs fresh).
   let url: string;
   let fromPlan: PlannedScenario[] | undefined;
   let outDir: string;
-  if (args.fromPlan) {
+  if (resumeCp) {
+    url = resumeCp.url;
+    // The run continues in the directory the checkpoint lives in, so the
+    // report, the checkpoint, and the eventual framework stay together.
+    // Nothing is wiped: the checkpoint IS the state we are resuming.
+    outDir = path.dirname(path.resolve(args.resume!));
+    console.log(`▸ Resuming ${url}`);
+    console.log(`  checkpoint: ${path.relative(process.cwd(), path.resolve(args.resume!))}`);
+    console.log(`  ${resumeCp.completedScenarios.length} of ${resumeCp.plan.length} scenario(s) already completed`);
+  } else if (args.fromPlan) {
     const parsed = readPlanFile(args.fromPlan);
     url = parsed.url;
     fromPlan = parsed.scenarios;
@@ -262,8 +335,13 @@ async function main(): Promise<void> {
   console.log('');
 
   // SRS ingestion — all of it happens BEFORE the browser launches, so a bad
-  // document or an empty map fails fast and free.
+  // document or an empty map fails fast and free. A resumed run restores the
+  // map from the checkpoint instead of rebuilding it (no Haiku call).
   let requirements: RequirementsMap | undefined;
+  if (resumeCp?.requirementsMap) {
+    requirements = resumeCp.requirementsMap;
+    console.log(`  SRS: requirements map restored from the checkpoint (${requirements.features.length} feature(s))`);
+  }
   if (args.srs) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -304,8 +382,13 @@ async function main(): Promise<void> {
     maxStabilizeAttempts: args.stabilizeAttempts,
     features: args.features,
     requirements,
-    discover: args.discover,
-    urls: args.urls,
+    discover: resumeCp?.flags.discover ?? args.discover,
+    urls: resumeCp ? resumeCp.flags.urls : args.urls,
+    resume: resumeCp,
+    checkpointFlags: {
+      pom: args.pom,
+      ...(args.srs ? { srsPath: args.srs } : resumeCp?.flags.srs ? { srsPath: resumeCp.flags.srs } : {}),
+    },
     onEvent: (e) => {
       switch (e.type) {
         case 'plan_started':
@@ -433,6 +516,12 @@ async function main(): Promise<void> {
       siteName: hostnameOf(url),
       features: args.features,
     });
+    // Checkpoint lifecycle: never ships inside the framework zip. A fully
+    // successful run (framework written) deletes it; a stopped run holds it
+    // aside during zipping and puts it back so --resume still works.
+    const cpFile = path.join(outDir, 'checkpoint.json');
+    const heldCheckpoint = result.stopped && fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8') : undefined;
+    deleteCheckpoint(outDir);
     primaryPath = scaffoldResult.pomResult.specFile;
     scenarios = scaffoldResult.pomResult.scenarios;
     const features = scaffoldResult.pomResult.features;
@@ -464,11 +553,22 @@ async function main(): Promise<void> {
     } catch (err) {
       console.log(`  zip:          skipped — ${(err as Error).message}`);
     }
+    if (heldCheckpoint !== undefined) {
+      fs.writeFileSync(cpFile, heldCheckpoint);
+      console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped?.reason})`);
+      console.log(`                resume with: npm run explore -- --resume ${path.relative(process.cwd(), cpFile)}`);
+    }
   } else {
     const r = transcribe({ report: result, outDir, name: specName });
     primaryPath = r.specPath;
     scenarios = r.scenarios;
     console.log(`\nWrote ${path.relative(process.cwd(), r.specPath)} (${scenarios} scenarios)`);
+    if (result.stopped) {
+      const cpFile = path.join(outDir, 'checkpoint.json');
+      console.log(`Checkpoint kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped.reason})`);
+    } else {
+      deleteCheckpoint(outDir);
+    }
   }
   const totalUsd = result.cost.usd + (result.cost.plannerUsd ?? 0) + (result.cost.criticUsd ?? 0);
   console.log(`Cost: $${totalUsd.toFixed(4)} total ` +
@@ -536,7 +636,7 @@ function hostnameOf(url: string): string {
  * inspectable without unzipping.
  */
 function slimFrameworkDir(dir: string): void {
-  const KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json'];
+  const KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json'];
   const kept: Array<{ name: string; content: string }> = [];
   for (const name of KEEP) {
     const p = path.join(dir, name);

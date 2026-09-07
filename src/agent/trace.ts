@@ -267,13 +267,19 @@ export interface RunReport {
   url: string;
   language: 'ts' | 'js';
   /**
+   * Set when the run ended abnormally (cost ceiling, billing exhaustion,
+   * persistent API failure). The CLI keeps checkpoint.json when this is set,
+   * so the run can be resumed instead of restarted.
+   */
+  stopped?: { kind: 'cost_ceiling' | 'billing' | 'api'; reason: string };
+  /**
    * Multi-page discovery record: the rung that produced the page set, the
    * final (filtered) pages, and every warning the ladder recorded. Absent on
    * single-page runs.
    */
   discovery?: {
     method: string;
-    pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string }>;
+    pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
     warnings: string[];
   };
   scenarios: Scenario[];

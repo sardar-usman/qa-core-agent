@@ -42,6 +42,45 @@ export interface DiscoveredPage {
   source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry';
   /** Feature this page belongs to, when the source knows it (SRS rung). */
   feature?: string;
+  /**
+   * True when the path carries a generated identifier (product/<long-id>).
+   * Such URLs rot when the site reseeds its data, so the page filter keeps at
+   * most one and the Planner steers scenarios to reach it by durable
+   * interaction (listing + click by name), never by direct URL.
+   */
+  volatile?: boolean;
+}
+
+// A UUID, a long hex run, or a long alphanumeric segment with digits: the
+// shapes generated catalog ids take (uuid, ulid, mongo id, nanoid).
+const UUID_SEGMENT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_SEGMENT_RE = /^[0-9a-f]{16,}$/i;
+const LONG_ID_SEGMENT_RE = /^[a-z0-9_-]{20,}$/i;
+
+/**
+ * Does this pathname contain a generated-id segment? The heuristic: a UUID, a
+ * 16+ char hex run, or a 20+ char alphanumeric segment that contains at least
+ * one digit (a 20-char English word is not an id; a ulid/nanoid always mixes
+ * digits in). Exported for the smoke and the page filter.
+ */
+export function isVolatilePath(pathname: string): boolean {
+  return pathname.split('/').some((seg) => {
+    if (!seg) return false;
+    if (UUID_SEGMENT_RE.test(seg)) return true;
+    if (HEX_SEGMENT_RE.test(seg) && /\d/.test(seg)) return true;
+    return LONG_ID_SEGMENT_RE.test(seg) && /\d/.test(seg);
+  });
+}
+
+/** Tag each page whose path looks like a generated-id URL. */
+function tagVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
+  return pages.map((p) => {
+    try {
+      return isVolatilePath(new URL(p.url).pathname) ? { ...p, volatile: true } : p;
+    } catch {
+      return p;
+    }
+  });
 }
 
 /**
@@ -273,7 +312,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
       }
     }
     if (pages.length > 0) {
-      return { pages, method: 'srs', warnings };
+      return { pages: tagVolatile(pages), method: 'srs', warnings };
     }
     warnings.push('SRS map present but no feature states a URL; falling through to the next rung.');
   }
@@ -296,7 +335,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     }
     const pages = dedupeByPathname(resolved).map((u): DiscoveredPage => ({ url: u.toString(), source: 'user' }));
     if (pages.length > 0) {
-      return { pages, method: 'user', warnings };
+      return { pages: tagVolatile(pages), method: 'user', warnings };
     }
     warnings.push('--urls was provided but none of its values resolved to a usable URL; falling through.');
   }
@@ -326,13 +365,13 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     // Rung 3 — sitemap.
     const sitemapPages = await sitemapRung(entry, robots, fetchFn, warnings);
     if (sitemapPages.length > 0) {
-      return { pages: sitemapPages, method: 'sitemap', warnings };
+      return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings };
     }
 
     // Rung 4 — polite crawl (plain fetch).
     const crawlPages = await crawlRung(entry, robots, fetchFn, opts.crawlDelayMs ?? CRAWL_DELAY_MS, warnings);
     if (crawlPages.length > 0) {
-      return { pages: crawlPages, method: 'crawl', warnings };
+      return { pages: tagVolatile(crawlPages), method: 'crawl', warnings };
     }
 
     // Rung 4b — browser-assisted crawl. Only when the fetch crawl yielded
@@ -361,7 +400,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
           source: 'browser-crawl',
         });
         if (rendered.length > 0) {
-          return { pages: rendered, method: 'browser-crawl', warnings };
+          return { pages: tagVolatile(rendered), method: 'browser-crawl', warnings };
         }
       } finally {
         await closeCollector?.();

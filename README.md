@@ -240,6 +240,23 @@ The remote sources are polite by design: robots.txt Disallow rules are always ho
 
 Runs are protected by a cost ceiling (`QA_CORE_COST_CEILING`, default $2). Hitting it no longer loses your work: the agent stops exploring, keeps every completed scenario, finishes the pipeline on them, and reports how many planned scenarios were never explored. Multi-page runs cover more ground, so give them a higher ceiling.
 
+Detail pages behind generated ids (`product/<long-random-id>`) are handled carefully: the page filter prefers stable-path pages and keeps at most one such volatile page, and its scenarios reach the page the way a user does (open the listing, click the item by its visible name) instead of hardcoding a URL that breaks the next time the site reseeds its data.
+
+### Crash-safe checkpoint/resume
+
+Every run writes `checkpoint.json` into its output directory after each completed scenario and at every phase boundary (discovery done, plan done, explorer done). The write is atomic, so a crash can never corrupt it. On a fully successful run the file is deleted; on ANY abnormal end it stays:
+
+* the cost ceiling was hit
+* your API credits ran out mid-run (the run stops cleanly, nothing crashes)
+* the API kept failing after retries
+* you pressed Ctrl+C
+
+Each of those prints the same line: `Run stopped: <reason>. State saved. Resume with: npm run explore -- --resume <path>`. Resuming restores the plan, every completed scenario, and the spend so far, then continues where the run left off — completed scenarios are never explored (or billed) twice. The ceiling top-up flow is exactly this: hit the ceiling, raise `QA_CORE_COST_CEILING`, resume the checkpoint, and the new ceiling applies with the old spend counted against it.
+
+```bash
+npm run explore -- --resume output/shop-automation-framework/checkpoint.json
+```
+
 Each discovered page is then planned separately (up to 4 scenarios per page, 20 per run, planner cost itemized per page), and every scenario stays self-contained: it navigates to its own page first. Without all three flags, nothing changes: the run covers the entry page exactly as before.
 
 ### Review mode (sign-off before automation)

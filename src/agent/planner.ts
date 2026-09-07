@@ -38,7 +38,26 @@ export interface PlannedScenario {
    * the no-discovery plan shape is unchanged.
    */
   pageUrl?: string;
+  /**
+   * True when pageUrl carries a generated id that rots on reseed. The
+   * Explorer reaches such a page by durable interaction (listing + click by
+   * name), never by navigating to the GUID URL directly.
+   */
+  volatilePage?: boolean;
 }
+
+/**
+ * Steering block appended when the planned page's URL carries a generated id.
+ * The emitted spec replays whatever the Explorer records, so the durable path
+ * (listing + click by visible name) must be planned in, not patched later.
+ * Exported so the smoke locks its presence and wording.
+ */
+export const VOLATILE_PAGE_GUIDANCE = `This page's URL contains a GENERATED identifier (a product/catalog id). Such URLs rot when the site reseeds its data, so a test that navigates to this URL directly will break for reasons that are not regressions.
+Plan every scenario on this page to reach it by DURABLE INTERACTION instead:
+- Start from the site's entry or listing page.
+- Click through to this item by its VISIBLE NAME (the product title, the link text), never by the generated id.
+- Name the durable path in the scenario (e.g. "opened <item name> from the listing and ...").
+Never plan a scenario that hardcodes this URL or asserts the generated id itself.`;
 
 export interface PlanResult {
   scenarios: PlannedScenario[];
@@ -501,6 +520,12 @@ export async function plan(opts: {
    * input and output format are byte-identical to the pre-SRS behaviour.
    */
   requirements?: RequirementsMap;
+  /**
+   * True when the page URL carries a generated id (multi-page discovery
+   * marked it volatile). Appends VOLATILE_PAGE_GUIDANCE so every scenario
+   * reaches the page by durable interaction, never the GUID URL.
+   */
+  volatilePage?: boolean;
 }): Promise<PlanResult> {
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
@@ -547,6 +572,8 @@ export async function plan(opts: {
     // When the page has content-bearing iframes, anchor the Planner on that
     // content explicitly. The SYSTEM rule already forbids planning only around
     // chrome, but listing the real frame content here makes Haiku act on it.
+    const volatileBlock = opts.volatilePage ? `\n\n${VOLATILE_PAGE_GUIDANCE}` : '';
+
     const contentFrames = snapshot.frames.filter(frameHasContent);
     const iframeBlock = contentFrames.length > 0
       ? `\n\nThis page has ${contentFrames.length} content-bearing iframe${contentFrames.length === 1 ? '' : 's'}. ` +
@@ -574,7 +601,7 @@ export async function plan(opts: {
       messages: [
         {
           role: 'user',
-          content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}\n\nPropose scenarios.`,
+          content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}${volatileBlock}\n\nPropose scenarios.`,
         },
       ],
     });

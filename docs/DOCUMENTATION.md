@@ -528,6 +528,7 @@ npm run explore -- <url>
                    [--srs <file>]            requirements document (.md/.txt/.pdf/.docx) for rule-driven planning
                    [--discover]              multi-page discovery (sitemap, then polite crawl)
                    [--urls /login,/cart]     explicit page list (absolute URLs or site-absolute paths)
+                   [--resume <checkpoint>]   continue an interrupted run from its checkpoint.json
 ```
 
 **Examples:**
@@ -602,6 +603,35 @@ robots.txt is honored by BOTH the sitemap and crawl rungs; a robots file that di
 **Relevance filter.** A sitemap or crawl set is narrowed by one Haiku call (`src/agent/page-filter.ts`): the most relevant page per feature (max 8 total), or up to 5 distinct-feature-looking pages when no feature list exists. If the call fails, the deterministic fallback keeps the shallowest unique-pathname pages. SRS and `--urls` page sets are never trimmed.
 
 **Multi-page planning budgets.** Each discovered page is snapshotted and planned separately, with its feature context and that feature's rules from the map: up to 4 scenarios per page, 20 planned scenarios per run (planning stops at the cap). Planner cost is itemized per page in the run log. Every scenario carries its page URL and stays self-contained (it navigates to its page first).
+
+**Volatile detail pages.** A page whose path carries a generated id (a uuid, a long hex run, or a 20+ character alphanumeric segment with digits, e.g. `product/01jx8f2k9d3m7q5w8r2t4y6z`) is marked `volatile` in the discovery result. Such URLs rot when the site reseeds its data, so the page filter prefers stable-path pages (login, contact, category listings) and keeps at most ONE volatile page. Scenarios planned for that page reach it by durable interaction: navigate to the listing, click the item by its visible name. The Explorer records that path and the emitted spec replays it; the generated-id URL is never hardcoded.
+
+---
+
+### Checkpoint/resume (`--resume`)
+
+Every run writes `checkpoint.json` into its output directory: after each completed scenario, and at each phase boundary (discovery done, plan done, explorer done, review). The write is atomic (temp file + rename), so a crash mid-write can never corrupt the previous checkpoint. The file carries the url, flags, discovery result, requirements map, plan, the full traces of every completed scenario, the itemized spend (planner/explorer/critic/repair), and the phase.
+
+**What triggers a save-and-stop.** The checkpoint is kept and the run prints `Run stopped: <reason>. State saved. Resume with: npm run explore -- --resume <path>` when:
+
+1. The cost ceiling is hit (the run still salvages completed scenarios and finishes the pipeline on them, exactly as before; the checkpoint is the addition).
+2. API credits run out mid-run (billing errors are classified and stop the run cleanly, never a crash).
+3. The API keeps failing after the SDK's own retries.
+4. Ctrl+C (a SIGINT handler saves before exiting).
+
+On a fully successful run (framework written), the checkpoint is deleted.
+
+**How to resume.**
+
+```bash
+npm run explore -- --resume output/<brand>-automation-framework/checkpoint.json
+```
+
+Resume validates the checkpoint version, checks the target URL still answers, restores everything, and continues the Explorer from the first scenario the checkpoint does not account for. Completed scenarios are never re-explored or re-billed; the pipeline (critic, replay, stability, transcription, coverage) then runs on the union of restored and new scenarios exactly as a single run would. The console marks it: `Resuming: N completed scenario(s) restored, continuing at scenario N+1 of M, spend so far $X`.
+
+**Ceiling top-up flow.** Spend carries over under the same total ceiling accounting, and the ceiling is read fresh at resume time. So after a ceiling stop: raise `QA_CORE_COST_CEILING`, resume the checkpoint, and the run continues with the prior spend counted against the new ceiling.
+
+Mixing `--resume` with a different URL or a conflicting flag (`--srs`, `--features`, `--urls`, `--discover`, a different `--lang` or pom mode, `--review`, `--from-plan`) is an error that names the conflict.
 
 ---
 
