@@ -108,6 +108,12 @@ Output is then transcribed by `pom.ts` (default — full POM framework) or `tran
 
 42. **A volatile generated-id page is reached by durable interaction, never by its URL.** Discovery tags pages whose path carries a generated id (`isVolatilePath`: uuid, 16+ hex, or 20+ alphanumeric-with-digits segment) as `volatile`; the page filter prefers stable-path pages and keeps AT MOST ONE volatile page (`capVolatile`, applied to the LLM pick, the fallback, and passthrough sets). The Planner receives `VOLATILE_PAGE_GUIDANCE` for such a page and the Explorer's plan text marks the URL `VOLATILE ... do NOT navigate to it directly`: scenarios start from the entry/listing page and click through by the item's VISIBLE NAME, so the recorded trace (and therefore the emitted spec) replays the durable path. Doctrine rule 7 states the same ban. Locked by `smoke-page-filter` (detection, preference, cap, prompt presence).
 
+43. **Credentials are never emitted as literals.** Anywhere in a generated framework: specs, datasets, page objects, fixtures, the auth setup. Password-intent fills and every fill inside a login flow are excluded from datasets (`isCredentialFill`, datasets.ts); login/auth-setup fills emit `process.env.QA_CORE_TEST_USER / QA_CORE_TEST_PASS ?? ''`; the credentials fixture stops seeding observed usernames the moment auth is active; `.env.example` seeds recorded values ONLY for hosts on the small public-demo allowlist (`isDemoHost`, auth-emit.ts), empty placeholders otherwise. The only file allowed to carry recorded values is `run-report.json` (the raw trace, by design). Locked by `smoke-auth-emit` (a tree-wide grep) and `smoke-datasets`.
+
+44. **Without a successful login scenario, emitted output is byte-identical to the pre-phase emitter.** Auth activates ONLY on an emitted scenario with `feature: 'login'`, `category: 'happy'`, and a password fill (`findHappyLoginScenario`); datasets/parameterization activate ONLY when 2+ scenarios share an action signature with dataset cases. Every phase-4 render branch is guarded on those conditions; the non-auth render strings are untouched. Agent-side behavior (exploration, critic, replay, stability) changes nowhere: replay still replays the RECORDED steps, unaffected by what the emitter restructures. Locked by `smoke-auth-emit` (no-login tree: no new artifacts, deterministic byte-compare) plus the untouched pre-phase locks `smoke-scaffold` / `smoke-scaffold-js` / `smoke-feature-grouping`.
+
+45. **Login specs never run with storageState.** A login test that starts logged in is vacuous. The emitted config gives login specs their own project WITHOUT `storageState` (testMatch `login/**`), the main project ignores `**/login/**` and the setup file while depending on the `setup` project, and the login spec keeps its full recorded steps and its cookie-clearing beforeEach. Authenticated-feature specs get the reverse: leading login sequences stripped (`stripLeadingLogin`), no session-destroying clears in beforeEach. Locked by `smoke-auth-emit`.
+
 ---
 
 ## Standard verification (run before claiming "done")
@@ -135,7 +141,8 @@ for s in smoke-tools smoke-finish smoke-hascount smoke-planner-parse \
          smoke-critic-parse smoke-discovery-ladder smoke-page-filter \
          smoke-derivation-report smoke-cost-ceiling smoke-plan-enforcement \
          smoke-repair-pass smoke-empty-diagnosis smoke-css-prefix \
-         smoke-checkpoint smoke-failure-classify; do
+         smoke-checkpoint smoke-failure-classify smoke-datasets \
+         smoke-param-emit smoke-auth-emit; do
   echo "=== $s ==="
   npx tsx scripts/$s.ts
 done

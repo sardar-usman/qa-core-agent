@@ -531,6 +531,7 @@ async function main(): Promise<void> {
       outDir,
       siteName: hostnameOf(url),
       features: args.features,
+      ...(requirements ? { requirements } : {}),
     });
     // Checkpoint lifecycle: never ships inside the framework zip. A fully
     // successful run (framework written) deletes it; a stopped run holds it
