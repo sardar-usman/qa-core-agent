@@ -4,6 +4,7 @@ import type { RunReport, Scenario } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
 import { renderUniqueDataHelper } from './unique-data.js';
+import { redactCredentialValues } from './datasets.js';
 import {
   AUTH_ENV_PASS,
   AUTH_ENV_USER,
@@ -129,8 +130,11 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   writeFile(`helpers/unique-data.${ext}`, renderUniqueDataHelper(lang));
   writeFile('README.md', renderReadme(opts, pomResult, lang));
 
-  // Self-sufficient framework dir: write run-report.json here too.
-  writeFile('run-report.json', JSON.stringify(opts.report, null, 2));
+  // Self-sufficient framework dir: write run-report.json here too. This copy
+  // ships inside the framework zip, so credential fill values are REDACTED
+  // (the run's working-directory copy keeps the raw values; the CLI restores
+  // it after zipping). With no credential fills the JSON is byte-identical.
+  writeFile('run-report.json', JSON.stringify(redactCredentialValues(opts.report), null, 2));
 
   // pom.ts wrote pages/, tests/<feature>/, tests/a11y/. run-report.json is
   // already in `written` above, so don't list it twice. specFiles is an array

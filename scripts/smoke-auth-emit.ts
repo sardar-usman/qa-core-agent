@@ -114,14 +114,26 @@ check('B3. the login spec keeps its full steps with env-referenced credentials',
 check('B4. the login spec still clears state per test (no storage session to protect)',
   loginSpec.includes('clearCookies'));
 
-/* ─── C. credentials never emitted as literals ─────────────────────────────── */
+/* ─── C. credentials never emitted as literals — ANYWHERE in the zip tree ──── */
+// No exemptions: the framework's run-report.json ships inside the zip, so its
+// credential fill values are redacted too. Only the working-directory copy
+// (restored by the CLI after zipping) keeps raw values.
 const offenders = tree(authDir).filter((f) => {
   const body = fs.readFileSync(f, 'utf8');
   return body.includes(USER) || body.includes(PASS) || body.includes('wrong-password');
 }).map((f) => path.relative(authDir, f));
-// run-report.json is the raw trace by design; every GENERATED file must be clean.
-check('C1. no generated file contains a credential literal',
-  offenders.every((f) => f === 'run-report.json'), JSON.stringify(offenders));
+check('C1. NO file in the framework tree contains a credential literal (run-report included)',
+  offenders.length === 0, JSON.stringify(offenders));
+const zippedReport = read('run-report.json');
+check('C1b. the framework run-report masks credential fills with the redaction marker',
+  zippedReport.includes('[redacted:credential]') &&
+  (JSON.parse(zippedReport) as RunReport).scenarios[2]!.steps.filter((s) => s.kind === 'fill').slice(0, 2).every((s) => (s as { value: string }).value === '[redacted:credential]'),
+  zippedReport.match(/"value": "[^"]*"/g)?.join(', '));
+check('C1c. the in-memory report is NOT mutated (the working-dir copy keeps raw values)',
+  withLogin.scenarios[0]!.steps.some((s) => s.kind === 'fill' && (s as { value: string }).value === PASS) &&
+  withLogin.scenarios[2]!.steps.some((s) => s.kind === 'fill' && (s as { value: string }).value === USER));
+check('C1d. the CLI restores the raw run-report to the working directory after zip + slim',
+  /REDACTED run-report[\s\S]{0,400}JSON\.stringify\(result, null, 2\)/.test(fs.readFileSync('src/cli/explore.ts', 'utf8')));
 check('C2. .env.example has empty placeholders for a non-demo host',
   read('.env.example').includes(`${AUTH_ENV_USER}=\n`) && read('.env.example').includes(`${AUTH_ENV_PASS}=\n`));
 check('C3. .gitignore covers playwright/.auth/', read('.gitignore').includes('playwright/.auth/'));

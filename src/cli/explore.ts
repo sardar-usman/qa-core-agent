@@ -574,6 +574,12 @@ async function main(): Promise<void> {
       fs.writeFileSync(cpFile, heldCheckpoint);
       console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped?.reason})`);
     }
+    // The zip carries a REDACTED run-report (credential fill values masked);
+    // the working-directory copy keeps the raw values for the dashboard and
+    // debugging, so restore it after the zip + slim are done.
+    try {
+      fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(result, null, 2));
+    } catch { /* best effort — the zip already shipped the redacted copy */ }
   } else {
     const r = transcribe({ report: result, outDir, name: specName });
     primaryPath = r.specPath;
