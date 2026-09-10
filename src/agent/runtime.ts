@@ -1166,6 +1166,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           cost.cacheReadTokens += repair.cost.cacheReadTokens;
           cost.cacheCreationTokens += repair.cost.cacheCreationTokens;
           cost.usd += repair.cost.usd;
+          cost.repairUsd = (cost.repairUsd ?? 0) + repair.cost.usd;
           steps += repair.steps;
           cpState.spend.repair += repair.cost.usd;
           // Heals carry over (no funnel impact). The repair attempt's own

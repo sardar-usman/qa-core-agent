@@ -370,11 +370,30 @@ open qa-core-ui.html         # in your browser
 
 Click **Connect** in the header. Then type a slash command:
 
-* `/explore https://...`
+* `/explore https://...` with any CLI flag: `--features login,cart`, `--srs docs/srs.md`, `--urls /login,/cart`, `--discover`, `--lang js`, `--no-pom`, `--no-stabilize`, `--stabilize-attempts N`, `--ceiling 4`
+* `/resume output/<brand>-automation-framework/checkpoint.json [--ceiling 4]` to continue a stopped run
+* `/transcribe output/<brand>-automation-framework/run-report.json` to regenerate the framework zip without exploring
 * `/generate "user story"`
 * `/heal output/<run-id>/<name>.spec.ts`
 
-The gateway streams progress messages as the Planner, Explorer, and Critic stages run. It then sends the generated spec as a final message that the UI renders as a copy and save code block. The Activity panel on the right has three tabs: Results (run history), Files (list of generated files with copy and download), and Log (live event stream). The refresh button re-syncs runs from the gateway.
+Every option the CLI accepts works in the chat the same way, and the gateway builds the same runtime options the CLI would (the parity smoke checks this). The gear in the header opens **Run settings**: the cost ceiling, repair reserve, max steps and the three model overrides (the same `QA_CORE_*` env names the CLI reads, applied to the next run only), the explore options as a form (features, pages, discover, POM, stabilizer), and an **Attach SRS** button that uploads a `.md`, `.txt`, `.pdf` or `.docx` for `--srs`. The moon button switches dark and light.
+
+### The run view
+
+When a run starts, the centre panel shows one card per pipeline stage, updated live from the gateway's event stream:
+
+1. **Discovery**: the rung that produced the page set, pages found, the relevance-filter result, robots and rung warnings.
+2. **Plan**: per-page planner lines with cost, then every scenario with its feature, category and rule-id tags.
+3. **Explorer**: live tool calls, step count against the step budget, a cost meter against the explorer sub-ceiling, gate injections, skips with reasons, incomplete scenarios.
+4. **Critic and repair**: verdicts with reasons, a repair-pass banner (count and budget), and verdict journeys (`rework -> pass` kept, `rework -> reject` dropped).
+5. **Replay and stability**: pass or fail per scenario, the per-iteration pattern (`PPP`, `PFP`), stabilizer attempts and recoveries.
+6. **Summary**: the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped), rule coverage with the considered-not-automated list and reasons, the cost split (planner, explorer, critic, repair, stabilizer), findings called out as product behavior to review, and the zip download.
+
+Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently.
+
+### Run history, resume and regenerate
+
+The Results tab lists past runs from `output/` and `eval-results/`: URL, date, cost, scenarios shipped, and a status badge. A run that stopped with a checkpoint (cost ceiling, billing, API failure) shows **resume** with an optional higher ceiling; a completed run shows **regenerate framework**, which re-emits the zip from `run-report.json` with no browser and no model call. Both buttons send the matching slash command.
 
 Optional auth: set `QA_CORE_GATEWAY_TOKEN` in your environment. The UI accepts the token via the page URL fragment, for example `qa-core-ui.html#token=<value>`.
 
@@ -392,10 +411,10 @@ Once installed, in Claude Desktop you can just chat:
 
 > "Use qa-core to explore `https://www.saucedemo.com/` and show me the generated spec."
 
-Claude calls the `qa_explore` MCP tool. The server runs the multi-agent pipeline and returns the verified spec.
+Claude calls the `qa_explore` MCP tool. The server runs the multi-agent pipeline and returns the run summary, the reconciliation funnel, and the paths of the report and the framework zip.
 
-**Tools exposed:** `qa_explore`, `qa_generate`, `qa_heal`.
-**Resources exposed:** `qa-core://runs`, `qa-core://memory`.
+**Tools exposed:** `qa_explore` (every CLI explore option as a typed argument: `features`, `srs` or inline `srsText`, `urls`, `discover`, `language`, `pom`, stabilizer and stability controls, `ceilingUsd` and the model overrides), `qa_resume` (continue from a `checkpoint.json`), `qa_transcribe` (regenerate a framework from a `run-report.json`), `qa_generate`, `qa_heal`.
+**Resources exposed:** `qa-core://runs` (with completed / stopped-with-checkpoint status), `qa-core://memory`.
 
 ## Model routing and budgets
 

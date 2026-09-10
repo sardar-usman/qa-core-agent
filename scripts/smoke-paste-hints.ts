@@ -121,6 +121,18 @@ const c7 = detectPastedCliCommand('npm run explore');
 check('AD. empty args fills in `<args>` placeholder',
   c7 !== null && c7.args === '<args>');
 
+// 19. Phase 5: the transcribe script and the new explore flags carry over
+const c8 = detectPastedCliCommand('npm run transcribe -- output/shop-automation-framework/run-report.json --out output/regen');
+check('AE. detects `npm run transcribe -- …` and suggests /transcribe with its args',
+  c8 !== null && c8.slash === '/transcribe' && c8.suggestion === '/transcribe output/shop-automation-framework/run-report.json --out output/regen');
+const c9 = detectPastedCliCommand('npm run explore -- https://shop.example/ --srs docs/srs.md --urls /a,/b --discover --lang js --no-pom');
+check('AF. explore paste keeps --srs / --urls / --discover / --lang / --no-pom verbatim in the suggestion',
+  c9 !== null && c9.suggestion === '/explore https://shop.example/ --srs docs/srs.md --urls /a,/b --discover --lang js --no-pom');
+const c10 = detectPastedCliCommand('npm run explore -- --resume output/shop-automation-framework/checkpoint.json --ceiling 4');
+check('AG. explore paste with --resume suggests `/explore --resume …` (the gateway accepts it)',
+  c10 !== null && c10.suggestion === '/explore --resume output/shop-automation-framework/checkpoint.json --ceiling 4');
+check('AH. ignores `npm run mcp`', detectPastedCliCommand('npm run mcp') === null);
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
 console.log('OK: paste-hint helpers recover from npm-style mistakes without breaking valid input.');

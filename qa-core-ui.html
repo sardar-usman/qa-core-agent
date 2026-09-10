@@ -2697,9 +2697,293 @@
   ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 6px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
 
+  /* ===== Light theme. Tokens only; components read tokens. ===== */
+  :root[data-theme="light"] {
+    --bg-0: #f4f4f7;
+    --bg-1: #ffffff;
+    --bg-2: #f6f6f9;
+    --bg-3: #ececf2;
+    --bg-4: #dcdce5;
+    --line: rgba(15, 15, 30, 0.08);
+    --line-strong: rgba(15, 15, 30, 0.14);
+    --line-soft: rgba(15, 15, 30, 0.04);
+    --accent: #6b4fe0;
+    --accent-2: #5537c9;
+    --accent-soft: rgba(107, 79, 224, 0.10);
+    --accent-line: rgba(107, 79, 224, 0.28);
+    --accent-glow: rgba(107, 79, 224, 0.22);
+    --emerald: #14875e;
+    --amber: #9a6b00;
+    --rose: #c2364d;
+    --emerald-soft: rgba(20, 135, 94, 0.10);
+    --amber-soft: rgba(154, 107, 0, 0.10);
+    --rose-soft: rgba(194, 54, 77, 0.10);
+    --text: #15151a;
+    --text-2: #55555f;
+    --text-3: #8a8a95;
+    --brand: linear-gradient(135deg, #6b4fe0 0%, #8b6dff 100%);
+    --brand-soft: linear-gradient(135deg, rgba(107, 79, 224, 0.12) 0%, rgba(139, 109, 255, 0.08) 100%);
+    --cyan: #147a94;
+    --cyan-2: #0f6478;
+    --cyan-soft: rgba(20, 122, 148, 0.10);
+    --cyan-glow: rgba(20, 122, 148, 0.18);
+  }
+  :root[data-theme="light"] header { background: rgba(255, 255, 255, 0.78); }
+  :root[data-theme="light"] .popover { background: rgba(255, 255, 255, 0.96); box-shadow: 0 24px 48px -12px rgba(20, 20, 40, 0.18); }
+  :root[data-theme="light"] .connect-btn { color: #ffffff; background: #15151a; }
+  :root[data-theme="light"] .chat-header { background: rgba(255, 255, 255, 0.6); }
+  :root[data-theme="light"] .input-area { background: rgba(255, 255, 255, 0.55); }
+  :root[data-theme="light"] .send-btn { background: #15151a; color: #ffffff; }
+  :root[data-theme="light"] .input-shell { box-shadow: 0 1px 2px rgba(15, 15, 30, 0.05); }
+  :root[data-theme="light"] .msg.user .msg-avatar { color: #ffffff; }
+  :root[data-theme="light"] .tab.active { border-color: var(--accent-line); }
+  :root[data-theme="light"] .center-panel { background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%); }
+  :root[data-theme="light"] .pipe-stats .stat-flaky { color: var(--amber); }
+  :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+
+  .theme-btn, .settings-btn {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 0.2s var(--ease);
+  }
+  .theme-btn:hover, .settings-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+  .theme-btn svg, .settings-btn svg { width: 15px; height: 15px; }
+  .settings-btn.dirty { border-color: var(--accent-line); color: var(--accent); }
+
+  /* ===== Run settings popover ===== */
+  .settings-pop { width: 380px; padding: 12px; }
+  .settings-pop .popover-title { margin-bottom: 4px; }
+  .settings-section {
+    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text-3); margin: 10px 4px 6px; font-weight: 500;
+  }
+  .settings-row {
+    display: grid; grid-template-columns: 1fr 140px; align-items: center; gap: 8px;
+    padding: 4px 4px;
+  }
+  .settings-row label { font-size: 12px; color: var(--text-2); }
+  .settings-row label small { display: block; font-family: var(--mono); font-size: 10px; color: var(--text-3); }
+  .settings-row input[type="text"], .settings-row input[type="number"] {
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text);
+    width: 100%; outline: none;
+  }
+  .settings-row input:focus { border-color: var(--accent-line); }
+  .settings-row input[type="checkbox"] { justify-self: start; accent-color: var(--accent); width: 15px; height: 15px; }
+  .settings-row.wide { grid-template-columns: 1fr; }
+  .settings-row.wide input { width: 100%; }
+  .settings-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .settings-actions .run-action { flex: 1; }
+  .srs-attach { display: flex; align-items: center; gap: 8px; padding: 4px; font-size: 12px; color: var(--text-2); }
+  .srs-attach .run-action { flex: 0 0 auto; }
+  .srs-attach .srs-name { font-family: var(--mono); font-size: 10.5px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ===== Live run view (one per run, in the message stream) ===== */
+  .run-view {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    margin: 6px 0 14px;
+    overflow: hidden;
+  }
+  .rv-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .rv-title { font-size: 13px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .rv-title .rv-url { font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+  .rv-badge {
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-2); background: var(--bg-3);
+  }
+  .rv-badge.running { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+  .rv-badge.done { color: var(--emerald); border-color: rgba(93, 213, 164, 0.3); background: var(--emerald-soft); }
+  .rv-badge.stopped { color: var(--amber); border-color: rgba(244, 197, 96, 0.3); background: var(--amber-soft); }
+  .rv-badge.failed, .rv-badge.empty { color: var(--rose); border-color: rgba(239, 124, 141, 0.3); background: var(--rose-soft); }
+  .rv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .rv-chip {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-2);
+    background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px;
+  }
+  .rv-chip b { color: var(--text); font-weight: 500; }
+  .rv-chip.override { border-color: var(--accent-line); color: var(--accent); }
+
+  .rv-stages { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+  .rv-stage { background: var(--bg-1); padding: 12px 16px 14px; min-height: 96px; }
+  .rv-stage.wide { grid-column: 1 / -1; }
+  .rv-stage-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .rv-num {
+    width: 18px; height: 18px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 10px; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--line);
+  }
+  .rv-stage.active .rv-num { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+  .rv-stage.done .rv-num { background: var(--emerald-soft); color: var(--emerald); border-color: rgba(93, 213, 164, 0.3); }
+  .rv-stage.error .rv-num { background: var(--rose-soft); color: var(--rose); border-color: rgba(239, 124, 141, 0.3); }
+  .rv-stage-name { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+  .rv-stage-sub { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
+  .rv-stage-state { margin-left: auto; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+  .rv-stage.active .rv-stage-state { color: var(--accent); }
+  .rv-stage.active .rv-stage-state::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: rvpulse 1.2s ease-in-out infinite; }
+  @keyframes rvpulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  .rv-stage.done .rv-stage-state { color: var(--emerald); }
+  .rv-stage.error .rv-stage-state { color: var(--rose); }
+  .rv-stage.skipped .rv-stage-state { color: var(--text-3); }
+  .rv-body { font-size: 12px; color: var(--text-2); line-height: 1.55; }
+  .rv-empty { color: var(--text-3); font-style: italic; }
+  .rv-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 6px; }
+  .rv-kv span { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+  .rv-kv span b { color: var(--text); font-weight: 500; }
+  .rv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .rv-list li { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; min-width: 0; }
+  .rv-list li .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-list li .why { color: var(--text-3); font-size: 11px; }
+  .rv-list li .mono { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+  .rv-tag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px;
+    background: var(--bg-3); border: 1px solid var(--line); color: var(--text-2); white-space: nowrap;
+  }
+  .rv-tag.happy { color: var(--emerald); background: var(--emerald-soft); border-color: transparent; }
+  .rv-tag.negative { color: var(--rose); background: var(--rose-soft); border-color: transparent; }
+  .rv-tag.edge { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+  .rv-tag.rule { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .rv-tag.feature { color: var(--cyan); background: var(--cyan-soft); border-color: transparent; }
+  .rv-warn { color: var(--amber); }
+  .rv-bad { color: var(--rose); }
+  .rv-ok { color: var(--emerald); }
+  .rv-more { color: var(--text-3); font-size: 10.5px; font-family: var(--mono); margin-top: 4px; }
+
+  .rv-meter { height: 6px; border-radius: 999px; background: var(--bg-3); overflow: hidden; margin: 6px 0 4px; border: 1px solid var(--line); }
+  .rv-meter > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.3s var(--ease); }
+  .rv-meter.warn > i { background: var(--amber); }
+  .rv-meter.over > i { background: var(--rose); }
+  .rv-meter-label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+
+  .rv-calls { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-height: 118px; overflow: auto; margin-top: 6px; }
+  .rv-calls div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rv-calls .fn { color: var(--accent); }
+  .rv-calls .err { color: var(--rose); }
+
+  .rv-verdict { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: start; padding: 5px 0; border-top: 1px solid var(--line-soft); }
+  .rv-verdict:first-child { border-top: none; padding-top: 0; }
+  .rv-verdict .v { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; font-weight: 600; min-width: 58px; text-align: center; }
+  .rv-verdict .v.pass { background: var(--emerald-soft); color: var(--emerald); }
+  .rv-verdict .v.rework { background: var(--amber-soft); color: var(--amber); }
+  .rv-verdict .v.reject { background: var(--rose-soft); color: var(--rose); }
+  .rv-verdict .vs { min-width: 0; }
+  .rv-verdict .vs .name { color: var(--text); font-size: 11.5px; font-weight: 500; }
+  .rv-verdict .vs .why { color: var(--text-3); font-size: 11px; line-height: 1.45; }
+  .rv-journey { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; padding: 4px 0; flex-wrap: wrap; }
+  .rv-journey .name { color: var(--text); font-family: var(--sans); font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+  .rv-journey .arrow { color: var(--text-3); }
+  .rv-journey .v { padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+  .rv-journey .v.pass { background: var(--emerald-soft); color: var(--emerald); }
+  .rv-journey .v.rework { background: var(--amber-soft); color: var(--amber); }
+  .rv-journey .v.reject, .rv-journey .v.none { background: var(--rose-soft); color: var(--rose); }
+  .rv-journey .outcome { margin-left: auto; color: var(--text-3); }
+  .rv-journey .outcome.kept { color: var(--emerald); }
+  .rv-journey .outcome.dropped { color: var(--rose); }
+  .rv-banner {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; margin: 4px 0 8px;
+    background: var(--amber-soft); border: 1px solid rgba(244, 197, 96, 0.25); color: var(--amber); font-size: 11.5px;
+  }
+  .rv-banner.info { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+  .rv-banner.bad { background: var(--rose-soft); border-color: rgba(239, 124, 141, 0.3); color: var(--rose); }
+  .rv-banner b { font-weight: 600; }
+
+  .rv-runs { display: flex; flex-direction: column; gap: 3px; }
+  .rv-run { display: flex; align-items: center; gap: 8px; font-size: 11.5px; min-width: 0; }
+  .rv-run .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .rv-dots { display: inline-flex; gap: 3px; }
+  .rv-dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line); display: inline-block; }
+  .rv-dots i.p { background: var(--emerald); border-color: transparent; }
+  .rv-dots i.f { background: var(--rose); border-color: transparent; }
+  .rv-run .pattern { font-family: var(--mono); font-size: 10px; color: var(--text-3); }
+  .rv-run .pattern.flaky { color: var(--amber); }
+  .rv-run .pattern.broken { color: var(--rose); }
+  .rv-run .pattern.recovered { color: var(--emerald); }
+
+  /* Summary: funnel + coverage + cost split + findings + download */
+  .rv-summary-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; }
+  @media (max-width: 1250px) { .rv-summary-grid { grid-template-columns: 1fr; } }
+  .rv-sub-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); font-weight: 500; margin: 6px 0 8px; display: flex; align-items: center; gap: 8px; }
+  .rv-sub-label .mono { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-2); }
+  .funnel { display: flex; flex-direction: column; gap: 5px; }
+  .funnel-row { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; }
+  .funnel-row .fl { font-size: 11.5px; color: var(--text-2); text-align: right; }
+  .funnel-row .fl.head { color: var(--text); font-weight: 600; }
+  .funnel-row .fbar { height: 18px; border-radius: 5px; background: var(--bg-3); border: 1px solid var(--line); overflow: hidden; position: relative; }
+  .funnel-row .fbar > i { display: block; height: 100%; border-radius: 4px; min-width: 2px; transition: width 0.4s var(--ease); }
+  .funnel-row .fbar > i.zero { min-width: 0; width: 0 !important; }
+  .funnel-row .fn { font-family: var(--mono); font-size: 12px; color: var(--text); font-weight: 500; text-align: right; }
+  .funnel-row.planned .fbar > i { background: var(--accent); }
+  .funnel-row.generated .fbar > i { background: var(--emerald); }
+  .funnel-row.dropped .fbar > i { background: var(--rose); opacity: 0.85; }
+  .funnel-row.incomplete .fbar > i { background: var(--amber); }
+  .funnel-row.findings .fbar > i { background: var(--rose); }
+  .funnel-row.skipped .fbar > i { background: var(--text-3); }
+  .funnel-row .fdetail { grid-column: 2 / -1; font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-top: -2px; }
+  .funnel-eq { font-family: var(--mono); font-size: 11px; color: var(--text-2); margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .funnel-eq .balanced { color: var(--emerald); }
+  .funnel-eq .unbalanced { color: var(--rose); }
+
+  .cost-split { display: flex; flex-direction: column; gap: 5px; }
+  .cost-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; border: 1px solid var(--line); background: var(--bg-3); }
+  .cost-bar i { display: block; height: 100%; }
+  .cost-bar i.planner { background: var(--cyan); }
+  .cost-bar i.explorer { background: var(--accent); }
+  .cost-bar i.critic { background: var(--emerald); }
+  .cost-bar i.repair { background: var(--amber); }
+  .cost-bar i.stabilizer { background: var(--rose); }
+  .cost-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); }
+  .cost-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .cost-legend .planner::before { background: var(--cyan); }
+  .cost-legend .explorer::before { background: var(--accent); }
+  .cost-legend .critic::before { background: var(--emerald); }
+  .cost-legend .repair::before { background: var(--amber); }
+  .cost-legend .stabilizer::before { background: var(--rose); }
+  .cost-total { font-family: var(--mono); font-size: 13px; color: var(--text); font-weight: 500; }
+
+  .finding { padding: 7px 10px; border-radius: 8px; background: var(--rose-soft); border: 1px solid rgba(239, 124, 141, 0.22); margin-bottom: 6px; font-size: 11.5px; }
+  .finding .name { color: var(--text); font-weight: 500; }
+  .finding .detail { color: var(--text-2); font-size: 11px; line-height: 1.45; margin-top: 2px; }
+  .finding .mono { font-family: var(--mono); font-size: 10px; color: var(--text-3); }
+  .coverage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .coverage-list li { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; }
+  .coverage-list li .rid { font-family: var(--mono); font-size: 10.5px; color: var(--accent); min-width: 32px; }
+  .coverage-list li .why { color: var(--text-3); font-size: 10.5px; font-family: var(--mono); margin-left: auto; white-space: nowrap; }
+  .rv-download { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; font-family: var(--sans); }
+  .rv-download:hover { background: var(--accent-line); }
+  .rv-hint { font-family: var(--mono); font-size: 10.5px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 8px; word-break: break-all; }
+
+  /* Run history additions */
+  .run-status {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
+    border: 1px solid var(--line); color: var(--text-3); background: var(--bg-3); margin-left: 6px; vertical-align: 1px;
+  }
+  .run-status.completed { color: var(--emerald); background: var(--emerald-soft); border-color: transparent; }
+  .run-status.stopped { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+  .run-status.empty { color: var(--rose); background: var(--rose-soft); border-color: transparent; }
+  .run-action.primary { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+  .run-mini-funnel { display: flex; gap: 6px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-bottom: 8px; }
+  .run-mini-funnel b { color: var(--text-2); font-weight: 500; }
+  .run-resume-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .run-resume-row input { width: 74px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-family: var(--mono); font-size: 10.5px; color: var(--text); outline: none; }
+  .run-resume-row input:focus { border-color: var(--accent-line); }
+  .run-resume-row .hint { font-size: 10px; color: var(--text-3); }
+
+  .cmd-card.resume .cmd-badge { background: var(--amber-soft); color: var(--amber); }
+  .cmd-card.transcribe .cmd-badge { background: var(--cyan-soft); color: var(--cyan); }
+
   /* Responsive */
   @media (max-width: 1100px) {
     main { grid-template-columns: 260px 1fr 280px; }
+    .rv-stages { grid-template-columns: 1fr; }
   }
   @media (max-width: 880px) {
     main { grid-template-columns: 1fr; height: auto; }
@@ -2727,6 +3011,12 @@
   </div>
 
   <div class="header-right">
+    <button class="theme-btn" id="themeBtn" type="button" onclick="toggleTheme()" title="Switch light / dark" aria-label="Switch theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+    </button>
+    <button class="settings-btn" id="settingsBtn" type="button" onclick="toggleSettings(event)" title="Run settings (ceiling, models, explore options, SRS)" aria-label="Run settings" aria-haspopup="dialog" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <div class="gateway-input-wrap">
       <input class="gateway-input" id="gatewayUrl" placeholder="ws://127.0.0.1:18789" value="ws://127.0.0.1:18789" />
       <button class="connect-btn" onclick="connectGateway()">Connect</button>
@@ -2743,7 +3033,7 @@
   <div class="panel left-panel">
     <div class="panel-header">
       <div class="panel-title">Commands</div>
-      <div class="panel-count">3</div>
+      <div class="panel-count">5</div>
     </div>
     <div class="commands">
       <div class="cmd-card explore active" onclick="selectCmd('explore', this)" title="Click to insert /explore">
@@ -2787,6 +3077,36 @@
         <div class="cmd-desc">Re-resolve broken selectors in a spec against the live page.</div>
         <div class="cmd-foot">
           <div class="cmd-usage">/heal &lt;spec-path&gt;</div>
+          <div class="cmd-hint">click to use</div>
+        </div>
+      </div>
+
+      <div class="cmd-card resume" onclick="selectCmd('resume', this)" title="Click to insert /resume">
+        <div class="cmd-top">
+          <div class="cmd-badge">/resume</div>
+          <svg class="cmd-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="6 3 20 12 6 21 6 3"/>
+          </svg>
+        </div>
+        <div class="cmd-title">Resume a stopped run</div>
+        <div class="cmd-desc">Continue from a checkpoint after a cost ceiling, billing, or API stop. Optionally raise the ceiling.</div>
+        <div class="cmd-foot">
+          <div class="cmd-usage">/resume &lt;checkpoint.json&gt;</div>
+          <div class="cmd-hint">click to use</div>
+        </div>
+      </div>
+
+      <div class="cmd-card transcribe" onclick="selectCmd('transcribe', this)" title="Click to insert /transcribe">
+        <div class="cmd-top">
+          <div class="cmd-badge">/transcribe</div>
+          <svg class="cmd-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h6"/><path d="M9 11h6"/>
+          </svg>
+        </div>
+        <div class="cmd-title">Regenerate framework</div>
+        <div class="cmd-desc">Re-emit the framework and zip from an existing run report. No browser, no model call.</div>
+        <div class="cmd-foot">
+          <div class="cmd-usage">/transcribe &lt;run-report.json&gt;</div>
           <div class="cmd-hint">click to use</div>
         </div>
       </div>
@@ -3061,6 +3381,39 @@
   </div>
 </div>
 
+<!-- Run settings popover: per-run env overrides, explore options, SRS upload. -->
+<div class="popover settings-pop" id="settingsPopover" role="dialog" aria-label="Run settings">
+  <div class="popover-header">
+    <div class="popover-title">Run settings</div>
+    <button class="popover-close" type="button" onclick="closeSettings()" aria-label="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+  <div class="settings-section">Budget and models <span style="letter-spacing:0;text-transform:none;font-family:var(--mono)">(same env names as the CLI)</span></div>
+  <div id="settingsEnvRows"></div>
+  <div class="settings-section">Explore options</div>
+  <div class="settings-row"><label>Features<small>--features</small></label><input type="text" id="optFeatures" placeholder="login,cart" /></div>
+  <div class="settings-row"><label>Pages<small>--urls</small></label><input type="text" id="optUrls" placeholder="/login,/cart" /></div>
+  <div class="settings-row"><label>Discover pages<small>--discover</small></label><input type="checkbox" id="optDiscover" /></div>
+  <div class="settings-row"><label>Page Object Model<small>--pom / --no-pom</small></label><input type="checkbox" id="optPom" checked /></div>
+  <div class="settings-row"><label>Stabilizer<small>--no-stabilize</small></label><input type="checkbox" id="optStabilize" checked /></div>
+  <div class="settings-row"><label>Stabilizer attempts<small>--stabilize-attempts</small></label><input type="number" id="optStabilizeAttempts" min="1" step="1" placeholder="3" /></div>
+  <div class="settings-section">Requirements (SRS)</div>
+  <div class="srs-attach">
+    <input type="file" id="srsFile" accept=".md,.txt,.pdf,.docx" hidden onchange="onSrsPicked(event)" />
+    <button class="run-action" type="button" onclick="document.getElementById('srsFile').click()">Attach SRS</button>
+    <span class="srs-name" id="srsName">none attached</span>
+    <button class="run-action" type="button" id="srsClear" onclick="clearSrs()" hidden>clear</button>
+  </div>
+  <div class="settings-actions">
+    <button class="run-action" type="button" onclick="resetRunSettings()">reset</button>
+    <button class="run-action primary" type="button" onclick="closeSettings()">done</button>
+  </div>
+  <div class="popover-footer">
+    <span>Applied to the next /explore. Overrides show as chips in the run header.</span>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -3240,7 +3593,14 @@ function connectGateway() {
           ingestDiskRuns(data.runs);
           return;
         }
-        pushLog('recv', summarizeForLog(data));
+        // Event bursts (usage, thinking) would flood the log; keep the calls.
+        if (data && data.type === 'event') {
+          const ev = data.event || {};
+          if (ev.type === 'tool_call') pushLog('recv', 'event: ' + ev.name);
+          else if (ev.type !== 'usage' && ev.type !== 'thinking_started' && ev.type !== 'tool_result') pushLog('recv', 'event: ' + ev.type);
+        } else {
+          pushLog('recv', summarizeForLog(data));
+        }
         handleAgentMessage(data);
       } catch {
         pushLog('recv', String(e.data).slice(0, 200));
@@ -3283,8 +3643,15 @@ function handleAgentMessage(data) {
   // Render it as a download card, not as JSON-stringified text.
   if (data && data.type === 'framework_zip' && typeof data.base64 === 'string') {
     renderFrameworkZipMessage(data);
+    attachZipToRun(data);
     return;
   }
+  // Phase 5: structured run messages feed the live pipeline view.
+  if (data && data.type === 'settings') { applyGatewaySettings(data.settings); return; }
+  if (data && data.type === 'run_started') { startRunView(data); return; }
+  if (data && data.type === 'event') { runViewEvent(data.event); return; }
+  if (data && data.type === 'run_report') { finishRunView(data); return; }
+  if (data && data.type === 'run_failed') { failRunView(data.error); return; }
   const text = data.text || data.message || data.content || JSON.stringify(data);
   // Fix 3: the gateway sends a hello on every connect. Already represented by
   // the green status pill, so we convert it to a one-shot toast rather than
@@ -3426,9 +3793,11 @@ function selectCmd(cmd, el) {
   document.querySelectorAll('.cmd-card').forEach(c => c.classList.remove('active'));
   el.classList.add('active');
   const placeholders = {
-    explore: 'Type /explore <url>, for example /explore https://www.saucedemo.com/',
+    explore: 'Type /explore <url>, for example /explore https://www.saucedemo.com/ --features login,cart',
     generate: 'Type /generate <user story>, for example /generate As a user I want to log in...',
     heal: 'Type /heal <spec-path>, for example /heal output/run-1/login.spec.ts',
+    resume: 'Type /resume <checkpoint.json> [--ceiling 4], for example /resume output/saucedemo-automation-framework/checkpoint.json',
+    transcribe: 'Type /transcribe <run-report.json>, for example /transcribe output/saucedemo-automation-framework/run-report.json',
   };
   const input = document.getElementById('msgInput');
   input.placeholder = placeholders[cmd] || input.placeholder;
@@ -3457,8 +3826,10 @@ function handleKey(e) {
 
 function sendMessage() {
   const input = document.getElementById('msgInput');
-  const text = input.value.trim();
-  if (!text) return;
+  const typed = input.value.trim();
+  if (!typed) return;
+  // The settings form contributes /explore flags the user did not type.
+  const text = withExploreOptions(typed);
 
   // Remove dashboard / welcome on first message (chat takes over the centre panel)
   const dash = document.getElementById('dashboard');
@@ -3484,8 +3855,10 @@ function sendMessage() {
       agent: 'qa-core',
       model: selectedModelId,
       lang: selectedLang,
+      ...outgoingExtras(text),
     }));
     pushLog('send', 'message: ' + text.slice(0, 160));
+    if (attachedSrs && /^\/explore(\s|$)/.test(text)) clearSrs();
     showThinking();
   } catch(err) {
     showToast('Send failed', 'error');
@@ -3646,6 +4019,8 @@ function simulateAgentResponse(text) {
       simulateExplore(url);
     } else if (cmd === '/generate') {
       simulateGenerate(text.substring(10));
+    } else if (cmd === '/resume' || cmd === '/transcribe' || cmd === '/heal') {
+      appendAgentMessage(cmd + ' needs the gateway (it reads files on disk). Click Connect in the header, then try again.');
     } else {
       appendAgentMessage("I'm ready to help. Try /explore <url> or /generate <story>.");
     }
@@ -4357,9 +4732,41 @@ function renderRunHistory() {
         downloadRaw(run.spec || '', (brandFromHost(run.host) || run.host || 'spec') + '.spec.ts');
       } else if (btn.dataset.action === 'rerun') {
         if (run.target) { fillInput(run.target); document.getElementById('msgInput').focus(); }
+      } else if (btn.dataset.action === 'resume') {
+        if (!run.checkpointPath) return;
+        const ceilingInput = card.querySelector('input[data-ceiling]');
+        const ceiling = ceilingInput && ceilingInput.value.trim();
+        sendCommand(resumeCommandFor(run.checkpointPath, ceiling));
+      } else if (btn.dataset.action === 'regenerate') {
+        if (!run.reportPath) return;
+        sendCommand('/transcribe ' + run.reportPath);
       }
     });
   });
+}
+
+/** The /resume command a history card sends; the ceiling is optional. */
+function resumeCommandFor(checkpointPath, ceiling) {
+  const c = ceiling && Number.isFinite(Number(ceiling)) && Number(ceiling) > 0 ? ' --ceiling ' + Number(ceiling) : '';
+  return '/resume ' + checkpointPath + c;
+}
+
+/** Status badge + resume / regenerate actions for a run record from disk. */
+function runStatusHtml(r) {
+  if (!r.status) return '';
+  const label = r.status === 'stopped' ? 'stopped · checkpoint' : r.status;
+  return `<span class="run-status ${escAttr(r.status)}" title="${escAttr(r.stoppedReason || '')}">${escHtml(label)}</span>`;
+}
+function runMiniFunnelHtml(r) {
+  const rec = r.reconciliation;
+  if (!rec) return '';
+  const n = (v) => (Array.isArray(v) ? v.length : Number(v) || 0);
+  const cov = r.ruleCoverage ? `<span>rules <b>${r.ruleCoverage.covered}/${r.ruleCoverage.total}</b></span>` : '';
+  return `<div class="run-mini-funnel"><span>planned <b>${n(rec.planned)}</b></span><span>generated <b>${n(rec.generated)}</b></span><span>dropped <b>${n(rec.dropped)}</b></span><span>incomplete <b>${n(rec.incomplete)}</b></span><span>findings <b>${n(rec.findings)}</b></span><span>skipped <b>${n(rec.skipped)}</b></span>${cov}${rec.balanced === false ? '<span class="stat-broken">unbalanced</span>' : ''}</div>`;
+}
+function runResumeRowHtml(r) {
+  if (r.status !== 'stopped' || !r.checkpointPath) return '';
+  return `<div class="run-resume-row"><button class="run-action primary" data-action="resume" title="${escAttr(r.checkpointPath)}">resume</button><input type="number" data-ceiling min="0.5" step="0.5" placeholder="ceiling $" title="Optional higher cost ceiling (USD) for the continuation" /><span class="hint">USD, optional</span></div>`;
 }
 
 function runCardHtml(r) {
@@ -4407,21 +4814,26 @@ function runCardHtml(r) {
       <div style="min-width:0">
         <div class="run-card-title" title="${escAttr(r.host || r.target || '')}">${escHtml(runTitle(r.host, r.target, r.features))}</div>
         ${summaryPreview}
-        <div class="run-card-meta">${r.scenarios || 0} scenarios · $${(r.costUsd || 0).toFixed(4)} · ${timeAgo(r.timestamp)}</div>
+        <div class="run-card-meta">${r.scenarios || 0} scenarios · $${(r.costUsd || 0).toFixed(4)} · ${timeAgo(r.timestamp)}${runStatusHtml(r)}</div>
       </div>
       <div class="run-card-status">${status}</div>
     </div>
     <div class="run-card-body">
+      ${runMiniFunnelHtml(r)}
       ${replayLine}
       ${stabilityLine}
       ${diagLine}
       ${verdicts}
+      ${journeysHtml(r.repair)}
       ${r.summary ? `<div style="font-size:11.5px;color:var(--text-2);line-height:1.5;margin-bottom:8px">${escHtml(r.summary)}</div>` : ''}
+      ${r.stoppedReason ? `<div style="font-size:11px;color:var(--amber);margin-bottom:6px">stopped: ${escHtml(r.stoppedReason)}</div>` : ''}
       <div class="run-card-actions">
         ${r.spec ? '<button class="run-action" data-action="copy">copy spec</button>' : ''}
         ${r.spec ? '<button class="run-action" data-action="download">download</button>' : ''}
+        ${r.status === 'completed' && r.reportPath ? '<button class="run-action" data-action="regenerate" title="Re-emit the framework zip from run-report.json (no exploration)">regenerate framework</button>' : ''}
         ${r.target ? '<button class="run-action" data-action="rerun">re-run</button>' : ''}
       </div>
+      ${runResumeRowHtml(r)}
     </div>
   </div>`;
 }
@@ -4644,12 +5056,18 @@ function ingestDiskRuns(diskRuns) {
     return;
   }
   const existing = loadRuns();
-  const seen = new Set(existing.map((r) => r.id));
+  const seen = new Map(existing.map((r, i) => [r.id, i]));
   let added = 0;
   for (const r of diskRuns) {
-    if (!r || !r.id || seen.has(r.id)) continue;
+    if (!r || !r.id) continue;
+    if (seen.has(r.id)) {
+      // A disk run can change state (stopped -> completed after a resume);
+      // the fresh record replaces the stale one.
+      existing[seen.get(r.id)] = r;
+      continue;
+    }
     existing.push(r);
-    seen.add(r.id);
+    seen.set(r.id, existing.length - 1);
     added++;
   }
   // Newest first
@@ -4674,11 +5092,767 @@ function syncRunsFromGateway() {
   catch { showToast('Could not reach gateway.', 'error'); }
 }
 
+/* =====================================================================
+   Phase 5: theme, run settings, live run view, history actions.
+   Every number the run view shows comes from the gateway's event stream or
+   the final run-report; the UI never derives a count the CLI would print
+   differently.
+   ===================================================================== */
+
+/* ---------- Theme ---------- */
+
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+  const btn = document.getElementById('themeBtn');
+  if (btn) btn.title = t === 'light' ? 'Switch to dark' : 'Switch to light';
+}
+function toggleTheme() {
+  const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  try { localStorage.setItem('qa-core.theme', next); } catch {}
+  applyTheme(next);
+}
+(function initTheme() {
+  let stored = null;
+  try { stored = localStorage.getItem('qa-core.theme'); } catch {}
+  const system = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  applyTheme(stored || system);
+})();
+
+/* ---------- Run settings (env overrides, explore options, SRS) ---------- */
+
+let gatewaySettings = [];   // [{name,label,value,fromEnv}] from the gateway
+let runOverrides = {};      // env name -> value typed by the user
+let attachedSrs = null;     // {name, base64}
+
+const SETTING_DEFAULTS = [
+  { name: 'QA_CORE_COST_CEILING', label: 'Cost ceiling (USD)', value: '2.00' },
+  { name: 'QA_CORE_REPAIR_RESERVE', label: 'Repair reserve (fraction)', value: '0.15' },
+  { name: 'QA_CORE_MAX_STEPS', label: 'Max explorer steps', value: '40' },
+  { name: 'QA_CORE_PLANNER_MODEL', label: 'Planner model', value: 'claude-haiku-4-5' },
+  { name: 'QA_CORE_EXPLORER_MODEL', label: 'Explorer model', value: 'claude-opus-4-7' },
+  { name: 'QA_CORE_CRITIC_MODEL', label: 'Critic model', value: 'claude-sonnet-4-6' },
+];
+
+function applyGatewaySettings(list) {
+  if (Array.isArray(list) && list.length) gatewaySettings = list;
+  renderSettingsRows();
+}
+
+function renderSettingsRows() {
+  const host = document.getElementById('settingsEnvRows');
+  if (!host) return;
+  const rows = gatewaySettings.length ? gatewaySettings : SETTING_DEFAULTS;
+  host.innerHTML = rows.map((s) => `
+    <div class="settings-row">
+      <label>${escHtml(s.label)}<small>${escHtml(s.name)}${s.fromEnv ? ' · from env' : ''}</small></label>
+      <input type="text" data-env="${escAttr(s.name)}" placeholder="${escAttr(s.value)}" value="${escAttr(runOverrides[s.name] || '')}" />
+    </div>`).join('');
+  [...host.querySelectorAll('input[data-env]')].forEach((inp) => {
+    inp.addEventListener('input', () => {
+      const v = inp.value.trim();
+      if (v) runOverrides[inp.dataset.env] = v; else delete runOverrides[inp.dataset.env];
+      syncSettingsDirty();
+    });
+  });
+  syncSettingsDirty();
+}
+
+function syncSettingsDirty() {
+  const btn = document.getElementById('settingsBtn');
+  if (!btn) return;
+  const dirty = Object.keys(runOverrides).length > 0 || !!attachedSrs || exploreOptionFlags('').length > 0;
+  btn.classList.toggle('dirty', dirty);
+}
+
+function currentEnvOverrides() {
+  const out = {};
+  for (const [k, v] of Object.entries(runOverrides)) if (String(v).trim()) out[k] = String(v).trim();
+  return out;
+}
+
+/**
+ * Flags the settings form adds to an /explore command. A flag already typed
+ * in the command wins; the form only fills what is missing.
+ */
+function exploreOptionFlags(content) {
+  const flags = [];
+  const has = (f) => new RegExp('(^|\\s)' + f.replace(/[-]/g, '\\-') + '(\\s|$)').test(content);
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const checked = (id, dflt) => { const el = document.getElementById(id); return el ? el.checked : dflt; };
+  if (val('optFeatures') && !has('--features')) flags.push('--features', val('optFeatures').replace(/\s+/g, ''));
+  if (val('optUrls') && !has('--urls')) flags.push('--urls', val('optUrls').replace(/\s+/g, ''));
+  if (checked('optDiscover', false) && !has('--discover')) flags.push('--discover');
+  if (!checked('optPom', true) && !has('--no-pom') && !has('--pom') && !has('--inline')) flags.push('--no-pom');
+  if (!checked('optStabilize', true) && !has('--no-stabilize')) flags.push('--no-stabilize');
+  const attempts = val('optStabilizeAttempts');
+  if (attempts && !has('--stabilize-attempts')) flags.push('--stabilize-attempts', attempts);
+  return flags;
+}
+
+function withExploreOptions(content) {
+  if (!/^\/explore(\s|$)/.test(content)) return content;
+  const flags = exploreOptionFlags(content);
+  return flags.length ? content + ' ' + flags.join(' ') : content;
+}
+
+function toggleSettings(e) {
+  if (e) e.stopPropagation();
+  const pop = document.getElementById('settingsPopover');
+  const btn = document.getElementById('settingsBtn');
+  const willOpen = !pop.classList.contains('open');
+  if (willOpen) { renderSettingsRows(); positionSettings(); closeModelMenu(); }
+  pop.classList.toggle('open', willOpen);
+  btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+}
+function closeSettings() {
+  const pop = document.getElementById('settingsPopover');
+  const btn = document.getElementById('settingsBtn');
+  if (pop) pop.classList.remove('open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  syncSettingsDirty();
+}
+function positionSettings() {
+  const pop = document.getElementById('settingsPopover');
+  const btn = document.getElementById('settingsBtn');
+  if (!pop || !btn) return;
+  const r = btn.getBoundingClientRect();
+  const w = pop.offsetWidth || 380;
+  let left = r.right - w;
+  if (left < 8) left = 8;
+  pop.style.top = (r.bottom + 8) + 'px';
+  pop.style.left = left + 'px';
+}
+document.addEventListener('click', (e) => {
+  const pop = document.getElementById('settingsPopover');
+  const btn = document.getElementById('settingsBtn');
+  if (!pop || !btn) return;
+  if (pop.classList.contains('open') && !pop.contains(e.target) && !btn.contains(e.target)) closeSettings();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+window.addEventListener('resize', () => {
+  const pop = document.getElementById('settingsPopover');
+  if (pop && pop.classList.contains('open')) positionSettings();
+});
+['optFeatures', 'optUrls', 'optDiscover', 'optPom', 'optStabilize', 'optStabilizeAttempts'].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', syncSettingsDirty);
+});
+
+function onSrsPicked(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = String(reader.result || '');
+    const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    attachedSrs = { name: file.name, base64 };
+    setText('srsName', file.name);
+    const clear = document.getElementById('srsClear');
+    if (clear) clear.removeAttribute('hidden');
+    syncSettingsDirty();
+    showToast('SRS attached to the next /explore: ' + file.name, 'success');
+  };
+  reader.readAsDataURL(file);
+}
+function clearSrs() {
+  attachedSrs = null;
+  setText('srsName', 'none attached');
+  const clear = document.getElementById('srsClear');
+  if (clear) clear.setAttribute('hidden', '');
+  const inp = document.getElementById('srsFile');
+  if (inp) inp.value = '';
+  syncSettingsDirty();
+}
+function resetRunSettings() {
+  runOverrides = {};
+  ['optFeatures', 'optUrls', 'optStabilizeAttempts'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const d = document.getElementById('optDiscover'); if (d) d.checked = false;
+  const p = document.getElementById('optPom'); if (p) p.checked = true;
+  const s = document.getElementById('optStabilize'); if (s) s.checked = true;
+  clearSrs();
+  renderSettingsRows();
+}
+
+/** Payload extras sent with every command: setting overrides and the SRS. */
+function outgoingExtras(content) {
+  const extras = {};
+  const env = currentEnvOverrides();
+  if (Object.keys(env).length) extras.env = env;
+  if (attachedSrs && /^\/explore(\s|$)/.test(content)) extras.srs = attachedSrs;
+  return extras;
+}
+
+/** Send a slash command as if typed. Used by the history buttons. */
+function sendCommand(text) {
+  if (!connected) { showToast('Connect the gateway first (top right).', 'error'); return; }
+  const input = document.getElementById('msgInput');
+  input.value = text;
+  sendMessage();
+}
+
+/* ---------- Live run view ---------- */
+
+let currentRun = null;
+const RV_STAGES = [
+  { key: 'discovery', num: 1, name: 'Discovery', sub: 'ladder · robots-aware' },
+  { key: 'plan', num: 2, name: 'Plan', sub: 'Planner · Haiku' },
+  { key: 'explorer', num: 3, name: 'Explorer', sub: 'Opus · tool-use' },
+  { key: 'critic', num: 4, name: 'Critic and repair', sub: 'Sonnet · one repair pass' },
+  { key: 'replay', num: 5, name: 'Replay and stability', sub: 'Playwright · zero LLM' },
+  { key: 'summary', num: 6, name: 'Summary', sub: 'reconciliation · coverage · cost', wide: true },
+];
+
+function newRunState(msg) {
+  const req = msg.request || {};
+  const stages = {};
+  for (const s of RV_STAGES) stages[s.key] = 'idle';
+  const discoveryOn = !!(req.discover || (req.urls && req.urls.length) || req.srs);
+  stages.discovery = req.resume ? 'skipped' : discoveryOn ? 'active' : 'skipped';
+  return {
+    id: 'rv_' + Date.now().toString(36),
+    command: msg.command || 'explore',
+    request: req,
+    settings: msg.settings || gatewaySettings,
+    badge: 'running',
+    stages,
+    discovery: { lines: [], method: null, pages: null, narrowed: null, single: !discoveryOn && !req.resume, resumed: !!req.resume },
+    plan: { pages: [], scenarios: [], usd: null, notes: [], capHit: false },
+    explorer: {
+      calls: [], steps: 0, budget: null, usd: 0, tokens: 0, ceiling: null, reserve: null, subCeiling: null,
+      current: null, completed: 0, gates: [], broken: [], skips: [], incomplete: [], findings: [], heals: [], stop: null,
+    },
+    critic: { verdicts: [], usd: 0, secondVerdicts: null, repair: null, journeys: [], notes: [] },
+    replay: { total: null, results: [], passed: null, failed: null, durationMs: null },
+    stability: { total: null, iterations: null, results: {}, order: [], done: null, stabilizer: {} },
+    stopped: null,
+    report: null,
+    outcome: null,
+    zip: null,
+    el: null,
+    raf: 0,
+  };
+}
+
+function startRunView(msg) {
+  const rv = newRunState(msg);
+  currentRun = rv;
+  removeThinking();
+  // A run started from the gateway takes over the centre panel, as a typed command does.
+  const dash = document.getElementById('dashboard');
+  if (dash) dash.remove();
+  const welcome = document.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  const msgs = document.getElementById('messages');
+  msgs.classList.remove('has-welcome');
+  const el = document.createElement('div');
+  el.className = 'run-view';
+  el.dataset.run = rv.id;
+  rv.el = el;
+  msgs.appendChild(el);
+  renderRunView(rv, true);
+  msgs.scrollTop = msgs.scrollHeight;
+  resetPipeline();
+  setPipelineOverall('running');
+  return rv;
+}
+
+function scheduleRender(rv) {
+  if (rv.raf) return;
+  rv.raf = requestAnimationFrame(() => { rv.raf = 0; renderRunView(rv, false); });
+}
+
+function setStage(rv, key, state) { rv.stages[key] = state; }
+
+function runViewEvent(e) {
+  const rv = currentRun;
+  if (!rv || !e || !e.type) return;
+  const ex = rv.explorer;
+  switch (e.type) {
+    case 'plan_started':
+      if (rv.stages.discovery === 'active') setStage(rv, 'discovery', 'done');
+      setStage(rv, 'plan', 'active'); setPipeStage('planner', 'active'); break;
+    case 'plan_done':
+      rv.plan.scenarios = e.scenarios || []; rv.plan.usd = e.usd;
+      setStage(rv, 'plan', 'done'); setStage(rv, 'explorer', 'active');
+      setPipeStage('planner', 'done'); setPipeStage('explorer', 'active'); break;
+    case 'tool_call': {
+      ex.steps++;
+      ex.calls.push({ name: e.name, input: e.input, ok: null });
+      if (ex.calls.length > 60) ex.calls.shift();
+      if (e.name === 'begin_scenario') ex.current = (e.input && e.input.name) || '(unnamed)';
+      if (e.name === 'skip_scenario') ex.skips.push({ name: (e.input && e.input.name) || '?', reason: (e.input && e.input.reason) || '', pending: true });
+      if (rv.stages.explorer !== 'active' && rv.stages.critic === 'idle') setStage(rv, 'explorer', 'active');
+      break;
+    }
+    case 'tool_result': {
+      const last = ex.calls.length ? ex.calls[ex.calls.length - 1] : null;
+      if (last && last.name === e.name) { last.ok = e.ok; last.error = e.error; }
+      if (e.name === 'skip_scenario') {
+        const s = ex.skips.find((x) => x.pending);
+        if (s) { if (e.ok) s.pending = false; else ex.skips.splice(ex.skips.indexOf(s), 1); }
+      }
+      if (e.name === 'end_scenario' && e.ok) { ex.completed++; ex.current = null; }
+      break;
+    }
+    case 'usage': ex.usd = e.usd; ex.tokens = e.tokens; break;
+    case 'message': parseRunMessage(rv, e.text || ''); break;
+    case 'critic_started':
+      if (rv.stages.explorer === 'active') setStage(rv, 'explorer', 'done');
+      setStage(rv, 'critic', 'active'); setPipeStage('explorer', 'done'); setPipeStage('critic', 'active'); break;
+    case 'critic_done':
+      if (rv.critic.verdicts.length === 0 && !rv.critic.repair) { rv.critic.verdicts = e.verdicts || []; }
+      else { rv.critic.secondVerdicts = e.verdicts || []; }
+      rv.critic.usd += e.usd || 0; break;
+    case 'replay_started':
+      if (rv.stages.critic === 'active') setStage(rv, 'critic', 'done');
+      if (rv.stages.explorer === 'active') setStage(rv, 'explorer', 'done');
+      setStage(rv, 'replay', 'active'); rv.replay.total = e.total; setPipeStage('critic', 'done'); setPipeStage('replay', 'active'); break;
+    case 'replay_scenario_passed': rv.replay.results.push({ name: e.name, passed: true, ms: e.durationMs }); break;
+    case 'replay_scenario_failed': rv.replay.results.push({ name: e.name, passed: false, step: e.failedStep, kind: e.stepKind, error: e.error }); break;
+    case 'replay_done': rv.replay.passed = e.passed; rv.replay.failed = e.failed; rv.replay.durationMs = e.durationMs; setPipeStage('replay', 'done'); break;
+    case 'stability_started': rv.stability.total = e.total; rv.stability.iterations = e.iterations; setStage(rv, 'replay', 'active'); setPipeStage('stability', 'active'); break;
+    case 'stability_iteration_passed': stabilityMark(rv, e.name, e.iteration, true); break;
+    case 'stability_iteration_failed': stabilityMark(rv, e.name, e.iteration, false, e); break;
+    case 'stability_done': rv.stability.done = e; setStage(rv, 'replay', 'done'); setPipeStage('stability', 'done'); renderStabilityStats({ passed: e.stable, flaky: e.flaked, broken: 0, flakeRate: e.flakeRate, recovered: e.recovered, stabilizerCostUsd: e.stabilizerCostUsd }); break;
+    case 'gate_injection': ex.gates.push(e); break;
+    case 'gate_broken': ex.broken.push(e); break;
+    case 'heal': ex.heals.push(e); setPipeStage('healer', 'done'); break;
+    case 'done': ex.explored = e.scenarios; break;
+    default: break;
+  }
+  scheduleRender(rv);
+}
+
+function stabilityMark(rv, name, iteration, passed, fail) {
+  const st = rv.stability;
+  if (!st.results[name]) { st.results[name] = []; st.order.push(name); }
+  st.results[name].push({ iteration, passed, fail });
+}
+
+/** Runtime message lines carry the numbers the events do not; parse, never invent. */
+function parseRunMessage(rv, text) {
+  const t = text.trim();
+  const ex = rv.explorer;
+  let m;
+  if ((m = t.match(/^Cost ceiling: \$([\d.]+) total.*explorer \$([\d.]+), repair reserve \$([\d.]+)/))) {
+    ex.ceiling = Number(m[1]); ex.subCeiling = Number(m[2]); ex.reserve = Number(m[3]); return;
+  }
+  if ((m = t.match(/^Cost ceiling: \$([\d.]+) \(no repair reserve\)/))) { ex.ceiling = Number(m[1]); ex.subCeiling = Number(m[1]); ex.reserve = 0; return; }
+  if (/^discovery: /.test(t)) {
+    if (rv.stages.discovery !== 'done') setStage(rv, 'discovery', 'active');
+    rv.discovery.single = false;
+    const body = t.slice('discovery: '.length);
+    if ((m = body.match(/^(\d+) page\(s\) via (\S+)$/))) { rv.discovery.pages = Number(m[1]); rv.discovery.method = m[2]; }
+    else if ((m = body.match(/^(\d+) page\(s\) narrowed to (\d+) \((.+)\)/))) { rv.discovery.narrowed = { from: Number(m[1]), to: Number(m[2]), how: m[3] }; }
+    else rv.discovery.lines.push(body);
+    return;
+  }
+  if ((m = t.match(/^Planner \[(\d+)\/(\d+)\] (\S+): (\d+) scenario\(s\) · \$([\d.]+)/))) {
+    rv.plan.pages.push({ i: Number(m[1]), n: Number(m[2]), url: m[3], count: Number(m[4]), usd: Number(m[5]) });
+    setStage(rv, 'plan', 'active'); return;
+  }
+  if (/^Planner: global cap/.test(t)) { rv.plan.capHit = true; rv.plan.notes.push(t); return; }
+  if ((m = t.match(/^Step budget: (\d+)/))) { ex.budget = Number(m[1]); return; }
+  if (/^Dropped near-duplicate scenario|^Rejected circular scenario/.test(t)) { rv.plan.notes.push(t); return; }
+  if ((m = t.match(/^Scenario "(.+)" left INCOMPLETE: (.+)$/))) { ex.incomplete.push({ name: m[1], reason: m[2] }); return; }
+  if ((m = t.match(/^Finding: "(.+?)" — (.+)$/))) { ex.findings.push({ name: m[1], detail: m[2] }); return; }
+  if (/^Cost ceiling reached|^Explorer stopped:/.test(t)) { ex.stop = t; return; }
+  if (/^Critic rejected /.test(t)) { rv.critic.notes.push(t); return; }
+  if ((m = t.match(/^repair pass: (\d+) scenario\(s\), budget \$([\d.]+)/))) { rv.critic.repair = { count: Number(m[1]), budget: Number(m[2]), ran: true }; return; }
+  if ((m = t.match(/^repair pass skipped: (.+)$/))) { rv.critic.repair = { ran: false, reason: m[1] }; return; }
+  if (/^Repair pass failed/.test(t)) { rv.critic.notes.push(t); return; }
+  if ((m = t.match(/^Repair verdict: "(.+)" rework -> (.+?) \((kept|dropped)\)$/))) { rv.critic.journeys.push({ scenario: m[1], first: 'rework', second: m[2] === 'not re-recorded' ? null : m[2], outcome: m[3] }); return; }
+  if ((m = t.match(/^↻ trying to recover flaky scenario: (.+)$/))) { stabilizerEntry(rv, m[1]).attempts.push({ note: 'trying' }); return; }
+  if ((m = t.match(/^attempt (\d+) — Stabilizer proposed: (.+?) — (.+) \(\$([\d.]+)\)$/))) {
+    const cur = rv.stability.order.length ? lastStabilizerName(rv) : null;
+    if (cur) stabilizerEntry(rv, cur).attempts.push({ n: Number(m[1]), kind: m[2], reason: m[3], usd: Number(m[4]) });
+    return;
+  }
+  if ((m = t.match(/^attempt (\d+) didn't take \(pattern (.+?)\)/))) { const cur = lastStabilizerName(rv); if (cur) stabilizerEntry(rv, cur).attempts.push({ n: Number(m[1]), failedPattern: m[2] }); return; }
+  if ((m = t.match(/^✓ recovered (.+?) — stable after (\d+) attempt/))) { stabilizerEntry(rv, m[1]).result = 'recovered'; return; }
+  if ((m = t.match(/^✗ Stabilizer gave up on (.+?) after (\d+) attempt/))) { stabilizerEntry(rv, m[1]).result = 'gave up'; return; }
+  if (/^Run stopped: /.test(t)) { rv.stopped = t; return; }
+}
+function stabilizerEntry(rv, name) {
+  const st = rv.stability;
+  if (!st.stabilizer[name]) st.stabilizer[name] = { name, attempts: [], result: null, lastTouched: 0 };
+  st.stabilizer[name].lastTouched = ++st._touch || (st._touch = 1);
+  return st.stabilizer[name];
+}
+function lastStabilizerName(rv) {
+  let best = null;
+  for (const s of Object.values(rv.stability.stabilizer)) if (!best || s.lastTouched > best.lastTouched) best = s;
+  return best ? best.name : null;
+}
+
+function finishRunView(msg) {
+  const rv = currentRun;
+  if (!rv) return;
+  rv.report = msg.report || null;
+  rv.outcome = msg.outcome || null;
+  const kind = rv.outcome && rv.outcome.kind;
+  const stopped = rv.report && rv.report.stopped;
+  rv.badge = kind === 'empty' ? 'empty' : stopped ? 'stopped' : 'done';
+  for (const s of RV_STAGES) {
+    if (rv.stages[s.key] === 'active') rv.stages[s.key] = 'done';
+    if (rv.stages[s.key] === 'idle') rv.stages[s.key] = 'skipped';
+  }
+  rv.stages.summary = kind === 'empty' ? 'error' : 'done';
+  if (rv.report && rv.report.discovery) setStage(rv, 'discovery', 'done');
+  renderRunView(rv, true);
+  setPipelineOverall(rv.badge);
+  if (rv.report && rv.report.stability && !rv.report.stability.skipped) renderStabilityStats(rv.report.stability);
+  const msgs = document.getElementById('messages');
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+}
+
+function failRunView(error) {
+  const rv = currentRun;
+  if (!rv) return;
+  rv.badge = 'failed';
+  rv.error = error;
+  for (const s of RV_STAGES) if (rv.stages[s.key] === 'active') rv.stages[s.key] = 'error';
+  renderRunView(rv, true);
+  setPipelineOverall('error');
+}
+
+function attachZipToRun(data) {
+  const rv = currentRun;
+  if (!rv) return;
+  rv.zip = data;
+  scheduleRender(rv);
+}
+
+/* ---------- Run view renderers ---------- */
+
+function renderRunView(rv, full) {
+  if (!rv.el) return;
+  const req = rv.request || {};
+  const title = rv.command === 'resume' ? 'resume' : 'explore';
+  const url = req.url || (rv.report && rv.report.url) || (req.resume ? req.resume : '');
+  const chips = runHeaderChips(rv);
+  const head = `
+    <div class="rv-head">
+      <div class="rv-title">/${escHtml(title)} <span class="rv-url" title="${escAttr(url)}">${escHtml(url)}</span>
+        <span class="rv-badge ${escAttr(rv.badge)}">${escHtml(rv.badge)}</span></div>
+      <div class="rv-chips">${chips}</div>
+    </div>`;
+  const stages = RV_STAGES.map((s) => {
+    const state = rv.stages[s.key];
+    return `<section class="rv-stage ${s.wide ? 'wide' : ''} ${escAttr(state)}" data-stage="${s.key}">
+      <div class="rv-stage-head"><span class="rv-num">${s.num}</span><span class="rv-stage-name">${s.name}</span><span class="rv-stage-sub">${s.sub}</span><span class="rv-stage-state">${escHtml(stageLabel(state))}</span></div>
+      <div class="rv-body" id="${rv.id}-${s.key}">${renderStageBody(rv, s.key)}</div>
+    </section>`;
+  }).join('');
+  rv.el.innerHTML = head + `<div class="rv-stages">${stages}</div>`;
+  const dl = rv.el.querySelector('.rv-download');
+  if (dl && rv.zip) dl.addEventListener('click', () => triggerFrameworkZipDownload(rv.zip));
+  [...rv.el.querySelectorAll('[data-send]')].forEach((b) => b.addEventListener('click', () => sendCommand(b.dataset.send)));
+}
+
+function stageLabel(state) {
+  return state === 'active' ? 'running' : state;
+}
+
+function runHeaderChips(rv) {
+  const req = rv.request || {};
+  const env = req.env || {};
+  const settings = rv.settings || gatewaySettings || [];
+  const chips = [];
+  chips.push(`<span class="rv-chip"><b>${escHtml(req.lang || 'ts')}</b></span>`);
+  chips.push(`<span class="rv-chip">${req.pom === false ? 'inline spec' : 'POM'}</span>`);
+  if (req.features && req.features.length) chips.push(`<span class="rv-chip">features <b>${escHtml(req.features.join(', '))}</b></span>`);
+  if (req.srs) chips.push(`<span class="rv-chip">srs <b>${escHtml(String(req.srs).split('/').pop())}</b></span>`);
+  if (req.discover) chips.push(`<span class="rv-chip">discover</span>`);
+  if (req.urls && req.urls.length) chips.push(`<span class="rv-chip">urls <b>${req.urls.length}</b></span>`);
+  if (req.resume) chips.push(`<span class="rv-chip">resume</span>`);
+  if (req.stabilize === false) chips.push(`<span class="rv-chip">no stabilizer</span>`);
+  for (const s of settings) {
+    const short = s.name.replace('QA_CORE_', '').toLowerCase().replace(/_/g, ' ');
+    const overridden = env[s.name] !== undefined;
+    const value = overridden ? env[s.name] : s.value;
+    const display = /MODEL/.test(s.name) ? String(value).replace('claude-', '') : /CEILING/.test(s.name) ? '$' + value : value;
+    chips.push(`<span class="rv-chip ${overridden ? 'override' : ''}" title="${escAttr(s.name)}${overridden ? ' (overridden for this run)' : s.fromEnv ? ' (from env)' : ' (default)'}">${escHtml(short)} <b>${escHtml(display)}</b></span>`);
+  }
+  return chips.join('');
+}
+
+function renderStageBody(rv, key) {
+  switch (key) {
+    case 'discovery': return renderDiscovery(rv);
+    case 'plan': return renderPlan(rv);
+    case 'explorer': return renderExplorer(rv);
+    case 'critic': return renderCritic(rv);
+    case 'replay': return renderReplay(rv);
+    case 'summary': return renderSummary(rv);
+  }
+  return '';
+}
+
+function listMore(items, max) {
+  return items.length > max ? `<div class="rv-more">+${items.length - max} more</div>` : '';
+}
+
+function renderDiscovery(rv) {
+  const d = rv.discovery;
+  const rep = rv.report && rv.report.discovery;
+  if (rep) {
+    const pages = rep.pages || [];
+    const bySource = {};
+    for (const p of pages) bySource[p.source] = (bySource[p.source] || 0) + 1;
+    return `
+      <div class="rv-kv"><span>rung <b>${escHtml(rep.method)}</b></span><span>pages <b>${pages.length}</b></span>${Object.entries(bySource).map(([s, n]) => `<span>${escHtml(s)} <b>${n}</b></span>`).join('')}</div>
+      ${d.narrowed ? `<div class="rv-kv"><span>filter <b>${d.narrowed.from} → ${d.narrowed.to}</b> (${escHtml(d.narrowed.how)})</span></div>` : ''}
+      <ul class="rv-list">${pages.slice(0, 8).map((p) => `<li><span class="name mono" title="${escAttr(p.url)}">${escHtml(p.url)}</span>${p.feature ? `<span class="rv-tag feature">${escHtml(p.feature)}</span>` : ''}${p.volatile ? '<span class="rv-tag">volatile</span>' : ''}</li>`).join('')}</ul>${listMore(pages, 8)}
+      ${(rep.warnings || []).length ? `<ul class="rv-list" style="margin-top:6px">${rep.warnings.slice(0, 6).map((w) => `<li><span class="rv-warn">⚠</span><span class="why">${escHtml(w)}</span></li>`).join('')}</ul>${listMore(rep.warnings, 6)}` : ''}`;
+  }
+  if (d.resumed) return '<div class="rv-empty">Restored from the checkpoint (discovery and plan are not repeated).</div>';
+  if (d.single && !d.method && d.lines.length === 0) return '<div class="rv-empty">Single page. Discovery activates with --discover, --urls, or --srs.</div>';
+  return `
+    ${d.method ? `<div class="rv-kv"><span>rung <b>${escHtml(d.method)}</b></span><span>pages <b>${d.pages}</b></span></div>` : '<div class="rv-kv"><span>walking the ladder…</span></div>'}
+    ${d.narrowed ? `<div class="rv-kv"><span>filter <b>${d.narrowed.from} → ${d.narrowed.to}</b> (${escHtml(d.narrowed.how)})</span></div>` : ''}
+    ${d.lines.length ? `<ul class="rv-list">${d.lines.slice(-6).map((w) => `<li><span class="rv-warn">⚠</span><span class="why">${escHtml(w)}</span></li>`).join('')}</ul>` : ''}`;
+}
+
+function scenarioTags(s) {
+  const tags = [];
+  if (s.feature) tags.push(`<span class="rv-tag feature">${escHtml(s.feature)}</span>`);
+  if (s.category) tags.push(`<span class="rv-tag ${escAttr(s.category)}">${escHtml(s.category)}</span>`);
+  if (Array.isArray(s.ruleIds) && s.ruleIds.length) tags.push(`<span class="rv-tag rule">${escHtml(s.ruleIds.join(','))}</span>`);
+  return tags.join('');
+}
+
+function renderPlan(rv) {
+  const p = rv.plan;
+  const scenarios = (rv.report && rv.report.plan) || p.scenarios;
+  const usd = rv.report ? (rv.report.cost && rv.report.cost.plannerUsd) : p.usd;
+  if (!scenarios.length && !p.pages.length) return rv.stages.plan === 'skipped' ? '<div class="rv-empty">Plan restored from the checkpoint.</div>' : '<div class="rv-empty">Waiting for the Planner…</div>';
+  const pages = p.pages.length ? `<ul class="rv-list">${p.pages.map((pg) => `<li><span class="mono">[${pg.i}/${pg.n}]</span><span class="name mono" title="${escAttr(pg.url)}">${escHtml(pg.url)}</span><span class="mono">${pg.count} scenario(s) · $${pg.usd.toFixed(4)}</span></li>`).join('')}</ul>` : '';
+  return `
+    <div class="rv-kv"><span>scenarios <b>${scenarios.length}</b></span>${usd != null ? `<span>planner <b>$${Number(usd).toFixed(4)}</b></span>` : ''}${p.capHit ? '<span class="rv-warn">global cap reached</span>' : ''}</div>
+    ${pages}
+    <ul class="rv-list" style="margin-top:${pages ? '6px' : '0'}">${scenarios.slice(0, 12).map((s) => `<li>${scenarioTags(s)}<span class="name" title="${escAttr(s.name)}">${escHtml(s.name)}</span></li>`).join('')}</ul>${listMore(scenarios, 12)}
+    ${p.notes.length ? `<ul class="rv-list" style="margin-top:6px">${p.notes.slice(0, 4).map((n) => `<li><span class="why">${escHtml(n)}</span></li>`).join('')}</ul>${listMore(p.notes, 4)}` : ''}`;
+}
+
+function renderExplorer(rv) {
+  const ex = rv.explorer;
+  const rep = rv.report;
+  const usd = rep ? rep.cost.usd : ex.usd;
+  const sub = ex.subCeiling;
+  const pct = sub ? Math.min(100, (usd / sub) * 100) : 0;
+  const meterCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
+  const steps = rep ? rep.steps : ex.steps;
+  const skipped = rep && Array.isArray(rep.skipped) ? rep.skipped.map((s) => ({ name: s.scenario, reason: s.reason })) : ex.skips.filter((s) => !s.pending);
+  const incomplete = rep && Array.isArray(rep.incomplete) ? rep.incomplete.map((s) => ({ name: s.scenario, reason: s.reason })) : ex.incomplete;
+  const gates = rep && rep.gate ? rep.gate.injections : ex.gates;
+  const broken = rep && rep.gate ? rep.gate.broken : ex.broken;
+  const heals = rep && Array.isArray(rep.heals) ? rep.heals : ex.heals;
+  const explored = rep ? rep.scenarios.length + (rep.reconciliation ? (rep.reconciliation.dropped || []).filter((d) => d.stage !== 'planner').length : 0) : ex.completed;
+  if (!rep && rv.stages.explorer === 'idle') return '<div class="rv-empty">Waiting for the plan…</div>';
+  return `
+    <div class="rv-kv">
+      <span>steps <b>${steps}</b>${ex.budget ? ` / ${ex.budget}` : ''}</span>
+      <span>scenarios recorded <b>${rep ? rep.scenarios.length : ex.completed}</b></span>
+      ${ex.current && !rep ? `<span>now <b>${escHtml(ex.current)}</b></span>` : ''}
+      ${heals.length ? `<span>recovered selectors <b>${heals.length}</b></span>` : ''}
+    </div>
+    <div class="rv-meter ${meterCls}"><i style="width:${pct.toFixed(1)}%"></i></div>
+    <div class="rv-meter-label"><span>explorer $${Number(usd).toFixed(4)}</span><span>${sub ? `sub-ceiling $${sub.toFixed(2)}${ex.reserve ? ` (+$${ex.reserve.toFixed(2)} repair reserve)` : ''}` : 'ceiling pending'}</span></div>
+    ${ex.stop ? `<div class="rv-banner"><b>stopped</b> ${escHtml(ex.stop)}</div>` : ''}
+    ${gates.length ? `<div class="rv-kv" style="margin-top:6px"><span>gate injections <b>${gates.length}</b></span>${broken.length ? `<span class="rv-bad">gate broken <b>${broken.length}</b></span>` : ''}</div>` : ''}
+    ${skipped.length ? `<ul class="rv-list">${skipped.slice(0, 5).map((s) => `<li><span class="rv-tag">skipped</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>${listMore(skipped, 5)}` : ''}
+    ${incomplete.length ? `<ul class="rv-list">${incomplete.slice(0, 5).map((s) => `<li><span class="rv-tag edge">incomplete</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>` : ''}
+    ${!rep && ex.findings.length ? `<ul class="rv-list">${ex.findings.slice(0, 4).map((f) => `<li><span class="rv-tag negative">finding</span><span class="name">${escHtml(f.name)}</span></li>`).join('')}</ul>` : ''}
+    ${!rep && ex.calls.length ? `<div class="rv-calls">${ex.calls.slice(-14).map((c) => `<div>${c.ok === false ? '<span class="err">✗</span>' : '→'} <span class="fn">${escHtml(c.name)}</span>(${escHtml(shortJson(c.input))})${c.ok === false && c.error ? ` <span class="err">${escHtml(String(c.error).slice(0, 80))}</span>` : ''}</div>`).join('')}</div>` : ''}
+    ${explored !== null && rep ? '' : ''}`;
+}
+
+function shortJson(v) {
+  try { const s = JSON.stringify(v); return s.length > 90 ? s.slice(0, 87) + '…' : s; } catch { return ''; }
+}
+
+function verdictRows(verdicts, max) {
+  return verdicts.slice(0, max).map((v) => `
+    <div class="rv-verdict"><span class="v ${escAttr(v.verdict)}">${escHtml(v.verdict)}</span>
+      <div class="vs"><div class="name">${escHtml(v.scenario)}</div>${(v.reasons || []).length ? `<div class="why">${escHtml(v.reasons.join(' · '))}</div>` : ''}</div></div>`).join('') + listMore(verdicts, max);
+}
+
+function journeysHtml(journeys) {
+  if (!journeys || !journeys.length) return '';
+  return `<div class="rv-sub-label">verdict journeys</div>` + journeys.map((j) => `
+    <div class="rv-journey"><span class="name" title="${escAttr(j.scenario)}">${escHtml(j.scenario)}</span>
+      <span class="v rework">rework</span> <span class="arrow">→</span>
+      <span class="v ${j.second ? escAttr(j.second) : 'none'}">${escHtml(j.second || 'not re-recorded')}</span>
+      <span class="outcome ${escAttr(j.outcome)}">${escHtml(j.outcome)}</span></div>`).join('');
+}
+
+function renderCritic(rv) {
+  const c = rv.critic;
+  const rep = rv.report;
+  const review = rep && rep.review;
+  if (!review && c.verdicts.length === 0) return rv.stages.critic === 'active' ? '<div class="rv-empty">Reviewing recorded traces…</div>' : '<div class="rv-empty">Waiting for the Explorer…</div>';
+  const finalVerdicts = review ? review.verdicts : c.verdicts;
+  const counts = { pass: 0, rework: 0, reject: 0 };
+  for (const v of finalVerdicts) if (counts[v.verdict] !== undefined) counts[v.verdict]++;
+  const usd = rep ? (rep.cost.criticUsd || 0) : c.usd;
+  const journeys = review && review.repair ? review.repair : c.journeys;
+  let banner = '';
+  if (c.repair && c.repair.ran) banner = `<div class="rv-banner info"><b>repair pass</b> ${c.repair.count} scenario(s) re-explored · budget $${c.repair.budget.toFixed(2)}${rep && rep.cost.repairUsd != null ? ` · spent $${rep.cost.repairUsd.toFixed(4)}` : ''}</div>`;
+  else if (c.repair && !c.repair.ran) banner = `<div class="rv-banner"><b>repair pass skipped</b> ${escHtml(c.repair.reason)}</div>`;
+  const label = review ? 'final verdicts' : c.repair ? 'first verdicts' : 'verdicts';
+  return `
+    <div class="rv-kv"><span class="rv-ok">pass <b>${counts.pass}</b></span><span class="rv-warn">rework <b>${counts.rework}</b></span><span class="rv-bad">reject <b>${counts.reject}</b></span><span>critic <b>$${Number(usd).toFixed(4)}</b></span></div>
+    ${banner}
+    <div class="rv-sub-label">${label}</div>
+    ${verdictRows(finalVerdicts, 8)}
+    ${journeysHtml(journeys)}
+    ${c.notes.length ? `<ul class="rv-list" style="margin-top:6px">${c.notes.map((n) => `<li><span class="why">${escHtml(n)}</span></li>`).join('')}</ul>` : ''}`;
+}
+
+function renderReplay(rv) {
+  const r = rv.replay;
+  const st = rv.stability;
+  const rep = rv.report;
+  if (rv.stages.replay === 'idle') return '<div class="rv-empty">Waiting for the Critic…</div>';
+  if (rv.stages.replay === 'skipped') return '<div class="rv-empty">Replay and stability did not run.</div>';
+  const replayRep = rep && rep.replay && !rep.replay.skipped ? rep.replay : null;
+  const results = replayRep ? replayRep.verdicts.map((v) => ({ name: v.name, passed: v.passed, step: v.failedStep, kind: v.stepKind, error: v.error })) : r.results;
+  const passed = replayRep ? replayRep.passed : r.passed;
+  const failed = replayRep ? replayRep.failed : r.failed;
+  const stabRep = rep && rep.stability && !rep.stability.skipped ? rep.stability : null;
+  const iterations = stabRep ? stabRep.iterations : st.iterations;
+  let stabilityRows = '';
+  if (stabRep) {
+    stabilityRows = stabRep.verdicts.map((v) => {
+      const dots = [];
+      for (let i = 0; i < v.iterations; i++) dots.push(i < v.passes ? '<i class="p"></i>' : '<i class="f"></i>');
+      const cls = v.classification || (v.stable ? 'stable' : 'flaky');
+      const label = v.relaxed ? 'recovered' : v.gaveUp ? 'broken' : cls;
+      return `<div class="rv-run"><span class="name" title="${escAttr(v.name)}">${escHtml(v.name)}</span><span class="rv-dots">${dots.join('')}</span><span class="pattern ${escAttr(label)}">${escHtml(v.pattern || label)}</span></div>`;
+    }).join('');
+  } else if (st.order.length) {
+    stabilityRows = st.order.map((name) => {
+      const its = st.results[name];
+      const dots = [];
+      for (let i = 0; i < (iterations || its.length); i++) { const it = its[i]; dots.push(it ? (it.passed ? '<i class="p"></i>' : '<i class="f"></i>') : '<i></i>'); }
+      const fails = its.filter((x) => !x.passed).length;
+      const pattern = its.map((x) => (x.passed ? 'P' : 'F')).join('');
+      return `<div class="rv-run"><span class="name" title="${escAttr(name)}">${escHtml(name)}</span><span class="rv-dots">${dots.join('')}</span><span class="pattern ${fails ? (fails === its.length ? 'broken' : 'flaky') : ''}">${pattern}</span></div>`;
+    }).join('');
+  }
+  const stabilizer = Object.values(st.stabilizer);
+  const stabilizerHtml = stabilizer.length ? `<div class="rv-sub-label">stabilizer attempts</div><ul class="rv-list">${stabilizer.map((s) => `<li><span class="rv-tag ${s.result === 'recovered' ? 'happy' : s.result === 'gave up' ? 'negative' : 'edge'}">${escHtml(s.result || 'trying')}</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.attempts.filter((a) => a.kind).map((a) => `#${a.n} ${a.kind}`).join(' → '))}</span></li>`).join('')}</ul>` : '';
+  const stabDone = stabRep || st.done;
+  return `
+    <div class="rv-sub-label">reality check <span class="mono">${r.total != null || replayRep ? `${results.length}/${replayRep ? replayRep.passed + replayRep.failed : r.total} replayed` : ''}${passed != null ? ` · ${passed} passed · ${failed} dropped` : ''}</span></div>
+    <div class="rv-runs">${results.slice(0, 10).map((x) => `<div class="rv-run"><span class="rv-dots">${x.passed ? '<i class="p"></i>' : '<i class="f"></i>'}</span><span class="name" title="${escAttr(x.name)}">${escHtml(x.name)}</span>${!x.passed ? `<span class="pattern broken">step ${(x.step ?? 0) + 1} ${escHtml(x.kind || '')}</span>` : ''}</div>`).join('')}</div>${listMore(results, 10)}
+    ${iterations ? `<div class="rv-sub-label" style="margin-top:10px">stability <span class="mono">${iterations}× re-run${stabDone ? ` · ${stabDone.stable != null ? stabDone.stable : stabDone.passed} stable · ${stabDone.flaked} flaked${(stabDone.recovered || 0) > 0 ? ` · ${stabDone.recovered} recovered` : ''} · flake_rate ${((stabDone.flakeRate || 0) * 100).toFixed(1)}%` : ''}</span></div><div class="rv-runs">${stabilityRows}</div>` : ''}
+    ${stabilizerHtml}`;
+}
+
+function funnelHtml(rec) {
+  if (!rec) return '<div class="rv-empty">No reconciliation on this report.</div>';
+  const planned = Math.max(1, rec.planned || 0);
+  const w = (n) => ((n / planned) * 100).toFixed(1) + '%';
+  const droppedByStage = {};
+  for (const d of rec.dropped || []) droppedByStage[d.stage] = (droppedByStage[d.stage] || 0) + 1;
+  const dropDetail = Object.entries(droppedByStage).map(([s, n]) => `${s} ${n}`).join(' · ');
+  // Reconciliation arrays are named lists; the funnel shows their lengths,
+  // exactly what renderReconciliation prints on the CLI.
+  const n = (v) => (Array.isArray(v) ? v.length : Number(v) || 0);
+  const counts = { planned: n(rec.planned), generated: n(rec.generated), dropped: n(rec.dropped), incomplete: n(rec.incomplete), findings: n(rec.findings), skipped: n(rec.skipped) };
+  const rows = [
+    { key: 'planned', label: 'planned', n: counts.planned, head: true },
+    { key: 'generated', label: 'generated', n: counts.generated },
+    { key: 'dropped', label: 'dropped', n: counts.dropped, detail: dropDetail },
+    { key: 'incomplete', label: 'incomplete', n: counts.incomplete },
+    { key: 'findings', label: 'findings', n: counts.findings },
+    { key: 'skipped', label: 'skipped', n: counts.skipped },
+  ];
+  const sum = counts.generated + counts.dropped + counts.incomplete + counts.findings + counts.skipped;
+  return `<div class="funnel">${rows.map((r) => `
+    <div class="funnel-row ${r.key}"><span class="fl ${r.head ? 'head' : ''}">${r.label}</span><div class="fbar"><i class="${r.n ? '' : 'zero'}" style="width:${w(r.n)}"></i></div><span class="fn">${r.n}</span>${r.detail ? `<div class="fdetail">${escHtml(r.detail)}</div>` : ''}</div>`).join('')}</div>
+    <div class="funnel-eq"><span>${counts.planned} = ${counts.generated} + ${counts.dropped} + ${counts.incomplete} + ${counts.findings} + ${counts.skipped}</span>
+      <span class="${rec.balanced ? 'balanced' : 'unbalanced'}">${rec.balanced ? '✓ balanced' : `⚠ off by ${Math.abs(counts.planned - sum)}`}</span>${rec.added ? `<span>+${rec.added} unplanned</span>` : ''}</div>
+    ${rec.note ? `<div class="rv-more">${escHtml(rec.note)}</div>` : ''}`;
+}
+
+function costSplitHtml(rep) {
+  const cost = rep.cost || {};
+  const planner = cost.plannerUsd || 0;
+  const repair = cost.repairUsd || 0;
+  const explorer = Math.max(0, (cost.usd || 0) - repair);
+  const critic = cost.criticUsd || 0;
+  const stabilizer = rep.stability && rep.stability.stabilizerCostUsd ? rep.stability.stabilizerCostUsd : 0;
+  const total = planner + explorer + repair + critic + stabilizer;
+  const seg = (cls, v) => total > 0 && v > 0 ? `<i class="${cls}" style="width:${((v / total) * 100).toFixed(2)}%" title="${cls} $${v.toFixed(4)}"></i>` : '';
+  return `
+    <div class="cost-split">
+      <div class="cost-total">$${total.toFixed(4)} <span style="font-size:10.5px;color:var(--text-3);font-weight:400">total</span></div>
+      <div class="cost-bar">${seg('planner', planner)}${seg('explorer', explorer)}${seg('critic', critic)}${seg('repair', repair)}${seg('stabilizer', stabilizer)}</div>
+      <div class="cost-legend"><span class="planner">planner $${planner.toFixed(4)}</span><span class="explorer">explorer $${explorer.toFixed(4)}</span><span class="critic">critic $${critic.toFixed(4)}</span><span class="repair">repair $${repair.toFixed(4)}</span>${stabilizer ? `<span class="stabilizer">stabilizer $${stabilizer.toFixed(4)}</span>` : ''}</div>
+    </div>`;
+}
+
+function coverageHtml(rc) {
+  if (!rc) return '';
+  const covered = rc.covered || [];
+  const uncovered = rc.uncovered || [];
+  const total = covered.length + uncovered.length;
+  return `
+    <div class="rv-sub-label">rule coverage <span class="mono">${covered.length} of ${total} covered</span></div>
+    ${covered.length ? `<ul class="coverage-list">${covered.slice(0, 6).map((c) => `<li><span class="rid">${escHtml(c.ruleId)}</span><span class="rv-ok">covered</span><span class="why">${escHtml((c.scenarios || []).slice(0, 2).join(', '))}</span></li>`).join('')}</ul>${listMore(covered, 6)}` : ''}
+    ${uncovered.length ? `<div class="rv-sub-label" style="margin-top:8px">considered, not automated <span class="mono">${uncovered.length}</span></div><ul class="coverage-list">${uncovered.slice(0, 8).map((u) => `<li><span class="rid">${escHtml(u.ruleId)}</span><span class="name" style="color:var(--text-2)">${escHtml(u.text)}</span><span class="why">${escHtml(u.reason)}</span></li>`).join('')}</ul>${listMore(uncovered, 8)}` : ''}`;
+}
+
+function findingsHtml(findings) {
+  if (!findings || !findings.length) return '';
+  return `<div class="rv-sub-label">findings <span class="mono">${findings.length} · product behavior to review, not test failures</span></div>` +
+    findings.map((f) => `<div class="finding"><div class="name">${escHtml(f.scenario)}</div><div class="detail">expected ${escHtml(f.expected)}; page stayed at <span class="mono">${escHtml(f.url)}</span>${(f.messages || []).length ? `. Page said: ${escHtml(f.messages.join(' | '))}` : ''}</div></div>`).join('');
+}
+
+function renderSummary(rv) {
+  const rep = rv.report;
+  if (!rep) {
+    const ex = rv.explorer;
+    const soFar = (rv.plan.usd || 0) + (ex.usd || 0) + (rv.critic.usd || 0);
+    return `<div class="rv-kv"><span>cost so far <b>$${soFar.toFixed(4)}</b></span>${rv.stopped ? `<span class="rv-warn">${escHtml(rv.stopped)}</span>` : ''}</div><div class="rv-empty">Funnel, coverage and cost split appear when the run finishes.</div>`;
+  }
+  const outcome = rv.outcome || {};
+  const diag = outcome.kind === 'empty' && outcome.diagnosis ? `<div class="rv-banner bad"><b>no framework</b> ${escHtml(outcome.diagnosis.join(' '))}</div>` : '';
+  const stopped = rep.stopped ? `<div class="rv-banner"><b>stopped early</b> ${escHtml(rep.stopped.reason)}</div>` : '';
+  const dl = rv.zip
+    ? `<button class="rv-download" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download ${escHtml(rv.zip.filename)} <span style="opacity:.7">${rv.zip.scenarios} scenarios · ${rv.zip.fileCount} files</span></button>`
+    : (outcome.kind === 'framework' ? '<div class="rv-more">zip on its way…</div>' : '');
+  const resume = outcome.checkpointPath
+    ? `<div class="rv-hint">Checkpoint kept at ${escHtml(outcome.checkpointPath)}</div><button class="run-action primary" type="button" style="margin-top:6px;max-width:220px" data-send="/resume ${escAttr(outcome.checkpointPath)}">Resume this run</button>`
+    : '';
+  return `
+    <div class="rv-summary-grid">
+      <div>
+        <div class="rv-sub-label">reconciliation funnel</div>
+        ${funnelHtml(rep.reconciliation)}
+        ${diag}${stopped}
+        ${findingsHtml(rep.findings)}
+      </div>
+      <div>
+        <div class="rv-sub-label">cost split</div>
+        ${costSplitHtml(rep)}
+        <div style="margin-top:12px">${coverageHtml(rep.ruleCoverage)}</div>
+        ${rep.review && rep.review.summary ? `<div class="rv-sub-label" style="margin-top:10px">critic summary</div><div style="font-size:11.5px;color:var(--text-2);line-height:1.5">${escHtml(rep.review.summary)}</div>` : ''}
+        ${dl}
+        ${resume}
+      </div>
+    </div>`;
+}
+
 /* ---------- Initial render ---------- */
 
 renderDashboard();
 renderRunHistory();
 setGatewayPill('warn', 'offline');
+renderSettingsRows();
 
 
 
