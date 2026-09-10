@@ -120,10 +120,16 @@ check('B4. the login spec still clears state per test (no storage session to pro
 // (restored by the CLI after zipping) keeps raw values.
 const offenders = tree(authDir).filter((f) => {
   const body = fs.readFileSync(f, 'utf8');
-  return body.includes(USER) || body.includes(PASS) || body.includes('wrong-password');
+  return body.includes(USER) || body.includes(PASS);
 }).map((f) => path.relative(authDir, f));
-check('C1. NO file in the framework tree contains a credential literal (run-report included)',
+check('C1. NO file in the framework tree contains a REAL credential (run-report included)',
   offenders.length === 0, JSON.stringify(offenders));
+// Value-based substitution: wrong credentials are test data, not secrets.
+check('C1e. the negative login keeps its literal wrong password in the spec',
+  read('tests/login/login.spec.ts').includes(`"wrong-password"`) || read('tests/login/login.spec.ts').includes(`'wrong-password'`),
+  read('tests/login/login.spec.ts').match(/wrong[^\n]*/)?.[0]);
+check('C1f. the zipped run-report keeps the wrong password and masks only the real credentials',
+  read('run-report.json').includes('wrong-password') && !read('run-report.json').includes(PASS) && !read('run-report.json').includes(USER));
 const zippedReport = read('run-report.json');
 check('C1b. the framework run-report masks credential fills with the redaction marker',
   zippedReport.includes('[redacted:credential]') &&
@@ -137,6 +143,13 @@ check('C1d. the CLI restores the raw run-report to the working directory after z
 check('C2. .env.example has empty placeholders for a non-demo host',
   read('.env.example').includes(`${AUTH_ENV_USER}=\n`) && read('.env.example').includes(`${AUTH_ENV_PASS}=\n`));
 check('C3. .gitignore covers playwright/.auth/', read('.gitignore').includes('playwright/.auth/'));
+
+/* ─── C7. the framework loads .env ─────────────────────────────────────────── */
+check('C7a. the config imports dotenv/config first', read('playwright.config.ts').startsWith(`import 'dotenv/config';`));
+check('C7b. package.json ships dotenv as a dependency', (JSON.parse(read('package.json')) as { dependencies: Record<string, string> }).dependencies['dotenv'] !== undefined);
+check('C7c. the README says to copy .env.example to .env', read('README.md').includes('cp .env.example .env'));
+check('C7d. one credential convention: no legacy TEST_USERNAME anywhere',
+  tree(authDir).every((f) => !fs.readFileSync(f, 'utf8').includes('TEST_USERNAME')));
 
 /* ─── D. stripLeadingLogin unit behavior ───────────────────────────────────── */
 const stripped = stripLeadingLogin(withLogin.scenarios[2]!.steps);
@@ -172,8 +185,11 @@ check('E1. no auth.setup, no data/ dir, no setup project without a login',
   !fs.readFileSync(path.join(plainA, 'playwright.config.ts'), 'utf8').includes('setup'));
 check('E2. the config keeps the exact pre-phase single-project shape',
   fs.readFileSync(path.join(plainA, 'playwright.config.ts'), 'utf8').includes(`{ name: 'chromium', use: { ...devices['Desktop Chrome'] } },`));
-check('E3. .env.example carries no auth vars without a login',
-  !fs.readFileSync(path.join(plainA, '.env.example'), 'utf8').includes(AUTH_ENV_USER));
+check('E2b. the no-login config also loads dotenv (every framework reads .env)',
+  fs.readFileSync(path.join(plainA, 'playwright.config.ts'), 'utf8').startsWith(`import 'dotenv/config';`));
+check('E3. .env.example has no ACTIVE auth assignment without a login (commented hint only)',
+  !/^QA_CORE_TEST_USER=/m.test(fs.readFileSync(path.join(plainA, '.env.example'), 'utf8')) &&
+  fs.readFileSync(path.join(plainA, '.env.example'), 'utf8').includes(`# ${AUTH_ENV_USER}=`));
 const filesA = tree(plainA).map((f) => path.relative(plainA, f)).sort();
 const filesB = tree(plainB).map((f) => path.relative(plainB, f)).sort();
 const identical = JSON.stringify(filesA) === JSON.stringify(filesB) &&
@@ -182,6 +198,11 @@ check('E4. no-login emission byte-compares identical across runs (same tree, sam
 check('E5. no phase-4 strings leak into the no-login tree',
   filesA.every((rel) => {
     const body = fs.readFileSync(path.join(plainA, rel), 'utf8');
+    if (rel === '.env.example' || rel === 'fixtures/credentials.ts' || rel === 'README.md') {
+      // These name the vars as a commented hint / env fallback; no storage
+      // state or dataset machinery may appear anywhere.
+      return !body.includes('storageState:') && !body.includes('dataCases');
+    }
     return !body.includes('storageState:') && !body.includes(AUTH_ENV_USER) && !body.includes('dataCases');
   }));
 

@@ -65,8 +65,30 @@ export function findHappyLoginScenario(report: RunReport): Scenario | null {
   ) ?? null;
 }
 
-/** The recorded credential values (for demo-host .env.example seeding only). */
-export function recordedCredentials(login: Scenario): { user?: string; pass?: string } {
+export interface AuthCredentials {
+  user?: string;
+  pass?: string;
+}
+
+/**
+ * VALUE-BASED substitution: a fill becomes an env reference only when its
+ * value EQUALS one of the credentials the happy login used (the values the
+ * setup project reads from env). Any other value in a credential-intent
+ * field — wrong_password, an empty string, an injection payload — is test
+ * data and stays literal: substituting it would make the negative test sign
+ * in with the REAL password and pass for the wrong reason.
+ */
+export function envForCredentialValue(
+  value: string,
+  creds: AuthCredentials,
+): typeof AUTH_ENV_USER | typeof AUTH_ENV_PASS | null {
+  if (creds.pass !== undefined && creds.pass !== '' && value === creds.pass) return AUTH_ENV_PASS;
+  if (creds.user !== undefined && creds.user !== '' && value === creds.user) return AUTH_ENV_USER;
+  return null;
+}
+
+/** The recorded credential values the happy login signed in with. */
+export function recordedCredentials(login: Scenario): AuthCredentials {
   const out: { user?: string; pass?: string } = {};
   for (const st of login.steps) {
     if (st.kind !== 'fill') continue;
@@ -126,6 +148,7 @@ function loc(target: Extract<TraceStep, { kind: 'fill' }>['target']): string {
  * project; the authenticated projects depend on it.
  */
 export function renderAuthSetup(login: Scenario, url: string, lang: 'ts' | 'js'): string {
+  const creds = recordedCredentials(login);
   const out: string[] = [];
   if (lang === 'ts') {
     out.push(`import { test as setup, expect } from '@playwright/test';`);
@@ -153,7 +176,8 @@ export function renderAuthSetup(login: Scenario, url: string, lang: 'ts' | 'js')
       continue;
     }
     if (step.kind === 'fill') {
-      const env = credentialEnvFor(step.target.intent);
+      // Value-based: only the fills carrying the REAL credentials read env.
+      const env = envForCredentialValue(step.value, creds);
       const value = env ? `process.env.${env} ?? ''` : JSON.stringify(step.value);
       out.push(`  await ${loc(step.target)}.fill(${value});`);
       continue;

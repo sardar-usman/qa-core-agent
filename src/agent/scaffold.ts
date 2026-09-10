@@ -75,6 +75,9 @@ export interface ScaffoldResult {
 const RUNTIME_DEPS = {
   '@playwright/test': '~1.60.0',
   '@axe-core/playwright': '^4.10.0',
+  // Loads .env at config time so BASE_URL and the credential vars work
+  // without the user exporting anything manually.
+  dotenv: '^16.4.5',
 } as const;
 
 /** Dev dependencies — TypeScript-only. JS frameworks ship without these. */
@@ -307,6 +310,7 @@ function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth =
   ],`;
     if (lang === 'js') {
       return `// @ts-check
+require('dotenv/config');
 const { defineConfig, devices } = require('@playwright/test');
 
 /**
@@ -331,7 +335,8 @@ ${projects}
 });
 `;
     }
-    return `import { defineConfig, devices } from '@playwright/test';
+    return `import 'dotenv/config';
+import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Playwright configuration for ${opts.siteName}.
@@ -359,6 +364,7 @@ ${projects}
     // CommonJS so users don't need "type": "module" in package.json.
     // // @ts-check lets editors give JSDoc-based IntelliSense if they want it.
     return `// @ts-check
+require('dotenv/config');
 const { defineConfig, devices } = require('@playwright/test');
 
 /**
@@ -388,7 +394,8 @@ module.exports = defineConfig({
 `;
   }
   // TypeScript path — ES module syntax.
-  return `import { defineConfig, devices } from '@playwright/test';
+  return `import 'dotenv/config';
+import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Playwright configuration for ${opts.siteName}.
@@ -459,22 +466,27 @@ Thumbs.db
 }
 
 function renderEnvExample(opts: ScaffoldOptions, authLogin: Scenario | null = null): string {
-  const base = `# Base URL the tests run against. Override locally to point at staging.
-BASE_URL=${opts.report.url}
+  const base = `# Copy this file to .env before running (the config loads it via dotenv):
+#   cp .env.example .env
 
+# Base URL the tests run against. Override locally to point at staging.
+BASE_URL=${opts.report.url}
+`;
+  if (!authLogin) {
+    return base + `
 # Optional: credentials for auth-gated tests.
 # These are consumed by fixtures/credentials.{ts,js}.
-# TEST_USERNAME=your_user
-# TEST_PASSWORD=your_password
+# ${AUTH_ENV_USER}=
+# ${AUTH_ENV_PASS}=
 `;
-  if (!authLogin) return base;
+  }
   // Auth setup credentials. Recorded values are seeded ONLY for known public
   // demo sites; anything else gets empty placeholders — real credentials are
   // never written into a generated framework.
   const demo = isDemoHost(opts.report.url) ? recordedCredentials(authLogin) : {};
   return base + `
 # Credentials the auth setup (tests/auth.setup) signs in with before saving
-# the shared session. Fill these before running: npx playwright test
+# the shared session. Also consumed by fixtures/credentials.{ts,js}.
 ${AUTH_ENV_USER}=${demo.user ?? ''}
 ${AUTH_ENV_PASS}=${demo.pass ?? ''}
 `;
@@ -516,8 +528,8 @@ function renderCredentialsFixture(opts: ScaffoldOptions, lang: 'ts' | 'js', auth
  */
 module.exports = {
   credentials: {
-    username: process.env.TEST_USERNAME || 'REPLACE_ME_USERNAME',
-    password: process.env.TEST_PASSWORD || 'REPLACE_ME_PASSWORD',
+    username: process.env.QA_CORE_TEST_USER || 'REPLACE_ME_USERNAME',
+    password: process.env.QA_CORE_TEST_PASS || 'REPLACE_ME_PASSWORD',
   },
 };
 `;
@@ -533,8 +545,8 @@ module.exports = {
  * ${seedComment}
  */
 export const credentials = {
-  username: process.env.TEST_USERNAME || 'REPLACE_ME_USERNAME',
-  password: process.env.TEST_PASSWORD || 'REPLACE_ME_PASSWORD',
+  username: process.env.QA_CORE_TEST_USER || 'REPLACE_ME_USERNAME',
+  password: process.env.QA_CORE_TEST_PASS || 'REPLACE_ME_PASSWORD',
 };
 `;
 }
@@ -652,6 +664,7 @@ ${featureBlock}
 \`\`\`bash
 npm install
 npx playwright install chromium
+cp .env.example .env   # the config loads .env via dotenv; fill in any credentials
 npx playwright test
 \`\`\`
 
@@ -684,7 +697,7 @@ ${tsconfigLine}├── pages/                      # Page Object Model classes
 
 ## Credentials
 
-Auth-gated tests pull from environment variables. Copy \`.env.example\` to \`.env\` and fill in:
+Auth-gated tests pull \`QA_CORE_TEST_USER\` / \`QA_CORE_TEST_PASS\` from the environment (one convention everywhere: the auth setup and \`fixtures/credentials\` both read these). Copy \`.env.example\` to \`.env\` and fill in:
 
 \`\`\`bash
 cp .env.example .env

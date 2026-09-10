@@ -132,7 +132,7 @@ check('O. run-report.json written', fs.existsSync(path.join(frameworkDir, 'run-r
 // 7. fixtures/credentials.ts compiles (basic syntax shape).
 const credsFixture = fs.readFileSync(path.join(frameworkDir, 'fixtures/credentials.ts'), 'utf8');
 check('P. credentials fixture exports `credentials`', credsFixture.includes('export const credentials'));
-check('Q. credentials fixture reads from env', credsFixture.includes('process.env.TEST_USERNAME'));
+check('Q. credentials fixture reads from env (single QA_CORE convention)', credsFixture.includes('process.env.QA_CORE_TEST_USER'));
 
 // 8. .gitignore covers the important things.
 const gi = fs.readFileSync(path.join(frameworkDir, '.gitignore'), 'utf8');

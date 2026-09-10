@@ -107,7 +107,7 @@ check('L. playwright.config.js mentions the target URL', pwConfig.includes('http
 const credsJs = fs.readFileSync(path.join(frameworkDir, 'fixtures/credentials.js'), 'utf8');
 check('M. credentials.js uses module.exports', /module\.exports\s*=/.test(credsJs));
 check('N. credentials.js does NOT use export const', !/^export\s+const/m.test(credsJs));
-check('O. credentials.js reads from env', credsJs.includes('process.env.TEST_USERNAME'));
+check('O. credentials.js reads from env (single QA_CORE convention)', credsJs.includes('process.env.QA_CORE_TEST_USER'));
 
 // 7. helpers/assertions.js uses CommonJS + JSDoc types.
 const assertJs = fs.readFileSync(path.join(frameworkDir, 'helpers/assertions.js'), 'utf8');
@@ -154,6 +154,7 @@ const syntaxCheckOk = (() => {
         if (mod === '@playwright/test') {
           return { defineConfig: (cfg: unknown) => cfg, devices: { 'Desktop Chrome': {} } };
         }
+        if (mod === 'dotenv/config') return {}; // the emitted config loads .env first
         throw new Error('unexpected require: ' + mod);
       },
       process: { env: {}, env_BASE_URL: undefined },

@@ -4,7 +4,7 @@ import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
 import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
-import { credentialEnvFor, stripLeadingLogin } from './auth-emit.js';
+import { envForCredentialValue, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
 import type { RequirementsMap } from './requirements.js';
 import type { Assertion, CaptureSource, GenerateKind, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 
@@ -153,6 +153,7 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
     fs.writeFileSync(specFile, renderSpec(report, pc, ext, {
       param: paramPlans.get(pc.feature),
       authActive: Boolean(opts.authLogin),
+      authCreds: opts.authLogin ? recordedCredentials(opts.authLogin) : null,
     }));
     specFiles.push(specFile);
     features.push(pc.feature);
@@ -778,7 +779,7 @@ function renderSpec(
   report: RunReport,
   pc: PageClassPlan,
   ext: 'ts' | 'js',
-  extras: { param?: ParamPlan | undefined; authActive?: boolean } = {},
+  extras: { param?: ParamPlan | undefined; authActive?: boolean; authCreds?: AuthCredentials | null } = {},
 ): string {
   // Spec lives at tests/<feature>/<feature>.spec.{ext} — two levels deep from
   // the framework root, so the page-object import path is `../../pages/...`.
@@ -787,9 +788,11 @@ function renderSpec(
   const describeTitle = `${titleFromUrl(report.url)} / ${pc.feature}`;
   const param = extras.param;
   const authActive = extras.authActive === true;
-  // Credential fills become env references ONLY in the login spec of an
-  // auth-enabled framework (the setup file covers the rest of the tree).
-  const credEnv = authActive && pc.feature === 'login';
+  // Fills whose VALUE equals the happy login's credentials become env
+  // references, and only in the login spec of an auth-enabled framework (the
+  // setup file covers the rest of the tree). Wrong-credential values are test
+  // data and stay literal.
+  const creds = authActive && pc.feature === 'login' ? extras.authCreds ?? null : null;
   const out: string[] = [];
   // Generated fields (registration email, unique username) call uniqueEmail() /
   // uniqueToken() at the spec call site, so import whichever ones this spec uses.
@@ -855,7 +858,7 @@ function renderSpec(
 
   for (const scenario of pc.scenarios) {
     if (param?.members.has(scenario)) continue; // collapsed into the data loop
-    out.push(...renderScenario(scenario, pc, ext, credEnv).map((l) => '  ' + l));
+    out.push(...renderScenario(scenario, pc, ext, creds).map((l) => '  ' + l));
     out.push('');
   }
 
@@ -942,7 +945,7 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   return out;
 }
 
-function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js', credEnv = false): string[] {
+function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js', creds: AuthCredentials | null = null): string[] {
   const handle = camelize(pc.className);
   const tag = scenario.category === 'happy' ? '[happy]'
             : scenario.category === 'negative' ? '[negative]'
@@ -970,9 +973,10 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
         // Find the corresponding step in THIS scenario to use its actual value.
         const real = scenario.steps.find((x) => x.kind === 'fill' && canonicalIntent(x.target.intent) === canonicalIntent(s.target.intent));
         const realFill = (real && real.kind === 'fill') ? real : s;
-        // Credentials in an auth-enabled login spec come from env, never a
-        // literal; a generated field passes a fresh value on every run.
-        const env = credEnv ? credentialEnvFor(realFill.target.intent) : null;
+        // The REAL credentials in an auth-enabled login spec come from env,
+        // never a literal (value-based match); a generated field passes a
+        // fresh value on every run.
+        const env = creds ? envForCredentialValue(realFill.value, creds) : null;
         if (env) return `process.env.${env} ?? ''`;
         return realFill.generate ? uniqueCallExpr(realFill.generate) : q(realFill.value);
       });
@@ -994,7 +998,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
       out.push(`  await page.goto(${q(step.url)});`);
       continue;
     }
-    for (const line of emitStepCall(step, pc, handle, credEnv)) {
+    for (const line of emitStepCall(step, pc, handle, creds)) {
       out.push('  ' + line);
     }
   }
@@ -1002,7 +1006,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
   return out;
 }
 
-function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, credEnv = false): string[] {
+function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds: AuthCredentials | null = null): string[] {
   switch (step.kind) {
     case 'click': {
       const field = pc.intentToField.get(canonicalIntent(step.target.intent));
@@ -1012,7 +1016,7 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, credEn
     }
     case 'fill': {
       const field = pc.intentToField.get(canonicalIntent(step.target.intent));
-      const env = credEnv ? credentialEnvFor(step.target.intent) : null;
+      const env = creds ? envForCredentialValue(step.value, creds) : null;
       const valueArg = env ? `process.env.${env} ?? ''` : step.generate ? uniqueCallExpr(step.generate) : q(step.value);
       return [field
         ? `await ${handle}.${field}.fill(${valueArg});`

@@ -119,6 +119,8 @@ try {
   check('C2. the JS spec passes a node syntax check', false, String(err).slice(0, 200));
 }
 
+check('C3. the JS config loads dotenv via require', fs.readFileSync(path.join(jsDir, 'playwright.config.js'), 'utf8').includes(`require('dotenv/config');`));
+
 /* ─── D. the data file lands in the framework zip ──────────────────────────── */
 const zip = zipFrameworkToBuffer(tsDir);
 check('D1. data/contact.json is inside the zip', zip.includes('data/contact.json'));

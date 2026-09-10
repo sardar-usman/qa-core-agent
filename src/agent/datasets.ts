@@ -1,7 +1,7 @@
 import type { RunReport, Scenario, TraceStep } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { canonicalIntent } from './pom.js';
-import { stripLeadingLogin } from './auth-emit.js';
+import { findHappyLoginScenario, recordedCredentials } from './auth-emit.js';
 
 /**
  * Dataset extraction — turns a run's recorded fill values into per-feature
@@ -59,30 +59,34 @@ type FillStep = Extract<TraceStep, { kind: 'fill' }>;
 export const CREDENTIAL_REDACTION = '[redacted:credential]';
 
 /**
- * A copy of the report with credential fill VALUES masked, for the
+ * A copy of the report with the REAL credential values masked, for the
  * run-report.json that ships INSIDE the framework zip (the deliverable a
- * client receives). Redacted: every fill isCredentialFill classifies
- * (password intents anywhere, every fill of a login-feature scenario), plus
- * every fill inside a leading login block embedded in an authenticated
- * scenario (those fills fed a login flow too; the block is the exact region
- * stripLeadingLogin removes). The input report is NOT mutated: the
- * working-directory run-report.json keeps the raw values.
+ * client receives). VALUE-BASED: only fills whose value equals a credential
+ * the happy login used (the values the setup project reads from env) are
+ * redacted, wherever they appear — the login scenario, an embedded leading
+ * login block, anywhere. Wrong-credential test data (wrong_password, an
+ * empty string, an injection payload) is deliberately KEPT: it is what the
+ * negative test asserts against, not a secret. Without a happy login there
+ * are no real credentials to mask and the report passes through byte for
+ * byte. The input report is NOT mutated: the working-directory
+ * run-report.json keeps the raw values.
  */
 export function redactCredentialValues(report: RunReport): RunReport {
+  const login = findHappyLoginScenario(report);
+  if (!login) return report;
+  const creds = recordedCredentials(login);
+  const secret = new Set([creds.user, creds.pass].filter((v): v is string => v !== undefined && v !== ''));
+  if (secret.size === 0) return report;
   return {
     ...report,
-    scenarios: report.scenarios.map((s) => {
-      // Length of the leading login block (0 when the scenario has none).
-      const leadingLogin = s.feature === 'login' ? 0 : s.steps.length - stripLeadingLogin(s.steps).length;
-      return {
-        ...s,
-        steps: s.steps.map((st, i) =>
-          st.kind === 'fill' && (i < leadingLogin || isCredentialFill(st, s.feature))
-            ? { ...st, value: CREDENTIAL_REDACTION }
-            : st,
-        ),
-      };
-    }),
+    scenarios: report.scenarios.map((s) => ({
+      ...s,
+      steps: s.steps.map((st) =>
+        st.kind === 'fill' && secret.has(st.value)
+          ? { ...st, value: CREDENTIAL_REDACTION }
+          : st,
+      ),
+    })),
   };
 }
 
