@@ -608,6 +608,33 @@ robots.txt is honored by BOTH the sitemap and crawl rungs; a robots file that di
 
 ---
 
+### Datasets and parameterized specs (emitted frameworks)
+
+`src/agent/datasets.ts` derives per-feature datasets from the run's recorded fill values: happy scenarios become `valid` cases, negative scenarios become `invalid` cases carrying the error text they asserted, edge scenarios probing a limit become `boundary` cases. With a requirements map, validation rules stating lengths or formats synthesize additional at-limit/over-limit/format cases tagged with their `ruleIds`. Case shape:
+
+```json
+{ "name": "...", "values": { "<field>": "..." }, "expect": "success" | "error", "errorText": "...", "ruleIds": ["R1"] }
+```
+
+When 2+ scenarios of a feature share one action signature (same fills and clicks, differing values), the POM emitter writes `data/<feature>.json` (pretty-printed, stable key order, shipped in the zip) and emits ONE data-driven loop; scenarios outside the group stay individual tests, and the single-file (`--no-pom`) transcriber is untouched. To extend coverage by hand, append a case to the JSON: the loop picks it up on the next run. Exclusions: passwords and every login-flow value stay out of datasets (they live in env vars), and generated-unique fields carry `{{uniqueEmail}}` / `{{uniqueToken}}` markers resolved at runtime by the emitted `resolveData` helper.
+
+---
+
+### storageState auth (emitted frameworks)
+
+When the run contains a successful happy-path login (`feature: login`, a password fill), the framework signs in once and shares the session:
+
+1. `tests/auth.setup.(ts|js)` replays the recorded login using `QA_CORE_TEST_USER` / `QA_CORE_TEST_PASS` from the environment, keeps the recorded login-success assertion (a bad credential fails loudly in setup, not in every spec), and saves `playwright/.auth/user.json`.
+2. The config gains a `setup` project (`testMatch: auth.setup`); the main project uses `storageState: 'playwright/.auth/user.json'` with `dependencies: ['setup']` and ignores login specs; login specs run in a dedicated project WITHOUT storage state, with their full recorded steps and per-test state clearing.
+3. Authenticated-feature specs drop their leading login sequence (the saved session replaces it) and do not clear cookies in `beforeEach`.
+4. The framework `.env.example` lists both vars (recorded values pre-filled only for known public demo sites); `.gitignore` covers `playwright/.auth/`. Credentials never appear as literals in any generated file.
+
+Run it: `cp .env.example .env`, fill the two vars, then `npx playwright test` — Playwright runs the setup project first automatically.
+
+Without a successful login, none of this appears and the emitted output is byte-identical to the pre-phase emitter. Exploration, critic, replay, and stability are untouched by this phase.
+
+---
+
 ### Checkpoint/resume (`--resume`)
 
 Every run writes `checkpoint.json` into its output directory: after each completed scenario, and at each phase boundary (discovery done, plan done, explorer done, review). The write is atomic (temp file + rename), so a crash mid-write can never corrupt the previous checkpoint. The file carries the url, flags, discovery result, requirements map, plan, the full traces of every completed scenario, the itemized spend (planner/explorer/critic/repair), and the phase.

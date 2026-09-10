@@ -3,6 +3,9 @@ import path from 'node:path';
 import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
+import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
+import { envForCredentialValue, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
+import type { RequirementsMap } from './requirements.js';
 import type { Assertion, CaptureSource, GenerateKind, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 
 /**
@@ -44,6 +47,16 @@ export interface POMTranscribeOptions {
   outDir: string;
   /** Filename root for the generated spec (no extension). */
   name: string;
+  /** Requirements map (SRS runs); enriches datasets with rule-derived cases. */
+  requirements?: RequirementsMap;
+  /**
+   * The happy login scenario the auth setup replays (auth-emit.ts found one).
+   * When set: authenticated-feature scenarios lose their leading login steps
+   * (storageState replaces them), login-spec credential fills become env
+   * references, and the login spec keeps its cookie-clearing beforeEach while
+   * authenticated specs keep the session. When absent, emission is untouched.
+   */
+  authLogin?: Scenario | null;
 }
 
 export interface POMTranscribeResult {
@@ -66,19 +79,56 @@ export interface POMTranscribeResult {
   scenarios: number;
   /** Distinct feature names that produced a page object + spec folder. */
   features: string[];
+  /** data/<feature>.json files written for parameterized specs (may be empty). */
+  dataFiles: string[];
 }
 
 /* ───────────────────────── Entry point ───────────────────────── */
 
 export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
-  const { report, outDir } = opts;
+  const { outDir } = opts;
   fs.mkdirSync(path.join(outDir, 'pages'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'tests'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'tests', 'a11y'), { recursive: true });
 
+  // storageState auth: authenticated-feature scenarios lose their leading
+  // login sequence BEFORE grouping, so page classes and specs are built from
+  // the steps that will actually run. Login-feature scenarios keep every
+  // step (a logged-in login test is vacuous, so they run without storage
+  // state). Without authLogin the report passes through untouched, byte for
+  // byte — the emitter-only guarantee.
+  const report: RunReport = opts.authLogin
+    ? {
+        ...opts.report,
+        scenarios: opts.report.scenarios.map((s) =>
+          s.feature === 'login' ? s : { ...s, steps: stripLeadingLogin(s.steps) },
+        ),
+      }
+    : opts.report;
+
   const ext = report.language;
   const pageGroups = groupScenariosByFeature(report);
   const pageClasses = pageGroups.map((pg) => buildPageClass(pg, ext));
+
+  // Dataset parameterization: per feature, scenarios sharing one action
+  // signature with 2+ dataset cases collapse into a single data-driven loop.
+  const datasets = deriveDatasets(report, opts.requirements);
+  const paramPlans = new Map<string, ParamPlan>();
+  for (const pc of pageClasses) {
+    const ds = datasets.find((d) => d.feature === pc.feature);
+    if (!ds) continue;
+    const plan = buildParamPlan(pc, ds);
+    if (plan) paramPlans.set(pc.feature, plan);
+  }
+  const dataFiles: string[] = [];
+  if (paramPlans.size > 0) {
+    fs.mkdirSync(path.join(outDir, 'data'), { recursive: true });
+    for (const [feature, plan] of paramPlans) {
+      const dataFile = path.join(outDir, 'data', `${feature}.json`);
+      fs.writeFileSync(dataFile, renderDatasetJson({ feature, cases: plan.cases }));
+      dataFiles.push(dataFile);
+    }
+  }
 
   // Emit BasePage (shared).
   const baseFile = path.join(outDir, 'pages', `BasePage.${ext}`);
@@ -100,7 +150,11 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
     const specDir = path.join(outDir, 'tests', pc.specFolder);
     fs.mkdirSync(specDir, { recursive: true });
     const specFile = path.join(specDir, `${pc.specFolder}.spec.${ext}`);
-    fs.writeFileSync(specFile, renderSpec(report, pc, ext));
+    fs.writeFileSync(specFile, renderSpec(report, pc, ext, {
+      param: paramPlans.get(pc.feature),
+      authActive: Boolean(opts.authLogin),
+      authCreds: opts.authLogin ? recordedCredentials(opts.authLogin) : null,
+    }));
     specFiles.push(specFile);
     features.push(pc.feature);
   }
@@ -119,7 +173,112 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
     a11yFile,
     scenarios: report.scenarios.length,
     features,
+    dataFiles,
   };
+}
+
+/* ───────────────────────── Dataset parameterization ───────────────────────── */
+
+interface ParamPlan {
+  /** Scenarios collapsed into the data-driven loop (skipped as individual tests). */
+  members: Set<Scenario>;
+  /** The happy member whose steps drive the loop body. */
+  representative: Scenario;
+  /** Error assertion target from a negative member, for expect: 'error' cases. */
+  errorTarget?: SelectorRecord;
+  /** The dataset cases the data file carries (members + rule-derived). */
+  cases: DatasetCase[];
+}
+
+/** Ordered action signature: what the scenario DOES, ignoring the values. */
+function actionSignature(s: Scenario): string {
+  return s.steps
+    .map((st) => {
+      if (st.kind === 'fill') return `fill:${canonicalIntent(st.target.intent)}`;
+      if (st.kind === 'click') return `click:${canonicalIntent(st.target.intent)}`;
+      if (st.kind === 'press') return `press:${canonicalIntent(st.target.intent)}:${st.key}`;
+      if (st.kind === 'select_option') return `select:${canonicalIntent(st.target.intent)}`;
+      if (st.kind === 'set_checked') return `check:${canonicalIntent(st.target.intent)}:${st.checked}`;
+      return null;
+    })
+    .filter((x): x is string => x !== null)
+    .join('|');
+}
+
+/** The fill keys (canonical intents) a scenario's dataset case must cover. */
+function fillKeysOf(s: Scenario): string[] {
+  const keys = new Set<string>();
+  for (const st of s.steps) {
+    if (st.kind === 'fill') keys.add(canonicalIntent(st.target.intent));
+  }
+  return [...keys].sort();
+}
+
+/**
+ * Decide whether this feature's scenarios support ONE parameterized loop:
+ * 2+ scenarios share the same action signature (same fills/clicks, differing
+ * values), each has a dataset case, at least one is happy (its steps become
+ * the loop body and its assertions the success branch), and error-expect
+ * cases have an assertable error target from a negative member. Scenarios
+ * outside the group stay individual tests exactly as today.
+ */
+function buildParamPlan(pc: PageClassPlan, dataset: FeatureDataset): ParamPlan | null {
+  const bySig = new Map<string, Scenario[]>();
+  for (const s of pc.scenarios) {
+    if (fillKeysOf(s).length === 0) continue;
+    const sig = actionSignature(s);
+    const list = bySig.get(sig) ?? [];
+    list.push(s);
+    bySig.set(sig, list);
+  }
+  for (const group of bySig.values()) {
+    if (group.length < 2) continue;
+    const representative = group.find((s) => s.category === 'happy');
+    if (!representative) continue;
+    const caseFor = (s: Scenario): DatasetCase | undefined =>
+      dataset.cases.find((c) => c.name === s.name || c.name === `boundary: ${s.name}`);
+    // Every member's case must cover EVERY fill of that scenario. A gap means
+    // the dataset excluded a field (a password, a generated password) — the
+    // loop would under-fill the form, so such scenarios stay individual tests
+    // where the credential/generator handling applies.
+    const covers = (s: Scenario): boolean => {
+      const c = caseFor(s);
+      if (!c) return false;
+      return JSON.stringify(Object.keys(c.values).sort()) === JSON.stringify(fillKeysOf(s));
+    };
+    if (!group.every(covers)) continue;
+
+    // The data file: the members' cases plus rule-derived cases whose value
+    // keys match the group's fill keys (enrichment starts from a member
+    // baseline, so key equality selects exactly the compatible cases).
+    const groupKeys = JSON.stringify(fillKeysOf(representative));
+    const cases = dataset.cases.filter((c) =>
+      group.some((s) => caseFor(s) === c) || JSON.stringify(Object.keys(c.values).sort()) === groupKeys,
+    );
+    if (cases.length < 2) continue;
+
+    let errorTarget: SelectorRecord | undefined;
+    for (const s of group) {
+      if (s.category !== 'negative') continue;
+      for (const st of s.steps) {
+        if (st.kind === 'assert' && (st.assertion.type === 'toHaveText' || st.assertion.type === 'toContainText')) {
+          errorTarget = st.assertion.target;
+          break;
+        }
+      }
+      if (errorTarget) break;
+    }
+    // error-expect cases with nowhere to assert the error cannot parameterize.
+    if (cases.some((c) => c.expect === 'error') && !errorTarget) continue;
+
+    return {
+      members: new Set(group),
+      representative,
+      ...(errorTarget ? { errorTarget } : {}),
+      cases,
+    };
+  }
+  return null;
 }
 
 /* ───────────────────────── Page grouping ───────────────────────── */
@@ -616,12 +775,24 @@ function emitMethod(method: ActionMethod, intentToField: Map<string, string>, ex
   return [sig, ...body.map((l) => '  ' + l), `}`];
 }
 
-function renderSpec(report: RunReport, pc: PageClassPlan, ext: 'ts' | 'js'): string {
+function renderSpec(
+  report: RunReport,
+  pc: PageClassPlan,
+  ext: 'ts' | 'js',
+  extras: { param?: ParamPlan | undefined; authActive?: boolean; authCreds?: AuthCredentials | null } = {},
+): string {
   // Spec lives at tests/<feature>/<feature>.spec.{ext} — two levels deep from
   // the framework root, so the page-object import path is `../../pages/...`.
   const importPath = `../../pages/${pc.pageFileBase}`;
   const handle = camelize(pc.className);
   const describeTitle = `${titleFromUrl(report.url)} / ${pc.feature}`;
+  const param = extras.param;
+  const authActive = extras.authActive === true;
+  // Fills whose VALUE equals the happy login's credentials become env
+  // references, and only in the login spec of an auth-enabled framework (the
+  // setup file covers the rest of the tree). Wrong-credential values are test
+  // data and stay literal.
+  const creds = authActive && pc.feature === 'login' ? extras.authCreds ?? null : null;
   const out: string[] = [];
   // Generated fields (registration email, unique username) call uniqueEmail() /
   // uniqueToken() at the spec call site, so import whichever ones this spec uses.
@@ -636,10 +807,12 @@ function renderSpec(report: RunReport, pc: PageClassPlan, ext: 'ts' | 'js'): str
     out.push(`import { test, expect } from '@playwright/test';`);
     out.push(`import { ${pc.className} } from '${importPath}';`);
     if (genFns.length > 0) out.push(`import { ${genFns.join(', ')} } from '../../helpers/unique-data';`);
+    if (param) out.push(`import rawCases from '../../data/${pc.feature}.json';`);
   } else {
     out.push(`const { test, expect } = require('@playwright/test');`);
     out.push(`const { ${pc.className} } = require('${importPath}');`);
     if (genFns.length > 0) out.push(`const { ${genFns.join(', ')} } = require('../../helpers/unique-data');`);
+    if (param) out.push(`const rawCases = require('../../data/${pc.feature}.json');`);
   }
   out.push(``);
   out.push(`/* Auto-generated by QA-Core. Source URL: ${report.url}`);
@@ -647,6 +820,19 @@ function renderSpec(report: RunReport, pc: PageClassPlan, ext: 'ts' | 'js'): str
   out.push(` * Verified live before transcription.`);
   out.push(` */`);
   out.push(``);
+  if (param) {
+    // The dataset the loop below iterates. Extend it by hand: add a case to
+    // data/<feature>.json and the suite grows without touching this file.
+    if (ext === 'ts') {
+      out.push(`type DataCase = { name: string; values: Record<string, string>; expect: string; errorText?: string; ruleIds?: string[] };`);
+      out.push(`const dataCases = rawCases as unknown as DataCase[];`);
+    } else {
+      out.push(`/** @type {Array<{ name: string, values: Record<string, string>, expect: string, errorText?: string, ruleIds?: string[] }>} */`);
+      out.push(`const dataCases = rawCases;`);
+    }
+    out.push(renderResolveData(genFns, ext));
+    out.push(``);
+  }
   out.push(`test.describe(${q(describeTitle)}, () => {`);
 
   if (ext === 'ts') {
@@ -656,16 +842,28 @@ function renderSpec(report: RunReport, pc: PageClassPlan, ext: 'ts' | 'js'): str
   }
   out.push('');
   out.push(`  test.beforeEach(async ({ context, page }) => {`);
-  // Per-test isolation: matches the agent's exploration-time isolation.
-  out.push(`    await context.clearCookies();`);
-  out.push(`    try { await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); }); } catch { /* about:blank */ }`);
+  if (authActive && pc.feature !== 'login') {
+    // Authenticated specs run on the saved storageState session. Clearing
+    // cookies here would destroy exactly the state the setup project built.
+    out.push(`    // Session comes from playwright/.auth/user.json (the setup project); do not clear it.`);
+  } else {
+    // Per-test isolation: matches the agent's exploration-time isolation.
+    out.push(`    await context.clearCookies();`);
+    out.push(`    try { await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); }); } catch { /* about:blank */ }`);
+  }
   out.push(`    ${handle} = new ${pc.className}(page);`);
   out.push(`    await ${handle}.goto();`);
   out.push(`  });`);
   out.push('');
 
   for (const scenario of pc.scenarios) {
-    out.push(...renderScenario(scenario, pc, ext).map((l) => '  ' + l));
+    if (param?.members.has(scenario)) continue; // collapsed into the data loop
+    out.push(...renderScenario(scenario, pc, ext, creds).map((l) => '  ' + l));
+    out.push('');
+  }
+
+  if (param) {
+    out.push(...renderParamLoop(param, pc, ext).map((l) => '  ' + l));
     out.push('');
   }
 
@@ -674,7 +872,80 @@ function renderSpec(report: RunReport, pc: PageClassPlan, ext: 'ts' | 'js'): str
   return out.join('\n');
 }
 
-function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js'): string[] {
+/** The marker resolver a parameterized spec uses for generated-unique values. */
+function renderResolveData(genFns: string[], ext: 'ts' | 'js'): string {
+  const branches: string[] = [];
+  if (genFns.includes('uniqueEmail')) branches.push(`v === '{{uniqueEmail}}' ? uniqueEmail() :`);
+  if (genFns.includes('uniqueToken')) branches.push(`v === '{{uniqueToken}}' ? uniqueToken() :`);
+  const sig = ext === 'ts' ? '(v: string): string' : '(v)';
+  return `const resolveData = ${sig} => ${branches.length > 0 ? branches.join(' ') + ' v' : 'v'};`;
+}
+
+/**
+ * The one data-driven test loop: the happy representative's steps drive the
+ * page, fills take their values from the case, and the closing assertion
+ * follows c.expect — the representative's own success assertions, or the
+ * recorded error locator with c.errorText.
+ */
+function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'): string[] {
+  const handle = camelize(pc.className);
+  const rep = param.representative;
+  const out: string[] = [];
+  out.push(`for (const c of dataCases) {`);
+  out.push(`  test(\`[data] ${pc.feature} — \${c.name}\`, async ({ page }) => {`);
+
+  // Action steps from the representative, fills parameterized by the case.
+  let initialNavSkipped = false;
+  const actions: string[] = [];
+  const closing: string[] = [];
+  let pastActions = false;
+  for (const step of rep.steps) {
+    if (step.kind === 'navigate') {
+      if (!initialNavSkipped) { initialNavSkipped = true; continue; }
+      (pastActions ? closing : actions).push(`await page.goto(${q(step.url)});`);
+      continue;
+    }
+    if (step.kind === 'wait' || step.kind === 'stability_wait' || step.kind === 'checkpoint') continue;
+    if (step.kind === 'fill') {
+      const key = canonicalIntent(step.target.intent);
+      const field = pc.intentToField.get(key);
+      const valueArg = `resolveData(c.values[${q(key)}] ?? '')`;
+      actions.push(field
+        ? `await ${handle}.${field}.fill(${valueArg});`
+        : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.fill(${valueArg});`);
+      continue;
+    }
+    if (step.kind === 'click' || step.kind === 'press' || step.kind === 'select_option' || step.kind === 'set_checked' || step.kind === 'set_input_files') {
+      actions.push(...emitStepCall(step, pc, handle));
+      continue;
+    }
+    // Everything after the last action is the success-path closing sequence
+    // (assertions, captures, compares).
+    pastActions = true;
+    closing.push(...emitStepCall(step, pc, handle));
+  }
+
+  for (const line of actions) out.push(`    ${line}`);
+  const errorLocExpr = param.errorTarget
+    ? (pc.intentToField.get(canonicalIntent(param.errorTarget.intent))
+        ? `${handle}.${pc.intentToField.get(canonicalIntent(param.errorTarget.intent))}`
+        : emitLocatorCall(param.errorTarget.level, param.errorTarget.arg, param.errorTarget.ambiguous === true, param.errorTarget.frameChain, param.errorTarget.filterText))
+    : null;
+  if (errorLocExpr) {
+    out.push(`    if (c.expect === 'error') {`);
+    out.push(`      await expect(${errorLocExpr}).toContainText(c.errorText ?? '', { timeout: ${COMPARE_POLL_TIMEOUT_MS} });`);
+    out.push(`    } else {`);
+    for (const line of closing) out.push(`      ${line}`);
+    out.push(`    }`);
+  } else {
+    for (const line of closing) out.push(`    ${line}`);
+  }
+  out.push(`  });`);
+  out.push(`}`);
+  return out;
+}
+
+function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js', creds: AuthCredentials | null = null): string[] {
   const handle = camelize(pc.className);
   const tag = scenario.category === 'happy' ? '[happy]'
             : scenario.category === 'negative' ? '[negative]'
@@ -702,7 +973,11 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js')
         // Find the corresponding step in THIS scenario to use its actual value.
         const real = scenario.steps.find((x) => x.kind === 'fill' && canonicalIntent(x.target.intent) === canonicalIntent(s.target.intent));
         const realFill = (real && real.kind === 'fill') ? real : s;
-        // A generated field passes a fresh value on every run, not a literal.
+        // The REAL credentials in an auth-enabled login spec come from env,
+        // never a literal (value-based match); a generated field passes a
+        // fresh value on every run.
+        const env = creds ? envForCredentialValue(realFill.value, creds) : null;
+        if (env) return `process.env.${env} ?? ''`;
         return realFill.generate ? uniqueCallExpr(realFill.generate) : q(realFill.value);
       });
     out.push(`  await ${handle}.${matched.name}(${fillValues.join(', ')});`);
@@ -723,7 +998,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js')
       out.push(`  await page.goto(${q(step.url)});`);
       continue;
     }
-    for (const line of emitStepCall(step, pc, handle)) {
+    for (const line of emitStepCall(step, pc, handle, creds)) {
       out.push('  ' + line);
     }
   }
@@ -731,7 +1006,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js')
   return out;
 }
 
-function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string): string[] {
+function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds: AuthCredentials | null = null): string[] {
   switch (step.kind) {
     case 'click': {
       const field = pc.intentToField.get(canonicalIntent(step.target.intent));
@@ -741,7 +1016,8 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string): strin
     }
     case 'fill': {
       const field = pc.intentToField.get(canonicalIntent(step.target.intent));
-      const valueArg = step.generate ? uniqueCallExpr(step.generate) : q(step.value);
+      const env = creds ? envForCredentialValue(step.value, creds) : null;
+      const valueArg = env ? `process.env.${env} ?? ''` : step.generate ? uniqueCallExpr(step.generate) : q(step.value);
       return [field
         ? `await ${handle}.${field}.fill(${valueArg});`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.fill(${valueArg});`];

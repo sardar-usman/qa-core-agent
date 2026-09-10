@@ -1,8 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RunReport } from './trace.js';
+import type { RunReport, Scenario } from './trace.js';
+import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
 import { renderUniqueDataHelper } from './unique-data.js';
+import { redactCredentialValues } from './datasets.js';
+import {
+  AUTH_ENV_PASS,
+  AUTH_ENV_USER,
+  findHappyLoginScenario,
+  isDemoHost,
+  recordedCredentials,
+  renderAuthSetup,
+  STORAGE_STATE_PATH,
+} from './auth-emit.js';
 
 /**
  * Framework scaffolder.
@@ -48,6 +59,8 @@ export interface ScaffoldOptions {
   siteName: string;
   /** Feature names the run was scoped to (if any). Surfaced in README. */
   features?: string[];
+  /** Requirements map (SRS runs); enriches datasets with rule-derived cases. */
+  requirements?: RequirementsMap;
 }
 
 export interface ScaffoldResult {
@@ -62,6 +75,9 @@ export interface ScaffoldResult {
 const RUNTIME_DEPS = {
   '@playwright/test': '~1.60.0',
   '@axe-core/playwright': '^4.10.0',
+  // Loads .env at config time so BASE_URL and the credential vars work
+  // without the user exporting anything manually.
+  dotenv: '^16.4.5',
 } as const;
 
 /** Dev dependencies — TypeScript-only. JS frameworks ship without these. */
@@ -78,11 +94,18 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
 
   // 1. Let pom.ts emit pages/ and tests/ (including tests/a11y/) — pom
   //    respects report.language for file extensions and import syntax already.
+  // storageState auth activates ONLY when the run recorded a successful
+  // happy-path login. Without one, every rendered file below is byte-identical
+  // to the pre-auth emitter (the emitter-only guarantee).
+  const authLogin = findHappyLoginScenario(opts.report);
+
   const specName = slugify(opts.siteName);
   const pomResult = transcribePOM({
     report: opts.report,
     outDir: opts.outDir,
     name: specName,
+    ...(opts.requirements ? { requirements: opts.requirements } : {}),
+    authLogin,
   });
 
   // 2. Write the framework shell. Each file is plain text derived from the
@@ -96,19 +119,25 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   };
 
   writeFile('package.json', renderPackageJson(opts, lang));
-  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang));
+  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang, authLogin !== null));
   if (lang === 'ts') {
     writeFile('tsconfig.json', renderTsConfig());
   }
   writeFile('.gitignore', renderGitignore());
-  writeFile('.env.example', renderEnvExample(opts));
-  writeFile(`fixtures/credentials.${ext}`, renderCredentialsFixture(opts, lang));
+  writeFile('.env.example', renderEnvExample(opts, authLogin));
+  if (authLogin) {
+    writeFile(`tests/auth.setup.${ext}`, renderAuthSetup(authLogin, opts.report.url, lang));
+  }
+  writeFile(`fixtures/credentials.${ext}`, renderCredentialsFixture(opts, lang, authLogin !== null));
   writeFile(`helpers/assertions.${ext}`, renderAssertionsHelper(lang));
   writeFile(`helpers/unique-data.${ext}`, renderUniqueDataHelper(lang));
   writeFile('README.md', renderReadme(opts, pomResult, lang));
 
-  // Self-sufficient framework dir: write run-report.json here too.
-  writeFile('run-report.json', JSON.stringify(opts.report, null, 2));
+  // Self-sufficient framework dir: write run-report.json here too. This copy
+  // ships inside the framework zip, so credential fill values are REDACTED
+  // (the run's working-directory copy keeps the raw values; the CLI restores
+  // it after zipping). With no credential fills the JSON is byte-identical.
+  writeFile('run-report.json', JSON.stringify(redactCredentialValues(opts.report), null, 2));
 
   // pom.ts wrote pages/, tests/<feature>/, tests/a11y/. run-report.json is
   // already in `written` above, so don't list it twice. specFiles is an array
@@ -116,6 +145,7 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   const pomFiles = [
     ...pomResult.pageFiles,
     ...pomResult.specFiles,
+    ...pomResult.dataFiles,
     pomResult.a11yFile,
   ].map((p) => path.relative(opts.outDir, p));
 
@@ -259,12 +289,82 @@ function renderPackageJson(opts: ScaffoldOptions, lang: 'ts' | 'js'): string {
   return JSON.stringify(obj, null, 2) + '\n';
 }
 
-function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js'): string {
+function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false): string {
   const baseUrl = opts.report.url;
+  if (auth) {
+    // storageState flow: the setup project logs in once and saves the session;
+    // authenticated tests depend on it and reuse the saved state; login tests
+    // run WITHOUT it (a logged-in login test is vacuous).
+    const projects = `  projects: [
+    // Logs in once (tests/auth.setup) and saves the session to ${STORAGE_STATE_PATH}.
+    { name: 'setup', testMatch: /.*auth\\.setup\\.(ts|js)$/ },
+    // Login tests drive the login UI themselves — never with a saved session.
+    { name: 'login', use: { ...devices['Desktop Chrome'] }, testMatch: 'login/**/*.spec.${lang}' },
+    // Everything else starts authenticated via the saved storage state.
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'], storageState: ${JSON.stringify(STORAGE_STATE_PATH)} },
+      dependencies: ['setup'],
+      testIgnore: ['**/login/**', '**/auth.setup.*'],
+    },
+  ],`;
+    if (lang === 'js') {
+      return `// @ts-check
+require('dotenv/config');
+const { defineConfig, devices } = require('@playwright/test');
+
+/**
+ * Playwright configuration for ${opts.siteName}.
+ * Generated by QA-Core. Auth: the 'setup' project signs in once and every
+ * authenticated project reuses the saved session (${STORAGE_STATE_PATH}).
+ */
+module.exports = defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
+  use: {
+    baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+${projects}
+});
+`;
+    }
+    return `import 'dotenv/config';
+import { defineConfig, devices } from '@playwright/test';
+
+/**
+ * Playwright configuration for ${opts.siteName}.
+ * Generated by QA-Core. Auth: the 'setup' project signs in once and every
+ * authenticated project reuses the saved session (${STORAGE_STATE_PATH}).
+ */
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
+  use: {
+    baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+${projects}
+});
+`;
+  }
   if (lang === 'js') {
     // CommonJS so users don't need "type": "module" in package.json.
     // // @ts-check lets editors give JSDoc-based IntelliSense if they want it.
     return `// @ts-check
+require('dotenv/config');
 const { defineConfig, devices } = require('@playwright/test');
 
 /**
@@ -294,7 +394,8 @@ module.exports = defineConfig({
 `;
   }
   // TypeScript path — ES module syntax.
-  return `import { defineConfig, devices } from '@playwright/test';
+  return `import 'dotenv/config';
+import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Playwright configuration for ${opts.siteName}.
@@ -364,34 +465,56 @@ Thumbs.db
 `;
 }
 
-function renderEnvExample(opts: ScaffoldOptions): string {
-  return `# Base URL the tests run against. Override locally to point at staging.
-BASE_URL=${opts.report.url}
+function renderEnvExample(opts: ScaffoldOptions, authLogin: Scenario | null = null): string {
+  const base = `# Copy this file to .env before running (the config loads it via dotenv):
+#   cp .env.example .env
 
+# Base URL the tests run against. Override locally to point at staging.
+BASE_URL=${opts.report.url}
+`;
+  if (!authLogin) {
+    return base + `
 # Optional: credentials for auth-gated tests.
 # These are consumed by fixtures/credentials.{ts,js}.
-# TEST_USERNAME=your_user
-# TEST_PASSWORD=your_password
+# ${AUTH_ENV_USER}=
+# ${AUTH_ENV_PASS}=
+`;
+  }
+  // Auth setup credentials. Recorded values are seeded ONLY for known public
+  // demo sites; anything else gets empty placeholders — real credentials are
+  // never written into a generated framework.
+  const demo = isDemoHost(opts.report.url) ? recordedCredentials(authLogin) : {};
+  return base + `
+# Credentials the auth setup (tests/auth.setup) signs in with before saving
+# the shared session. Also consumed by fixtures/credentials.{ts,js}.
+${AUTH_ENV_USER}=${demo.user ?? ''}
+${AUTH_ENV_PASS}=${demo.pass ?? ''}
 `;
 }
 
-function renderCredentialsFixture(opts: ScaffoldOptions, lang: 'ts' | 'js'): string {
+function renderCredentialsFixture(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false): string {
   // Seed example usernames from any fill steps in the trace (best-effort,
-  // passwords are never surfaced).
+  // passwords are never surfaced). With storageState auth active, NOTHING
+  // observed is surfaced: credentials live only in env vars (.env.example),
+  // never as literals in a generated file.
   const seenUsernames = new Set<string>();
-  for (const scenario of opts.report.scenarios) {
-    for (const step of scenario.steps) {
-      if (step.kind === 'fill') {
-        const intent = step.target.intent.toLowerCase();
-        if (/(user|email|login)/.test(intent) && !/password/.test(intent)) {
-          seenUsernames.add(step.value);
+  if (!auth) {
+    for (const scenario of opts.report.scenarios) {
+      for (const step of scenario.steps) {
+        if (step.kind === 'fill') {
+          const intent = step.target.intent.toLowerCase();
+          if (/(user|email|login)/.test(intent) && !/password/.test(intent)) {
+            seenUsernames.add(step.value);
+          }
         }
       }
     }
   }
-  const seedComment = seenUsernames.size > 0
-    ? `// Usernames observed during exploration:\n//   ${[...seenUsernames].slice(0, 5).join(', ')}`
-    : '// No credentials were observed during exploration.';
+  const seedComment = auth
+    ? `// Credentials come from ${AUTH_ENV_USER} / ${AUTH_ENV_PASS} (see .env.example).`
+    : seenUsernames.size > 0
+      ? `// Usernames observed during exploration:\n//   ${[...seenUsernames].slice(0, 5).join(', ')}`
+      : '// No credentials were observed during exploration.';
 
   if (lang === 'js') {
     return `/**
@@ -405,8 +528,8 @@ function renderCredentialsFixture(opts: ScaffoldOptions, lang: 'ts' | 'js'): str
  */
 module.exports = {
   credentials: {
-    username: process.env.TEST_USERNAME || 'REPLACE_ME_USERNAME',
-    password: process.env.TEST_PASSWORD || 'REPLACE_ME_PASSWORD',
+    username: process.env.QA_CORE_TEST_USER || 'REPLACE_ME_USERNAME',
+    password: process.env.QA_CORE_TEST_PASS || 'REPLACE_ME_PASSWORD',
   },
 };
 `;
@@ -422,8 +545,8 @@ module.exports = {
  * ${seedComment}
  */
 export const credentials = {
-  username: process.env.TEST_USERNAME || 'REPLACE_ME_USERNAME',
-  password: process.env.TEST_PASSWORD || 'REPLACE_ME_PASSWORD',
+  username: process.env.QA_CORE_TEST_USER || 'REPLACE_ME_USERNAME',
+  password: process.env.QA_CORE_TEST_PASS || 'REPLACE_ME_PASSWORD',
 };
 `;
 }
@@ -541,6 +664,7 @@ ${featureBlock}
 \`\`\`bash
 npm install
 npx playwright install chromium
+cp .env.example .env   # the config loads .env via dotenv; fill in any credentials
 npx playwright test
 \`\`\`
 
@@ -573,7 +697,7 @@ ${tsconfigLine}├── pages/                      # Page Object Model classes
 
 ## Credentials
 
-Auth-gated tests pull from environment variables. Copy \`.env.example\` to \`.env\` and fill in:
+Auth-gated tests pull \`QA_CORE_TEST_USER\` / \`QA_CORE_TEST_PASS\` from the environment (one convention everywhere: the auth setup and \`fixtures/credentials\` both read these). Copy \`.env.example\` to \`.env\` and fill in:
 
 \`\`\`bash
 cp .env.example .env

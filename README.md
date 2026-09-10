@@ -242,6 +242,29 @@ Runs are protected by a cost ceiling (`QA_CORE_COST_CEILING`, default $2). Hitti
 
 Detail pages behind generated ids (`product/<long-random-id>`) are handled carefully: the page filter prefers stable-path pages and keeps at most one such volatile page, and its scenarios reach the page the way a user does (open the listing, click the item by its visible name) instead of hardcoding a URL that breaks the next time the site reseeds its data.
 
+### Data-driven tests (datasets)
+
+When two or more recorded scenarios exercise the same form with different values (a valid submission, a rejected one, a boundary probe), the generated framework ships them as ONE parameterized test over `data/<feature>.json`:
+
+```ts
+import rawCases from '../../data/contact.json';
+for (const c of dataCases) {
+  test(`[data] contact — ${c.name}`, async ({ page }) => { /* fills from c.values */ });
+}
+```
+
+Each case is `{ name, values, expect: 'success' | 'error', errorText?, ruleIds? }`. To grow the suite, add a case to the JSON by hand — no spec editing needed. With an SRS (`--srs`), stated validation rules add boundary and invalid cases automatically, tagged with their rule ids. Passwords and login-flow values never land in datasets, and generated-unique fields keep a `{{uniqueEmail}}` marker so every run gets a fresh value.
+
+### Session reuse (storageState auth)
+
+When a run records a successful login, the generated framework signs in ONCE and reuses the session everywhere:
+
+* `tests/auth.setup.ts` replays the recorded login with credentials from `QA_CORE_TEST_USER` / `QA_CORE_TEST_PASS` (see the framework's `.env.example`; values are pre-filled only for public demo sites) and saves `playwright/.auth/user.json`.
+* The Playwright config wires a `setup` project; authenticated tests depend on it and start logged in — their recorded login steps are stripped.
+* Login tests keep their own project WITHOUT the saved session (a logged-in login test proves nothing) and read their credentials from the same env vars.
+
+`npx playwright test` runs the setup automatically. Credentials never appear as literals in any generated file.
+
 ### Crash-safe checkpoint/resume
 
 Every run writes `checkpoint.json` into its output directory after each completed scenario and at every phase boundary (discovery done, plan done, explorer done). The write is atomic, so a crash can never corrupt it. On a fully successful run the file is deleted; on ANY abnormal end it stays:
