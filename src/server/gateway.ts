@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 import { WebSocketServer, type WebSocket } from 'ws';
 import fs from 'node:fs';
 import path from 'node:path';
-import { explore, type AgentEvent } from '../agent/runtime.js';
+import { explore } from '../agent/runtime.js';
 import { generateFromStory } from '../agent/generate.js';
 import { heal } from '../cli/heal.js';
 import { transcribe } from '../agent/transcriber.js';
@@ -11,8 +11,9 @@ import { transcribePOM } from '../agent/pom.js';
 import { parseFeatures } from '../agent/parse-features.js';
 import { readRunSettings, type ExploreRequest } from '../agent/explore-request.js';
 import { parseGatewayCommand } from './commands.js';
-import { listRunsFromDisk, reportForUi } from './runs.js';
+import { listRunsFromDisk, loadReportForUi, reportForUi } from './runs.js';
 import { runExploreRequest, runTranscribeRequest, type FrameworkZip } from './run-explore.js';
+import { eventForUi } from './events.js';
 
 /**
  * QA-Core gateway.
@@ -27,7 +28,8 @@ import { runExploreRequest, runTranscribeRequest, type FrameworkZip } from './ru
  *   {type:'settings', settings}  the env-driven run settings, on connect
  *   {type:'run_started', ...}    the resolved request for the run header
  *   {type:'event', event}        every AgentEvent, for the live pipeline view
- *   {type:'run_report', report}  the final RunReport (traces stripped)
+ *   {type:'run_report', report}  the final RunReport (traces stripped); also the
+ *                                reply to a get_report request (fromHistory: true)
  *   {type:'framework_zip', ...}  the zipped framework, base64
  *   {type:'runs', runs}          run history from disk
  *
@@ -42,7 +44,7 @@ const TOKEN = process.env.QA_CORE_GATEWAY_TOKEN ?? '';
 const ROOT = process.cwd();
 
 interface IncomingMessage {
-  /** 'message' for slash commands, 'list_runs' / 'get_settings' for state sync. */
+  /** 'message' for slash commands; 'list_runs' / 'get_settings' / 'get_report' for state sync. */
   type?: string;
   content?: string;
   agent?: string;
@@ -52,6 +54,8 @@ interface IncomingMessage {
   env?: Record<string, string>;
   /** An SRS document uploaded from the dashboard (md/txt/pdf/docx). */
   srs?: { name: string; base64: string };
+  /** For get_report: the run-report.json path, relative to the project root. */
+  reportPath?: string;
 }
 
 function send(ws: WebSocket, payload: object): void {
@@ -126,6 +130,17 @@ wss.on('connection', (ws, req) => {
     }
     if (msg.type === 'get_settings') {
       send(ws, { type: 'settings', settings: readRunSettings() });
+      return;
+    }
+    // History "view": the full report for a past run, rendered as the same
+    // six panels a live run shows.
+    if (msg.type === 'get_report') {
+      try {
+        const loaded = loadReportForUi(ROOT, String(msg.reportPath ?? ''));
+        send(ws, { type: 'run_report', fromHistory: true, ...loaded });
+      } catch (err) {
+        send(ws, { text: `✗ ${(err as Error).message}` });
+      }
       return;
     }
 
@@ -209,19 +224,6 @@ function saveUpload(upload: { name: string; base64: string }): string {
 }
 
 /* ─────────────────── /explore + /resume ─────────────────── */
-
-/** Strip bulky tool payloads so the event stream stays small. */
-function eventForUi(e: AgentEvent): object {
-  if (e.type === 'tool_result') {
-    const { data, ...rest } = e;
-    const preview = data === undefined ? undefined : JSON.stringify(data).slice(0, 200);
-    return preview === undefined ? rest : { ...rest, preview };
-  }
-  if (e.type === 'tool_call') {
-    return { ...e, input: JSON.parse(JSON.stringify(e.input ?? null, (_k, v) => (typeof v === 'string' && v.length > 300 ? v.slice(0, 297) + '...' : v))) };
-  }
-  return e;
-}
 
 async function handleExplore(request: ExploreRequest, model: string | undefined, ws: WebSocket): Promise<void> {
   if (activeExplores > 0) {

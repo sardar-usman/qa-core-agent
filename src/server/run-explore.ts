@@ -32,6 +32,13 @@ export interface RunExploreInput {
   onEvent?: (e: AgentEvent) => void;
   /** Human-readable progress lines (what the CLI would print). */
   onNote?: (text: string) => void;
+  /**
+   * Test seam: replaces the runtime's explore(). A smoke passes a fake that
+   * runs the real critic against a fixture response, so the gateway's env
+   * application and report handling are exercised without a browser or a
+   * model. Production callers leave it unset.
+   */
+  exploreImpl?: typeof explore;
 }
 
 export interface FrameworkZip {
@@ -185,7 +192,8 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
     for (const n of prepared.notes) note(n);
     const { request: req, url, outDir } = prepared;
 
-    const result = await explore({
+    const exploreFn = input.exploreImpl ?? explore;
+    const result = await exploreFn({
       ...buildExploreOptions(req, {
         url, outDir,
         ...(prepared.requirements ? { requirements: prepared.requirements } : {}),

@@ -23,6 +23,16 @@ export interface CriticResult {
   verdicts: ScenarioVerdict[];
   summary: string;
   costUsd: number;
+  /** The critic's response text, verbatim. Kept on the report when nothing parsed. */
+  raw: string;
+}
+
+/**
+ * The slice of the Anthropic client the critic uses. A test passes a fake
+ * here to run the real prompt rendering and parse against a fixture response.
+ */
+export interface CriticClient {
+  messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> };
 }
 
 const SYSTEM = `You are the Critic, a senior QA reviewer. You will be shown test scenarios that an exploration agent recorded against a live page. Every scenario executed successfully — the actions worked. Your job is to judge whether the ASSERTIONS would catch a real regression.
@@ -71,17 +81,19 @@ export async function critique(opts: {
   url: string;
   model?: string;
   apiKey?: string;
+  /** Test seam: a fake client. Production callers leave it unset. */
+  client?: CriticClient;
 }): Promise<CriticResult> {
   if (opts.scenarios.length === 0) {
-    return { verdicts: [], summary: 'No scenarios recorded — nothing to review.', costUsd: 0 };
+    return { verdicts: [], summary: 'No scenarios recorded — nothing to review.', costUsd: 0, raw: '' };
   }
 
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
+  if (!apiKey && !opts.client) throw new Error('ANTHROPIC_API_KEY is not set.');
   // Both env names are honored: QA_CORE_CRITIC_MODEL (documented) and the
   // older QA_CORE_MODEL_CRITIC. Default unchanged.
   const model = opts.model ?? process.env.QA_CORE_CRITIC_MODEL ?? process.env.QA_CORE_MODEL_CRITIC ?? 'claude-sonnet-4-6';
-  const client = new Anthropic({ apiKey });
+  const client: CriticClient = opts.client ?? new Anthropic({ apiKey });
 
   const traceSummary = opts.scenarios.map((s, i) => {
     const steps = s.steps.map((step) => describeStep(step)).join('\n      ');
@@ -108,7 +120,7 @@ export async function critique(opts: {
   const u = response.usage;
   const costUsd = (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000;
 
-  return { verdicts: parseVerdicts(text), summary: parseSummary(text), costUsd };
+  return { verdicts: parseVerdicts(text), summary: parseSummary(text), costUsd, raw: text };
 }
 
 /**
@@ -158,7 +170,10 @@ export function describeStep(step: TraceStep): string {
           return `assert ${a.target.intent} contains "${a.text}"${t}`;
         }
         case 'toHaveURL':
-          return `assert URL matches /${a.pattern}/`;
+          // Rendered as a quoted pattern string, not /pattern/: a pattern
+          // ending in "/" used to read as a doubled trailing slash and drew a
+          // false rework.
+          return `assert URL matches regex ${JSON.stringify(a.pattern)}`;
         case 'toBeHidden': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
           return `assert ${a.target.intent} hidden/absent${t}`;
@@ -234,20 +249,103 @@ function extractVerdictArray(text: string): unknown[] | null {
   let from = 0;
   for (;;) {
     const start = text.indexOf('[', from);
-    if (start === -1) return null;
+    if (start === -1) return salvageVerdictObjects(text);
     const end = balancedArrayEnd(text, start);
     if (end !== -1) {
-      try {
-        const v = JSON.parse(text.slice(start, end + 1)) as unknown;
-        if (Array.isArray(v) && v.some((x) => typeof x === 'object' && x !== null && 'scenario' in x)) {
-          return v;
-        }
-      } catch {
-        // Not JSON from this bracket; try the next one.
+      const v = parseJsonLenient(text.slice(start, end + 1));
+      if (Array.isArray(v) && v.some((x) => typeof x === 'object' && x !== null && 'scenario' in x)) {
+        return v;
       }
     }
     from = start + 1;
   }
+}
+
+/**
+ * JSON.parse, then one repair pass when the strict parse fails. The critic
+ * writes prose inside its reason strings, and prose that quotes a regex
+ * ("/inventory\.html") carries a backslash escape JSON does not define, so
+ * strict parsing rejected a whole, well-formed verdict array and the run
+ * reported zero verdicts (the saucedemo dashboard run). The repair doubles
+ * any backslash that does not start a legal JSON escape and drops trailing
+ * commas before a closing bracket or brace, both outside of what a model
+ * means and both common in model output. Returns null when neither parses.
+ */
+export function parseJsonLenient(candidate: string): unknown | null {
+  try { return JSON.parse(candidate); } catch { /* fall through to the repair */ }
+  try { return JSON.parse(repairJson(candidate)); } catch { return null; }
+}
+
+export function repairJson(candidate: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < candidate.length; i++) {
+    const ch = candidate[i]!;
+    if (inString) {
+      if (ch === '\\') {
+        const next = candidate[i + 1] ?? '';
+        if ('"\\/bfnrt'.includes(next)) { out += ch + next; i++; continue; }
+        if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(candidate.slice(i + 2, i + 6))) { out += ch; continue; }
+        out += '\\\\'; // an escape JSON does not define: keep the backslash literally
+        continue;
+      }
+      if (ch === '"') inString = false;
+      out += ch;
+      continue;
+    }
+    if (ch === '"') { inString = true; out += ch; continue; }
+    if (ch === ',') {
+      // Drop a trailing comma before ] or } (whitespace allowed between).
+      let j = i + 1;
+      while (j < candidate.length && /\s/.test(candidate[j]!)) j++;
+      if (candidate[j] === ']' || candidate[j] === '}') continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Last resort when no balanced array parses (a response cut off by the token
+ * cap, or an array wrapper the model never closed): pull out every complete
+ * top-level object that carries a "scenario" key. Partial objects are left
+ * behind, so a truncated final verdict is dropped, never invented.
+ */
+function salvageVerdictObjects(text: string): unknown[] | null {
+  const out: unknown[] = [];
+  let from = 0;
+  for (;;) {
+    const start = text.indexOf('{', from);
+    if (start === -1) break;
+    const end = balancedObjectEnd(text, start);
+    if (end === -1) break;
+    const v = parseJsonLenient(text.slice(start, end + 1));
+    if (v && typeof v === 'object' && 'scenario' in (v as object)) out.push(v);
+    from = end + 1;
+  }
+  return out.length > 0 ? out : null;
+}
+
+function balancedObjectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (inString) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }
 
 /** Index of the "]" closing the array opened at `start`, or -1 if unbalanced. */

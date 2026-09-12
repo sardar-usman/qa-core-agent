@@ -298,6 +298,62 @@ window.__smoke = {
     }
     return out;
   },
+  async stream(args) {
+    // The real entry point for every gateway payload, with the console-style
+    // {text} lines interleaved exactly as the gateway sends them.
+    handleGatewayPayload({ type: 'settings', settings: args.started.settings });
+    // A parse note arrives BEFORE run_started and is ordinary chat.
+    const chatBefore = document.querySelectorAll('.msg.agent').length;
+    handleGatewayPayload({ text: 'Note: Stabilizer will try up to 3 fix attempts per flaky scenario.' });
+    const preRunNote = document.querySelectorAll('.msg.agent').length - chatBefore;
+    handleGatewayPayload(args.started);
+    const bubblesBefore = document.querySelectorAll('.msg.agent').length;
+    handleGatewayPayload({ text: '▸ Exploring https://www.saucedemo.com/' });
+    handleGatewayPayload({ text: '  features: login, cart' });
+    let i = 0;
+    for (const e of args.evs) {
+      handleGatewayPayload({ type: 'event', event: e });
+      if (e.type === 'message') handleGatewayPayload({ text: e.text });
+      if (++i === 5) handleGatewayPayload({ text: 'Step budget: 118 (8 scenario(s), 2 fillable field(s) on the page)' });
+    }
+    await this.frames();
+    const rv = document.querySelector('.run-view');
+    const bubblesDuring = document.querySelectorAll('.msg.agent').length - bubblesBefore;
+    const logSummary = this.text(rv, '.rv-log > summary');
+    const logLines = rv.querySelectorAll('.rv-log-lines > div').length;
+    const badge = this.text(rv, '.rv-badge');
+    const explorer = this.text(rv, '[data-stage="explorer"] .rv-body');
+    handleGatewayPayload(args.rr);
+    handleGatewayPayload({ text: '**Done.** Wrote framework to output/saucedemo-automation-framework (3 scenarios, 17 files).' });
+    handleGatewayPayload(args.zip);
+    await this.frames();
+    const bubblesAfter = document.querySelectorAll('.msg.agent').length - bubblesBefore;
+    const runViews = document.querySelectorAll('.run-view').length;
+    return { preRunNote, bubblesDuring, bubblesAfter, logSummary, logLines, badge, explorer, runViews, logOpen: rv.querySelector('.rv-log').open,
+      doneBubble: Array.from(document.querySelectorAll('.msg.agent .msg-bubble')).some((b) => /Done\./.test(b.textContent)) };
+  },
+  stale() {
+    const before = document.querySelectorAll('.msg.agent').length;
+    handleGatewayPayload({ text: '▸ Exploring https://old.example/' });
+    const bubbles = Array.from(document.querySelectorAll('.msg.agent .msg-bubble')).slice(before).map((b) => b.textContent);
+    return { added: bubbles.length, note: bubbles.some((t) => /older build|npm run gateway/.test(t)), toast: (document.getElementById('toast') || {}).textContent || '' };
+  },
+  async historyView(args) {
+    handleGatewayPayload({ type: 'run_report', fromHistory: true, report: args.report, outcome: args.outcome });
+    await this.frames();
+    const views = document.querySelectorAll('.run-view');
+    const rv = views[views.length - 1];
+    const rows = {};
+    rv.querySelectorAll('.funnel-row').forEach((r) => { rows[(r.className.match(/funnel-row (\S+)/) || [])[1] || '?'] = r.querySelector('.fn').textContent; });
+    const st = (k) => rv.querySelector('[data-stage="' + k + '"]').className;
+    return {
+      fromHistory: rv.classList.contains('from-history'), badge: this.text(rv, '.rv-badge'), rows,
+      journeys: rv.querySelectorAll('.rv-journey').length, hasLog: !!rv.querySelector('.rv-log'),
+      states: { discovery: st('discovery'), plan: st('plan'), explorer: st('explorer'), critic: st('critic'), replay: st('replay'), summary: st('summary') },
+      plan: this.text(rv, '[data-stage="plan"] .rv-body'), replay: this.text(rv, '[data-stage="replay"] .rv-body'),
+      resumeBtn: !!rv.querySelector('[data-send^="/resume "]'),
+    };
+  },
   scrollTop() { document.getElementById('messages').scrollTop = 0; },
   scrollEnd() { const rv = document.querySelector('.run-view'); if (rv) rv.scrollIntoView({ block: 'end' }); },
 };
@@ -398,13 +454,44 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   const weakest = Math.min(...Object.values(contrast));
   check(`${theme}: run view text keeps at least 4.5:1 contrast against the panel`, weakest >= 4.5, JSON.stringify(contrast));
 
+  // ─── Live stream through the real payload entry point, text lines included ───
+  await page.evaluate(() => { document.querySelectorAll('.run-view').forEach((el) => el.remove()); });
+  // @ts-expect-error __smoke is injected above
+  const streamed = await page.evaluate((args) => window.__smoke.stream(args), { started: runStarted, evs: events, rr: runReport, zip: zipMsg }) as { preRunNote: number; bubblesDuring: number; bubblesAfter: number; logSummary: string; logLines: number; badge: string; explorer: string; runViews: number; logOpen: boolean; doneBubble: boolean };
+  check(`${theme}: live stream: a note before run_started is ordinary chat`, streamed.preRunNote === 1, String(streamed.preRunNote));
+  check(`${theme}: live stream: no chat bubbles are added while the run is live (console lines go to the run log)`, streamed.bubblesDuring === 0, String(streamed.bubblesDuring));
+  check(`${theme}: live stream: the run view exists and reads running`, streamed.runViews === 1 && streamed.badge === 'running', streamed.badge);
+  check(`${theme}: live stream: the console log is collapsed and counts every text line`, !streamed.logOpen && /console log 19 lines/.test(streamed.logSummary) && streamed.logLines === 19, streamed.logSummary + ' / ' + streamed.logLines);
+  check(`${theme}: live stream: panels update from events, not from the text lines`, /steps 4 \/ 118/.test(streamed.explorer) && /Cost ceiling reached/.test(streamed.explorer), streamed.explorer);
+  check(`${theme}: live stream: after run_report the Done summary is a chat bubble again`, streamed.bubblesAfter >= 1 && streamed.doneBubble, String(streamed.bubblesAfter));
+
+  // ─── An older gateway build (no run_started) is called out ───
+  // @ts-expect-error __smoke is injected above
+  const stale = await page.evaluate(() => window.__smoke.stale()) as { added: number; note: boolean; toast: string };
+  check(`${theme}: a "▸ Exploring" line with no live run view adds an older-build note and a toast`, stale.note && /older build/.test(stale.toast), JSON.stringify(stale));
+
+  // ─── Opening a run from history renders the same panels from the report ───
+  // @ts-expect-error __smoke is injected above
+  const hist = await page.evaluate((args) => window.__smoke.historyView(args), { report: fixtureReport, outcome: { kind: 'framework', reportPath: 'output/saucedemo-automation-framework/run-report.json', checkpointPath: 'output/saucedemo-automation-framework/checkpoint.json', resumeHint: null, summary: [], diagnosis: null } }) as { fromHistory: boolean; badge: string; rows: Record<string, string>; journeys: number; hasLog: boolean; states: Record<string, string>; plan: string; replay: string; resumeBtn: boolean };
+  check(`${theme}: history view: a from-history run view opens with the stopped badge`, hist.fromHistory && hist.badge === 'stopped', JSON.stringify({ f: hist.fromHistory, b: hist.badge }));
+  check(`${theme}: history view: funnel counts equal the reconciliation arrays`, hist.rows.planned === '8' && hist.rows.generated === '3' && hist.rows.dropped === '3' && hist.rows.incomplete === '1' && hist.rows.findings === '1' && hist.rows.skipped === '0', JSON.stringify(hist.rows));
+  check(`${theme}: history view: journeys, plan and replay panels render from the report`, hist.journeys === 3 && /scenarios 8/.test(hist.plan) && /PPP/.test(hist.replay), JSON.stringify({ j: hist.journeys, p: hist.plan.slice(0, 40), r: hist.replay.slice(0, 60) }));
+  check(`${theme}: history view: every stage reads done and there is no console log`, Object.values(hist.states).every((c) => /done/.test(c)) && !hist.hasLog, JSON.stringify(hist.states));
+  check(`${theme}: history view: resume offered because the report dir has a checkpoint`, hist.resumeBtn);
+  const viewBtn = await page.evaluate(() => document.querySelectorAll('#runHistory [data-action="view"]').length);
+  check(`${theme}: every history card with a report offers a view action`, viewBtn === 3, String(viewBtn));
+  const headerSub = await page.evaluate(() => (document.querySelector('.chat-header .sub') || {}).textContent || '');
+  check(`${theme}: header reads "Powered by Claude." only`, headerSub.trim() === 'Powered by Claude.', headerSub);
+
   if (shotDir) {
     fs.mkdirSync(shotDir, { recursive: true });
     // @ts-expect-error __smoke is injected above
     await page.evaluate(() => window.__smoke.scrollTop());
     await page.screenshot({ path: path.join(shotDir, `run-view-${theme}.png`), fullPage: false });
+    await page.locator('.run-view .rv-log').first().evaluate((d) => { (d as HTMLDetailsElement).open = true; });
+    await page.locator('.run-view .rv-log').first().screenshot({ path: path.join(shotDir, `run-log-${theme}.png`) });
     for (const stage of ['explorer', 'critic', 'replay', 'summary']) {
-      await page.locator(`.run-view [data-stage="${stage}"]`).screenshot({ path: path.join(shotDir, `stage-${stage}-${theme}.png`) });
+      await page.locator(`.run-view [data-stage="${stage}"]`).first().screenshot({ path: path.join(shotDir, `stage-${stage}-${theme}.png`) });
     }
   }
 

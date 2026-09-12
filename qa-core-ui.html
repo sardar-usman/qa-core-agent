@@ -2790,6 +2790,9 @@
     border-radius: 14px;
     margin: 6px 0 14px;
     overflow: hidden;
+    /* A flex child with overflow hidden may shrink to nothing when the chat
+       column overflows; the run view must keep its full height. */
+    flex: 0 0 auto;
   }
   .rv-head {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
@@ -2959,6 +2962,16 @@
   .coverage-list li .why { color: var(--text-3); font-size: 10.5px; font-family: var(--mono); margin-left: auto; white-space: nowrap; }
   .rv-download { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; font-family: var(--sans); }
   .rv-download:hover { background: var(--accent-line); }
+  .rv-log { border-top: 1px solid var(--line); background: var(--bg-2); }
+  .rv-log > summary { cursor: pointer; list-style: none; padding: 8px 16px; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); display: flex; align-items: center; gap: 10px; }
+  .rv-log > summary::-webkit-details-marker { display: none; }
+  .rv-log > summary::before { content: '▸'; color: var(--text-3); transition: transform 0.15s var(--ease); }
+  .rv-log[open] > summary::before { transform: rotate(90deg); }
+  .rv-log > summary .mono { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-2); }
+  .rv-log-hint { margin-left: auto; letter-spacing: 0; text-transform: none; font-size: 10.5px; color: var(--text-3); }
+  .rv-log-lines { max-height: 220px; overflow: auto; padding: 4px 16px 10px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); line-height: 1.55; }
+  .rv-log-lines > div { white-space: pre-wrap; word-break: break-word; padding: 1px 0; border-top: 1px solid var(--line-soft); }
+  .rv-log-lines .at { color: var(--text-3); margin-right: 8px; }
   .rv-hint { font-family: var(--mono); font-size: 10.5px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 8px; word-break: break-all; }
 
   /* Run history additions */
@@ -3146,7 +3159,7 @@
       </div>
       <div class="agent-info">
         <div class="name">QA-Core</div>
-        <div class="sub">Powered by <em>Claude</em>. OpenClaw runtime.</div>
+        <div class="sub">Powered by <em>Claude</em>.</div>
       </div>
       <div class="chat-header-actions">
         <!-- Status strip. P0-5 -->
@@ -3585,27 +3598,13 @@ function connectGateway() {
     };
 
     ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        // Structured run-sync payload from the gateway.
-        if (data && data.type === 'runs' && Array.isArray(data.runs)) {
-          pushLog('recv', `runs (${data.runs.length})`);
-          ingestDiskRuns(data.runs);
-          return;
-        }
-        // Event bursts (usage, thinking) would flood the log; keep the calls.
-        if (data && data.type === 'event') {
-          const ev = data.event || {};
-          if (ev.type === 'tool_call') pushLog('recv', 'event: ' + ev.name);
-          else if (ev.type !== 'usage' && ev.type !== 'thinking_started' && ev.type !== 'tool_result') pushLog('recv', 'event: ' + ev.type);
-        } else {
-          pushLog('recv', summarizeForLog(data));
-        }
-        handleAgentMessage(data);
-      } catch {
+      let data;
+      try { data = JSON.parse(e.data); } catch {
         pushLog('recv', String(e.data).slice(0, 200));
         appendAgentMessage(e.data);
+        return;
       }
+      handleGatewayPayload(data);
     };
 
     ws.onerror = () => {
@@ -3638,6 +3637,28 @@ function setStatus(on) {
   }
 }
 
+/**
+ * Every parsed gateway payload enters here (the WebSocket handler and the UI
+ * smoke both call it): activity-log bookkeeping, then routing.
+ */
+function handleGatewayPayload(data) {
+  // Structured run-sync payload from the gateway.
+  if (data && data.type === 'runs' && Array.isArray(data.runs)) {
+    pushLog('recv', `runs (${data.runs.length})`);
+    ingestDiskRuns(data.runs);
+    return;
+  }
+  // Event bursts (usage, thinking) would flood the log; keep the calls.
+  if (data && data.type === 'event') {
+    const ev = data.event || {};
+    if (ev.type === 'tool_call') pushLog('recv', 'event: ' + ev.name);
+    else if (ev.type !== 'usage' && ev.type !== 'thinking_started' && ev.type !== 'tool_result') pushLog('recv', 'event: ' + ev.type);
+  } else {
+    pushLog('recv', summarizeForLog(data));
+  }
+  handleAgentMessage(data);
+}
+
 function handleAgentMessage(data) {
   // v3: gateway sends a structured framework_zip message after /explore.
   // Render it as a download card, not as JSON-stringified text.
@@ -3650,7 +3671,7 @@ function handleAgentMessage(data) {
   if (data && data.type === 'settings') { applyGatewaySettings(data.settings); return; }
   if (data && data.type === 'run_started') { startRunView(data); return; }
   if (data && data.type === 'event') { runViewEvent(data.event); return; }
-  if (data && data.type === 'run_report') { finishRunView(data); return; }
+  if (data && data.type === 'run_report') { if (data.fromHistory) openRunFromReport(data); else finishRunView(data); return; }
   if (data && data.type === 'run_failed') { failRunView(data.error); return; }
   const text = data.text || data.message || data.content || JSON.stringify(data);
   // Fix 3: the gateway sends a hello on every connect. Already represented by
@@ -3659,6 +3680,18 @@ function handleAgentMessage(data) {
   if (typeof text === 'string' && /^Connected to QA-Core gateway/i.test(text.trim())) {
     showToast('Gateway connected. Ready to receive commands.', 'success');
     return;
+  }
+  // While a run is live, the console-style lines belong to the run view's
+  // collapsible log, not to the chat: the panels are the primary view.
+  if (typeof text === 'string' && currentRun && currentRun.badge === 'running') {
+    appendRunLog(currentRun, text);
+    return;
+  }
+  // A "▸ Exploring" line with no live run view means the gateway did not send
+  // run_started: it is an older build that predates the pipeline view.
+  if (typeof text === 'string' && /^▸ (Exploring|Resuming) /.test(text.trim()) && !(currentRun && currentRun.badge === 'running')) {
+    showToast('The gateway is running an older build. Restart it (npm run gateway) to get the live pipeline view.', 'error');
+    appendAgentMessage('Note: this gateway build does not send pipeline events. Restart it with `npm run gateway` and refresh to see the stage panels live.');
   }
   appendAgentMessage(text, data);
 }
@@ -4740,6 +4773,8 @@ function renderRunHistory() {
       } else if (btn.dataset.action === 'regenerate') {
         if (!run.reportPath) return;
         sendCommand('/transcribe ' + run.reportPath);
+      } else if (btn.dataset.action === 'view') {
+        if (run.reportPath) requestRunReport(run.reportPath);
       }
     });
   });
@@ -4830,6 +4865,7 @@ function runCardHtml(r) {
       <div class="run-card-actions">
         ${r.spec ? '<button class="run-action" data-action="copy">copy spec</button>' : ''}
         ${r.spec ? '<button class="run-action" data-action="download">download</button>' : ''}
+        ${r.reportPath ? '<button class="run-action" data-action="view" title="Open the pipeline panels for this run from its run-report.json">view</button>' : ''}
         ${r.status === 'completed' && r.reportPath ? '<button class="run-action" data-action="regenerate" title="Re-emit the framework zip from run-report.json (no exploration)">regenerate framework</button>' : ''}
         ${r.target ? '<button class="run-action" data-action="rerun">re-run</button>' : ''}
       </div>
@@ -5328,9 +5364,65 @@ function newRunState(msg) {
     report: null,
     outcome: null,
     zip: null,
+    log: [],
+    logOpen: false,
     el: null,
     raf: 0,
   };
+}
+
+/** A console-style line from the gateway, kept in the run view's collapsible log. */
+function appendRunLog(rv, text) {
+  rv.log.push({ at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), text: String(text).trim() });
+  if (rv.log.length > 400) rv.log.shift();
+  scheduleRender(rv);
+}
+
+/**
+ * Open a past run from history: the same six panels, rendered from the
+ * run-report the gateway loaded off disk. Nothing is live here, so every
+ * stage reads the report and the badge reflects the recorded outcome.
+ */
+function openRunFromReport(msg) {
+  const report = msg.report || {};
+  const outcome = msg.outcome || {};
+  const features = [];
+  for (const s of report.scenarios || []) if (s.feature && !features.includes(s.feature)) features.push(s.feature);
+  const rv = newRunState({
+    command: 'explore',
+    request: { url: report.url || '', lang: report.language || 'ts', pom: true, features, discover: !!report.discovery, urls: [], env: {} },
+    settings: [],
+  });
+  rv.fromHistory = true;
+  rv.report = report;
+  rv.outcome = outcome;
+  rv.badge = (report.scenarios || []).length === 0 ? 'empty' : report.stopped ? 'stopped' : 'done';
+  for (const s of RV_STAGES) rv.stages[s.key] = 'done';
+  if (!report.discovery) rv.stages.discovery = 'skipped';
+  if (!report.review) rv.stages.critic = 'skipped';
+  if (!(report.replay && !report.replay.skipped) && !(report.stability && !report.stability.skipped)) rv.stages.replay = 'skipped';
+  if (rv.badge === 'empty') rv.stages.summary = 'error';
+  const dash = document.getElementById('dashboard');
+  if (dash) dash.remove();
+  const welcome = document.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  const msgs = document.getElementById('messages');
+  msgs.classList.remove('has-welcome');
+  const el = document.createElement('div');
+  el.className = 'run-view from-history';
+  el.dataset.run = rv.id;
+  rv.el = el;
+  msgs.appendChild(el);
+  renderRunView(rv, true);
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return rv;
+}
+
+/** Ask the gateway for a run's full report (history "view" action). */
+function requestRunReport(reportPath) {
+  if (!connected || !ws || ws.readyState !== WebSocket.OPEN) { showToast('Connect the gateway first (top right).', 'error'); return; }
+  try { ws.send(JSON.stringify({ type: 'get_report', reportPath })); pushLog('send', 'get_report ' + reportPath); }
+  catch { showToast('Could not reach gateway.', 'error'); }
 }
 
 function startRunView(msg) {
@@ -5534,7 +5626,7 @@ function renderRunView(rv, full) {
   const head = `
     <div class="rv-head">
       <div class="rv-title">/${escHtml(title)} <span class="rv-url" title="${escAttr(url)}">${escHtml(url)}</span>
-        <span class="rv-badge ${escAttr(rv.badge)}">${escHtml(rv.badge)}</span></div>
+        <span class="rv-badge ${escAttr(rv.badge)}">${escHtml(rv.badge)}</span>${rv.fromHistory ? '<span class="rv-badge">from history</span>' : ''}</div>
       <div class="rv-chips">${chips}</div>
     </div>`;
   const stages = RV_STAGES.map((s) => {
@@ -5544,7 +5636,18 @@ function renderRunView(rv, full) {
       <div class="rv-body" id="${rv.id}-${s.key}">${renderStageBody(rv, s.key)}</div>
     </section>`;
   }).join('');
-  rv.el.innerHTML = head + `<div class="rv-stages">${stages}</div>`;
+  const logHtml = rv.fromHistory ? '' : `
+    <details class="rv-log" ${rv.logOpen ? 'open' : ''}>
+      <summary>console log <span class="mono">${rv.log.length} line${rv.log.length === 1 ? '' : 's'}</span><span class="rv-log-hint">${rv.badge === 'running' ? 'the panels above are the live view; these are the runtime\'s own lines' : ''}</span></summary>
+      <div class="rv-log-lines">${rv.log.map((l) => `<div><span class="at">${escHtml(l.at)}</span>${formatMsg(l.text)}</div>`).join('') || '<div class="rv-empty">no lines yet</div>'}</div>
+    </details>`;
+  rv.el.innerHTML = head + `<div class="rv-stages">${stages}</div>` + logHtml;
+  const details = rv.el.querySelector('.rv-log');
+  if (details) {
+    details.addEventListener('toggle', () => { rv.logOpen = details.open; });
+    const lines = details.querySelector('.rv-log-lines');
+    if (lines) lines.scrollTop = lines.scrollHeight;
+  }
   const dl = rv.el.querySelector('.rv-download');
   if (dl && rv.zip) dl.addEventListener('click', () => triggerFrameworkZipDownload(rv.zip));
   [...rv.el.querySelectorAll('[data-send]')].forEach((b) => b.addEventListener('click', () => sendCommand(b.dataset.send)));
@@ -5638,7 +5741,8 @@ function renderPlan(rv) {
 function renderExplorer(rv) {
   const ex = rv.explorer;
   const rep = rv.report;
-  const usd = rep ? rep.cost.usd : ex.usd;
+  const repCost = (rep && rep.cost) || {};
+  const usd = rep ? (repCost.usd || 0) : ex.usd;
   const sub = ex.subCeiling;
   const pct = sub ? Math.min(100, (usd / sub) * 100) : 0;
   const meterCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
@@ -5695,10 +5799,10 @@ function renderCritic(rv) {
   const finalVerdicts = review ? review.verdicts : c.verdicts;
   const counts = { pass: 0, rework: 0, reject: 0 };
   for (const v of finalVerdicts) if (counts[v.verdict] !== undefined) counts[v.verdict]++;
-  const usd = rep ? (rep.cost.criticUsd || 0) : c.usd;
+  const usd = rep ? ((rep.cost && rep.cost.criticUsd) || 0) : c.usd;
   const journeys = review && review.repair ? review.repair : c.journeys;
   let banner = '';
-  if (c.repair && c.repair.ran) banner = `<div class="rv-banner info"><b>repair pass</b> ${c.repair.count} scenario(s) re-explored · budget $${c.repair.budget.toFixed(2)}${rep && rep.cost.repairUsd != null ? ` · spent $${rep.cost.repairUsd.toFixed(4)}` : ''}</div>`;
+  if (c.repair && c.repair.ran) banner = `<div class="rv-banner info"><b>repair pass</b> ${c.repair.count} scenario(s) re-explored · budget $${c.repair.budget.toFixed(2)}${rep && rep.cost && rep.cost.repairUsd != null ? ` · spent $${rep.cost.repairUsd.toFixed(4)}` : ''}</div>`;
   else if (c.repair && !c.repair.ran) banner = `<div class="rv-banner"><b>repair pass skipped</b> ${escHtml(c.repair.reason)}</div>`;
   const label = review ? 'final verdicts' : c.repair ? 'first verdicts' : 'verdicts';
   return `

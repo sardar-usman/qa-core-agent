@@ -389,7 +389,7 @@ When a run starts, the centre panel shows one card per pipeline stage, updated l
 5. **Replay and stability**: pass or fail per scenario, the per-iteration pattern (`PPP`, `PFP`), stabilizer attempts and recoveries.
 6. **Summary**: the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped), rule coverage with the considered-not-automated list and reasons, the cost split (planner, explorer, critic, repair, stabilizer), findings called out as product behavior to review, and the zip download.
 
-Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently.
+Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently. While a run is live the panels are the primary view: the runtime's console-style lines are demoted to a collapsible log at the bottom of the run view, and the chat gets only the final summary and the download card. The **view** button on any history card opens the same six panels for a past run from its run-report.
 
 ### Run history, resume and regenerate
 

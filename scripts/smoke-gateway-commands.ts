@@ -6,6 +6,10 @@
  */
 import { parseGatewayCommand, EXPLORE_USAGE, RESUME_USAGE, TRANSCRIBE_USAGE } from '../src/server/commands.js';
 import { tokenizeCommand } from '../src/agent/explore-request.js';
+import { loadReportForUi } from '../src/server/runs.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 let pass = 0;
 let fail = 0;
@@ -112,6 +116,21 @@ check('AO. /generate', (() => { const c = parseGatewayCommand('/generate As a us
 check('AP. /heal', (() => { const c = parseGatewayCommand('/heal tests/login.spec.ts', D); return c.kind === 'heal' && c.specPath === 'tests/login.spec.ts'; })());
 check('AQ. /eval --no-pom', (() => { const c = parseGatewayCommand('/eval --no-pom', D); return c.kind === 'eval' && c.pom === false; })());
 check('AR. unknown command lists /resume and /transcribe in the help', (() => { const c = parseGatewayCommand('hello', D); return c.kind === 'reply' && /\/resume/.test(c.text) && /\/transcribe/.test(c.text); })());
+
+/* ─── get_report: the history view loads a report, never an arbitrary file ─── */
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-getreport-'));
+fs.mkdirSync(path.join(root, 'output', 'x-automation-framework'), { recursive: true });
+fs.writeFileSync(path.join(root, 'output', 'x-automation-framework', 'run-report.json'), JSON.stringify({ url: 'https://x.example/', language: 'ts', scenarios: [{ name: 'a', steps: [{ kind: 'navigate', url: 'https://x.example/' }] }], cost: { usd: 0 } }));
+fs.writeFileSync(path.join(root, 'output', 'x-automation-framework', 'checkpoint.json'), '{}');
+fs.writeFileSync(path.join(root, 'secret.txt'), 'nope');
+const loaded = loadReportForUi(root, 'output/x-automation-framework/run-report.json');
+check('AS. get_report loads a report under the root with traces stripped and checkpoint noted',
+  (loaded.report.scenarios as Array<Record<string, unknown>>)[0]?.stepCount === 1 && !('steps' in (loaded.report.scenarios as Array<Record<string, unknown>>)[0]!) && loaded.outcome.checkpointPath === 'output/x-automation-framework/checkpoint.json' && loaded.outcome.kind === 'framework');
+check('AT. get_report refuses a path outside the root', (() => { try { loadReportForUi(root, '../etc/passwd'); return false; } catch (e) { return /Refusing/.test((e as Error).message); } })());
+check('AU. get_report refuses a file that is not run-report.json', (() => { try { loadReportForUi(root, 'secret.txt'); return false; } catch (e) { return /Refusing/.test((e as Error).message); } })());
+check('AV. get_report reports a missing report plainly', (() => { try { loadReportForUi(root, 'output/none/run-report.json'); return false; } catch (e) { return /not found/.test((e as Error).message); } })());
+fs.rmSync(root, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

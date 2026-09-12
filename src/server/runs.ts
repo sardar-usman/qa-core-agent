@@ -152,3 +152,34 @@ export function reportForUi(report: RunReport): Record<string, unknown> {
     scenarios: report.scenarios.map(({ steps, ...rest }) => ({ ...rest, stepCount: steps.length })),
   };
 }
+
+/**
+ * Load a run-report for the dashboard's history "view" action. The path is
+ * relative to the project root and must resolve INSIDE it to a file named
+ * run-report.json; anything else is refused, so the socket cannot be used to
+ * read arbitrary files. Returns the UI shape plus the outcome fields the run
+ * view reads (checkpoint presence decides the resume offer).
+ */
+export function loadReportForUi(root: string, reportPath: string): { report: Record<string, unknown>; outcome: Record<string, unknown> } {
+  const resolved = path.resolve(root, reportPath);
+  const rootResolved = path.resolve(root) + path.sep;
+  if (!resolved.startsWith(rootResolved) || path.basename(resolved) !== 'run-report.json') {
+    throw new Error(`Refusing to read ${reportPath}: only a run-report.json under the project root can be opened.`);
+  }
+  if (!fs.existsSync(resolved)) throw new Error(`Run report not found: ${reportPath}`);
+  const report = JSON.parse(fs.readFileSync(resolved, 'utf8')) as RunReport;
+  if (!Array.isArray(report.scenarios)) throw new Error(`${reportPath} is not a run report.`);
+  const cpFile = path.join(path.dirname(resolved), 'checkpoint.json');
+  const hasCp = fs.existsSync(cpFile);
+  return {
+    report: reportForUi(report),
+    outcome: {
+      kind: report.scenarios.length === 0 ? 'empty' : 'framework',
+      reportPath: rel(root, resolved),
+      checkpointPath: hasCp ? rel(root, cpFile) : null,
+      resumeHint: null,
+      summary: [],
+      diagnosis: null,
+    },
+  };
+}
