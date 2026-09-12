@@ -27,6 +27,8 @@ The 5-stage pipeline lives here. Each stage is one module. Shared types (trace, 
 | File | Stage | Purpose |
 |---|---|---|
 | `runtime.ts` | orchestrator | The main `explore()` function. Wires together Planner → Explorer → Critic → Replay → Stability. Holds the system prompt for the Explorer, sums costs, manages the cost ceiling, and writes the final `run-report.json`. Every CLI / gateway / MCP / eval call ultimately invokes this. |
+| `explore-request.ts` | surfaces | The one description of an explore run shared by the CLI, the gateway and the MCP server: the `ExploreRequest` type, the flag parser (`parseExploreTokens` / `parseExploreArgv`), the `EXPLORE_FLAGS` registry (every flag with its MCP argument and dashboard reach), the per-run setting allowlist (`RUN_ENV_SETTINGS`, `validateEnvOverride`, `readRunSettings`), resume conflict checks, and `buildExploreOptions`, the single mapping to the runtime's `ExploreOptions`. |
+| `framework-dir.ts` | emit | `slimFrameworkDir`: after the zip is written, reduce the framework directory to the report files (`run-report.json`, `requirements-map.json`, `rule-coverage.json`, `checkpoint.json`). Shared by every surface so they leave the same footprint. |
 | `planner.ts` | 1 — Planner | Cheap Haiku pre-pass. Loads the target URL, snapshots the visible DOM, asks Haiku to propose 3–6 scenarios formatted as `[category] name — rationale`, and parses the response with a forgiving regex that accepts four known format variants. Output: `PlannedScenario[]`. |
 | `tools.ts` | 2 — Explorer | The tool surface Opus uses to drive the browser. Defines `begin_scenario`, `navigate`, `click`, `fill`, `press`, `wait`, `get_dom`, `assert`, `end_scenario`, `finish`. `runTool()` dispatches each call, enforces budgets, and records trace steps. Also installs console + network listeners that attach errors to each scenario. |
 | `critic.ts` | 3 — Critic | Single Sonnet call after exploration. Sends the recorded scenario list (names + step kinds + assertion shapes) and asks for a per-scenario verdict: `pass` / `rework` / `reject` plus reasons and required fixes. `parseVerdicts` extracts the verdict array with a bracket-depth scan; `gateByVerdicts` drops non-pass scenarios before Reality-Check. Does NOT drive a browser. |
@@ -50,7 +52,8 @@ Three thin command-line front-ends. Each parses argv, calls the appropriate `src
 
 | File | Command | Purpose |
 |---|---|---|
-| `explore.ts` | `npm run explore -- <url>` | Drives the 5-stage pipeline against a URL. Flags: `--lang ts\|js`, `--name <basename>`, `--out <dir>`, `--review`, `--from-plan <plan.csv>`, `--no-pom`, `--no-replay`, `--no-stability`, `--stability N`. |
+| `explore.ts` | `npm run explore -- <url>` | Drives the 5-stage pipeline against a URL. Flag parsing lives in `src/agent/explore-request.ts` (shared with the gateway and MCP). Flags: `--lang ts\|js`, `--features`, `--srs`, `--urls`, `--discover`, `--resume`, `--name <basename>`, `--out <dir>`, `--review`, `--from-plan <plan.csv>`, `--no-pom`, `--no-replay`, `--no-stability`, `--stability N`, `--no-stabilize`, `--stabilize-attempts N`, and the per-run setting flags `--ceiling`, `--repair-reserve`, `--max-steps`, `--planner-model`, `--explorer-model`, `--critic-model`, `--env NAME=VALUE`. |
+| `transcribe.ts` | `npm run transcribe -- <run-report.json>` | Re-emits the framework and zip from an existing run report. No browser, no model call. |
 | `generate.ts` | `npm run generate -- "<story>"` | Single-shot story → spec. Flags: `--lang ts\|js`, `--name <basename>`, `--out <dir>`. |
 | `heal.ts` | `npm run heal -- <spec-path>` | Thin wrapper around the published qa-core-heal npm package, which owns all healing logic. Parses argv, forwards to the package's `heal()` (deep import `qa-core-heal/dist/heal.js`; the package ships no `main`/`exports`), and prints the report. Also re-exports `heal` for the gateway and MCP server, so every heal path goes through the same package integration. Flags: `--base-url <url>`, `--dry-run`. |
 
@@ -60,7 +63,11 @@ Three thin command-line front-ends. Each parses argv, calls the appropriate `src
 
 | File | Purpose |
 |---|---|
-| `gateway.ts` | The WebSocket bridge between the static `qa-core-ui.html` and the agent runtime. Listens on `ws://127.0.0.1:18789` by default. Parses slash commands out of incoming chat messages, dispatches to `explore` / `generate` / `heal` / `eval` flows, and streams typed events (`plan_started`, `tool_call`, `replay_done`, etc.) back to the UI as JSON. Also exposes `list_runs` which walks `output/` and `eval-results/` and returns a unified list of historical runs the dashboard renders. |
+| `gateway.ts` | The WebSocket bridge between the static `qa-core-ui.html` and the agent runtime. Listens on `ws://127.0.0.1:18789` by default. Hands each chat message to `commands.ts`, runs explore / resume / transcribe through `run-explore.ts`, and streams structured messages back: `settings` (the env-driven run settings), `run_started`, one `event` per `AgentEvent`, `run_report` (the RunReport minus traces), `framework_zip`, and `runs` (history from `runs.ts`). Accepts per-run setting overrides (`env`) and an uploaded SRS (`srs`) on the message. |
+| `commands.ts` | Pure parser for the dashboard's slash commands: `/explore` with every CLI flag plus a natural-language feature hint, `/resume`, `/transcribe`, `/generate`, `/heal`, `/eval`, paste hints for pasted `npm run` lines, and the usage and help texts. No I/O, so `smoke-gateway-commands` drives it offline. |
+| `run-explore.ts` | The explore run the gateway and the MCP server share: prepare (URL validation, checkpoint load + conflicts + reachability, SRS ingestion), run `explore()` through `buildExploreOptions`, emit (scaffold, zip, slim, checkpoint hold), and `runTranscribeRequest` for regeneration. `withEnvOverrides` applies per-run settings to `process.env` for the run only. |
+| `events.ts` | `eventForUi`: trims tool payloads in the event stream the gateway forwards to the dashboard. Every other event, `critic_done` included, passes through as the runtime emitted it, and this runs after the critic response was parsed. |
+| `runs.ts` | Run history from disk (`listRunsFromDisk`): every `run-report.json` under `output/` and `eval-results/` as a `DiskRun` with status (`completed` / `stopped` with checkpoint / `empty`), checkpoint and report paths, reconciliation, rule coverage and repair journeys. `reportForUi` strips per-step traces from a report before it is sent to the dashboard; `loadReportForUi` serves the history view's `get_report` (path-validated to a `run-report.json` under the project root). |
 
 ---
 
@@ -68,7 +75,8 @@ Three thin command-line front-ends. Each parses argv, calls the appropriate `src
 
 | File | Purpose |
 |---|---|
-| `server.ts` | Exposes QA-Core's three workflows as MCP tools (`qa_explore`, `qa_generate`, `qa_heal`) over stdio JSON-RPC. Lets MCP-aware hosts (Claude Desktop, Cursor, Cline, Continue, Zed) invoke the agent directly. All logging goes to stderr to keep stdout reserved for the MCP wire protocol. |
+| `server.ts` | Exposes QA-Core's workflows as MCP tools (`qa_explore`, `qa_resume`, `qa_transcribe`, `qa_generate`, `qa_heal`) over stdio JSON-RPC. Explore, resume and transcribe run through `src/server/run-explore.ts`, the same path the gateway uses. All logging goes to stderr to keep stdout reserved for the MCP wire protocol. |
+| `tools.ts` | Pure tool schemas (zod) with every argument documented against its CLI flag, and the mappers from tool arguments onto the shared `ExploreRequest` (`exploreRequestFromToolArgs`, `resumeRequestFromToolArgs`). Imported by `smoke-surface-parity` without starting the server. |
 
 ---
 
@@ -93,6 +101,10 @@ These run with `npx tsx scripts/<name>.ts`. They are deterministic and fast. Eac
 | `smoke-hascount.ts` | `toHaveCount(N)` succeeds on multi-match selectors. Recorded step has `ambiguous` flag stripped so transcribed spec emits without `.first()`. |
 | `smoke-planner-parse.ts` | Five known Haiku output formats (with/without brackets, em-dash vs colon after category, hyphen-in-name edge case) all parse correctly. |
 | `smoke-abandoned.ts` | The runtime's exit-path force-push drops in-progress scenarios with no assertions. |
+| `smoke-gateway-commands.ts` | The dashboard command parser accepts every explore flag, `/resume`, `/transcribe`, quoted paths, npm-style leftovers, and paste hints for the new flags; refuses `--out`, `--review`, unknown flags, and settings outside the per-run allowlist. |
+| `smoke-surface-parity.ts` | The CLI, the gateway and the MCP server build identical `ExploreRequest`s and identical runtime options for the same ask (fresh and resume); every row of `EXPLORE_FLAGS` parses, has its MCP argument with a description naming the CLI flag, is accepted by `/explore`, or states why parity is impossible; tool names stay stable. |
+| `smoke-gateway-critic.ts` | The critic parse through the gateway's `runExploreRequest` path with a fake client: the saucedemo-shaped response (a regex quoted inside a reason) parses to 3 verdicts, the per-run critic model override is applied at call time and restored, the dashboard model chip never reaches the critic, the CLI path yields byte-identical verdicts, `eventForUi` forwards `critic_done` untouched, and an unparseable response keeps its raw text. |
+| `smoke-ui-pipeline.ts` | The live run view renders from a realistic event sequence, then from a fixture run-report: funnel counts equal the reconciliation arrays' lengths, verdict journeys match `review.repair`, the cost split sums the report's fields, rule coverage lists considered-not-automated rules with reasons; history shows Resume only with a checkpoint and Regenerate only on a completed run; both themes keep 4.5:1 contrast. |
 | `smoke-ui.ts` | `qa-core-ui.html` loads in real Chromium with zero JS console errors. Critical pipeline DOM nodes (Stability row, stats container) are present. |
 | `smoke-dashboard-math.ts` | Compares the old (buggy) vs new (fixed) per-site dashboard math against real on-disk runs. Confirms the fix produces sensible numbers, not just "different" numbers. |
 
