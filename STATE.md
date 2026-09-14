@@ -87,6 +87,9 @@ during the maturity pass:
 - CODEBASE.md is stale and lists missing doc files.
 - A smoke that runs an emitted framework against a local fixture page.
 - The 0.3.5 packaging fixes for qa-core-heal (exports, peer deps, engines).
+- run-report records its own budgets (step budget, explorer sub-ceiling,
+  repair-pass budget, per-page planner cost) so the dashboard can show spend
+  against limit; today those four are not recorded.
 
 ## Then: go to market
 

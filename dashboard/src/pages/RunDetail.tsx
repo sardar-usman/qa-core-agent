@@ -7,13 +7,20 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusBadge } from '@/components/StatusBadge';
-import { fmtDate, money } from '@/lib/utils';
+import { StageView, formatSize } from '@/components/StageView';
+import { fmtDate, usd } from '@/lib/utils';
 
 /**
  * Run Detail: one run, from its stored artifacts only. Every value on this
  * page is a field of /api/runs/:id/detail, which reads output/<host>/<run-id>/
  * (run-report.json, events.jsonl, the files present) or the index row built
  * from those files. Nothing is computed here.
+ *
+ * Layout (PR B2): the six-stage view (rail + Discovery, Plan, Explore, Review,
+ * Verify, Summary) first, rendered from the payload's `stages` block; then the
+ * per-scenario table from PR B; then artifacts and the stored events log.
+ * Findings live in the Summary panel, unmatched verdicts and the Critic
+ * summary in the Review panel.
  */
 export function RunDetailPage() {
   const { id = '' } = useParams();
@@ -56,7 +63,7 @@ export function RunDetailPage() {
         <dl className="grid gap-3 sm:grid-cols-4">
           <Fact label="started" value={fmtDate(h.started_at)} title={h.started_at ?? ''} testid="detail-started" />
           <Fact label="ended" value={fmtDate(h.ended_at)} title={h.ended_at ?? ''} testid="detail-ended" />
-          <Fact label="total cost" value={money(h.cost.total, 4)} mono cost testid="detail-cost" sub={`planner ${money(h.cost.planner, 4)} · explorer ${money(h.cost.explorer, 4)} · critic ${money(h.cost.critic, 4)}${h.cost.repair ? ` · repair ${money(h.cost.repair, 4)}` : ''}`} />
+          <Fact label="total cost" value={usd(h.cost.total)} mono cost testid="detail-cost" sub={`planner ${usd(h.cost.planner)} · explorer ${usd(h.cost.explorer)} · critic ${usd(h.cost.critic)}${h.cost.repair ? ` · repair ${usd(h.cost.repair)}` : ''}`} />
           <Fact label="source" value={h.source} testid="detail-source" sub={h.url ?? undefined} />
         </dl>
         {h.stopped_reason ? <div className="rounded-md border border-transparent bg-rework-soft px-3 py-2 text-s text-rework" data-testid="detail-stopped">stopped early: {h.stopped_reason}</div> : null}
@@ -67,15 +74,17 @@ export function RunDetailPage() {
           <div className="rounded-lg border border-line bg-bg-1 px-4 py-3 text-m" data-testid="legacy-notice">pre-v2 record, per-scenario detail not captured</div>
           <dl className="grid gap-3 sm:grid-cols-4">
             <Fact label="scenarios explored" value={String(detail.summary.explored)} testid="legacy-explored" />
-            <Fact label="total cost" value={money(detail.summary.cost_total, 4)} mono cost testid="legacy-cost" />
+            <Fact label="total cost" value={usd(detail.summary.cost_total)} mono cost testid="legacy-cost" />
             <Fact label="duration" value={detail.summary.duration_sec != null ? `${detail.summary.duration_sec}s` : '–'} testid="legacy-duration" />
             <Fact label="model" value={detail.summary.model ?? '–'} mono testid="legacy-model" />
           </dl>
         </section>
       ) : (
         <>
+          <StageView stages={detail.stages} findings={detail.findings} unmatched={detail.unmatched_verdicts} />
+
           <section className="flex flex-col gap-2" data-testid="scenarios-section">
-            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3">{detail.scenarios.length} planned or recorded · {detail.counts.shipped ?? 0} shipped as stored</span></h2>
+            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3">{detail.scenarios.length} planned or recorded · {detail.counts.shipped ?? 0} shipped as stored · one row per scenario across every stage</span></h2>
             {detail.scenarios.length === 0 ? <EmptyState title="No scenarios recorded">The report holds no plan, verdicts or emitted scenarios for this run.</EmptyState> : (
               <Table data-testid="scenarios-table">
                 <TableHeader>
@@ -94,35 +103,6 @@ export function RunDetailPage() {
               </Table>
             )}
           </section>
-
-          <section className="rounded-lg border border-finding/40 bg-finding-soft p-4" data-testid="findings-section">
-            <h2 className="text-m font-semibold text-finding" data-testid="findings-heading">Product behavior to review <span className="mono text-s font-normal">{detail.findings.length}</span></h2>
-            <p className="mt-1 text-s text-fg-2">A finding is product behavior the agent observed that differed from what the scenario expected. It is not a test failure and is not a scenario row.</p>
-            {detail.findings.length === 0 ? (
-              <div className="mt-3 text-s text-fg-2" data-testid="no-findings">No findings recorded</div>
-            ) : (
-              <ul className="mt-3 flex flex-col gap-2">
-                {detail.findings.map((f) => (
-                  <li key={f.scenario} className="rounded-md border border-line bg-bg-1 px-3 py-2" data-testid="finding">
-                    <div className="font-semibold text-finding">{f.scenario}</div>
-                    <div className="text-s text-fg-2"><span className="font-semibold text-fg">Expected</span> {f.expected}</div>
-                    <div className="text-s text-fg-2"><span className="font-semibold text-fg">What happened</span> the page stayed at <span className="mono">{f.url}</span>{f.messages.length ? `; it said "${f.messages.join(' | ')}"` : ''}</div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {detail.unmatched_verdicts.length ? (
-            <section className="rounded-lg border border-transparent bg-rework-soft p-4" data-testid="unmatched-verdicts">
-              <h2 className="text-m font-semibold text-rework">Critic verdicts that matched no scenario <span className="mono text-s font-normal">{detail.unmatched_verdicts.length}</span></h2>
-              <p className="mt-1 text-s text-fg-2">These verdicts came back with names that matched no planned or recorded scenario, even after tolerant matching. They are not scenario rows; nothing is dropped silently.</p>
-              <ul className="mt-2 flex flex-col gap-1">
-                {detail.unmatched_verdicts.map((v) => <li key={v.scenario} className="text-s" data-testid="unmatched-verdict"><Badge variant={VERDICT_VARIANT[v.verdict as keyof typeof VERDICT_VARIANT] ?? 'neutral'}>{v.verdict}</Badge> <span className="ml-2 text-fg">{v.scenario}</span>{v.reasons.length ? <span className="text-fg-3"> · {v.reasons.join(' · ')}</span> : null}</li>)}
-              </ul>
-            </section>
-          ) : null}
-          {detail.review_summary ? <section><h2 className="text-m font-semibold">Critic summary</h2><p className="mt-1 text-s text-fg-2">{detail.review_summary}</p></section> : null}
         </>
       )}
 
@@ -132,8 +112,8 @@ export function RunDetailPage() {
           <ul className="mt-2 flex flex-wrap gap-2">
             {detail.artifacts.map((a) => (
               <li key={a.name}>
-                <Button variant={a.kind === 'zip' ? 'default' : 'outline'} size="sm" asChild>
-                  <a href={api.withToken(a.href)} data-testid="artifact-link" data-kind={a.kind}>{a.kind === 'zip' ? 'Download ' : ''}{a.name} <span className="ml-1 font-normal opacity-70">{formatSize(a.size)}</span></a>
+                <Button variant="outline" size="sm" asChild>
+                  <a href={api.withToken(a.href)} data-testid="artifact-link" data-kind={a.kind}>{a.name} <span className="ml-1 font-normal opacity-70">{formatSize(a.size)}</span></a>
                 </Button>
               </li>
             ))}
@@ -203,12 +183,6 @@ function ScenarioRow({ s }: { s: RunDetailScenario }) {
       <TableCell><span className={s.shipped ? 'text-pass' : 'text-fg-3'} data-testid="shipped" data-shipped={s.shipped ? 'yes' : 'no'}>{s.shipped ? 'yes' : 'no'}</span></TableCell>
     </TableRow>
   );
-}
-
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
 function describeEvent(e: { type: string; [k: string]: unknown }): string {

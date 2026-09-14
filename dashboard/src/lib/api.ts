@@ -33,12 +33,46 @@ export interface RunDetailHeader {
   stopped_reason: string | null;
 }
 export interface RunDetailArtifact { name: string; kind: string; size: number; href: string }
+export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable';
+export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
+/** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
+export interface RunDetailStages {
+  discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; warnings: string[] };
+  plan: { status: StageStatus; stat: string; planner_usd: number; scenarios: Array<{ name: string; feature: string | null; category: string | null; rule_ids: string[]; page_url: string | null }>; pages: Array<{ url: string | null; count: number }> };
+  explore: {
+    status: StageStatus; stat: string; steps: number; scenarios_recorded: number; explorer_usd: number; repair_usd: number;
+    gate_injections: Array<{ scenario: string; step_index: number; assertion_type: string; detail: string }>;
+    gate_broken: Array<{ scenario: string; reason: string; attempts: number }>;
+    skipped: Array<{ scenario: string; reason: string }>; incomplete: Array<{ scenario: string; reason: string }>;
+    heals: Array<{ scenario: string | null; intent: string; from: string; to: string }>;
+    stopped: { kind: string; reason: string } | null;
+  };
+  review: {
+    status: StageStatus; stat: string; ran: boolean; counts: { pass: number; rework: number; reject: number }; critic_usd: number;
+    verdicts: Array<{ scenario: string; verdict: 'pass' | 'rework' | 'reject'; reasons: string[]; required_fixes: string[] }>;
+    journeys: Array<{ scenario: string; first: 'rework'; second: string | null; outcome: 'kept' | 'dropped' }>;
+    repair: { count: number; spent_usd: number } | null; summary: string | null;
+  };
+  verify: {
+    status: StageStatus; stat: string;
+    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null }> } | null;
+    stability: { iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null; verdicts: Array<{ name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean }> } | null;
+  };
+  summary: {
+    status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; uncovered_count: number; attention: number;
+    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; balanced: boolean; added: number } | null;
+    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; total: number };
+    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
+    zip: RunDetailArtifact | null; stopped: { kind: string; reason: string } | null;
+  };
+}
+export interface RunDetailFinding { scenario: string; category: string | null; expected: string; url: string; messages: string[]; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }
 export interface StoredEvent { t: string; type: string; [k: string]: unknown }
 export type RunDetail =
   | {
       legacy: false; run: RunRow; header: RunDetailHeader; scenarios: RunDetailScenario[];
       counts: { planned: number; shipped: number | null; generated: number; dropped: number; incomplete: number; findings: number; skipped: number; stable: number; flaky: number; broken: number };
-      findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[] }>;
+      findings: RunDetailFinding[]; stages: RunDetailStages;
       review_summary: string | null; unmatched_verdicts: Array<{ scenario: string; verdict: string; reasons: string[] }>;
       artifacts: RunDetailArtifact[]; events: StoredEvent[] | null; events_status: 'present' | 'empty' | 'absent';
     }
