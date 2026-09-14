@@ -51,6 +51,23 @@ export const MIGRATIONS: Migration[] = [
       db.exec(schemaSql());
     },
   },
+  {
+    // projects.environment becomes nullable and loses its 'other' default:
+    // the indexer never knew an environment, so the stored 'other' was a
+    // label nobody set. Rows are kept; a stored 'other' becomes NULL.
+    version: 4,
+    name: 'project environment nullable',
+    up: (db) => {
+      db.exec(`CREATE TABLE projects_v4 (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT,
+        environment TEXT CHECK (environment IS NULL OR environment IN ('staging', 'production', 'other')),
+        srs_path TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, default_ceiling_usd REAL, default_features TEXT, notes TEXT
+      )`);
+      db.exec(`INSERT INTO projects_v4 SELECT id, name, base_url, CASE WHEN environment = 'other' THEN NULL ELSE environment END,
+               srs_path, created_at, updated_at, default_ceiling_usd, default_features, notes FROM projects`);
+      db.exec('PRAGMA foreign_keys = OFF; DROP TABLE projects; ALTER TABLE projects_v4 RENAME TO projects; PRAGMA foreign_keys = ON;');
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */

@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS projects (
   id                  TEXT PRIMARY KEY,
   name                TEXT NOT NULL,
   base_url            TEXT,
-  environment         TEXT NOT NULL DEFAULT 'other' CHECK (environment IN ('staging', 'production', 'other')),
+  -- NULL until a user sets it; the indexer never stores a default label.
+  environment         TEXT CHECK (environment IS NULL OR environment IN ('staging', 'production', 'other')),
   srs_path            TEXT,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,

@@ -143,7 +143,7 @@ function monthStart(now = new Date()): string {
 }
 
 export interface ProjectCard {
-  id: string; name: string; base_url: string | null; environment: string; srs_path: string | null;
+  id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null;
   /** All runs, reported and legacy. */
   runs: number;
   /** Tests shipped, summed over runs that have a report. Legacy rows never contribute. */
@@ -176,7 +176,7 @@ function projectCard(db: Database.Database, p: Record<string, unknown>): Project
                                FROM rule_coverage c JOIN runs r ON r.id = c.run_id WHERE r.project_id = ?
                                GROUP BY r.id ORDER BY r.started_at ASC, r.id ASC`).all(id) as Array<{ run_id: string; started_at: string | null; covered: number; total: number }>;
   return {
-    id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: String(p.environment), srs_path: (p.srs_path as string | null) ?? null,
+    id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: (p.environment as string | null) ?? null, srs_path: (p.srs_path as string | null) ?? null,
     runs: agg.runs, shipped: agg.shipped, legacy_runs: agg.legacy_runs ?? 0, open_findings: open.n, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
     coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),

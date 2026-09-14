@@ -55,15 +55,19 @@ const report = {
     { name: 'sort by price low to high', category: 'happy', rationale: 'r', feature: 'cart' },
     { name: 'footer social links open', category: 'happy', rationale: 'r', feature: 'footer' },
   ],
+  // Verdict names carry the "N. [category] " prefix the live Critic echoes back,
+  // and two are small rephrasings of the plan names. The fourth matches no
+  // scenario at all: it must surface as an unmatched verdict, never as a row.
   review: {
     verdicts: [
-      { scenario: 'login succeeds with valid credentials', verdict: 'pass', reasons: ['asserts the inventory page'], required_fixes: [] },
-      { scenario: 'add to cart updates the badge', verdict: 'pass', reasons: ['captures the badge count before and after'], required_fixes: [] },
-      { scenario: 'sort by price low to high', verdict: 'reject', reasons: ['compares the first cell to itself'], required_fixes: ['capture before sorting'] },
+      { scenario: '1. [happy] login succeeds with valid credentials', verdict: 'pass', reasons: ['asserts the inventory page'], required_fixes: [] },
+      { scenario: '2. [happy] add to cart updates the badge count', verdict: 'pass', reasons: ['captures the badge count before and after'], required_fixes: [] },
+      { scenario: '3. [happy] sort by price low to high ascending', verdict: 'reject', reasons: ['compares the first cell to itself'], required_fixes: ['capture before sorting'] },
+      { scenario: '5. [negative] checkout with an empty cart shows an error', verdict: 'rework', reasons: ['no such scenario was planned'], required_fixes: [] },
     ],
     summary: 'Two scenarios ship; one was repaired.',
     repair: [
-      { scenario: 'add to cart updates the badge', first: 'rework', second: 'pass', outcome: 'kept' },
+      { scenario: '[happy] add to cart updates the badge', first: 'rework', second: 'pass', outcome: 'kept' },
       { scenario: 'sort by price low to high', first: 'rework', second: 'reject', outcome: 'dropped' },
     ],
   },
@@ -99,6 +103,12 @@ const quietId = newRunId(new Date('2026-09-13T10:00:00Z'), 'quiet');
 const quietDir = path.join(output, 'saucedemo-com', quietId);
 fs.mkdirSync(quietDir, { recursive: true });
 fs.writeFileSync(path.join(quietDir, 'run-report.json'), JSON.stringify({ ...report, startedAt: '2026-09-13T10:00:00.000Z', finishedAt: '2026-09-13T10:02:00.000Z', findings: [], plan: report.plan.slice(0, 3), reconciliation: { ...report.reconciliation, planned: 3, findings: [] } }));
+// A run with an events.jsonl that exists but holds nothing.
+const emptyId = newRunId(new Date('2026-09-11T10:00:00Z'), 'empty0');
+const emptyDir = path.join(output, 'saucedemo-com', emptyId);
+fs.mkdirSync(emptyDir, { recursive: true });
+fs.writeFileSync(path.join(emptyDir, 'run-report.json'), JSON.stringify({ ...report, startedAt: '2026-09-11T10:00:00.000Z', finishedAt: '2026-09-11T10:02:00.000Z' }));
+fs.writeFileSync(path.join(emptyDir, 'events.jsonl'), '');
 // A run whose report vanishes after indexing.
 const goneId = newRunId(new Date('2026-09-12T10:00:00Z'), 'gone');
 fs.mkdirSync(path.join(output, 'saucedemo-com', goneId), { recursive: true });
@@ -119,20 +129,25 @@ if (d.status === 200 && d.body.legacy === false) {
   const b = d.body;
   const byName = new Map(b.scenarios.map((s) => [s.name, s]));
   check('B. exactly the three planned scenarios are rows; the finding is not one', b.scenarios.length === 3 && !byName.has('footer social links open'), JSON.stringify(b.scenarios.map((s) => s.name)));
-  check('C. verdicts are exactly pass / pass / reject as the Critic recorded', byName.get('login succeeds with valid credentials')?.verdict === 'pass' && byName.get('add to cart updates the badge')?.verdict === 'pass' && byName.get('sort by price low to high')?.verdict === 'reject');
+  check('C. verdicts attach through the tolerant matcher (prefix stripped, rephrasing tolerated): pass / pass / reject, none null', byName.get('login succeeds with valid credentials')?.verdict === 'pass' && byName.get('add to cart updates the badge')?.verdict === 'pass' && byName.get('sort by price low to high')?.verdict === 'reject' && b.scenarios.every((s) => s.verdict !== null), JSON.stringify(b.scenarios.map((s) => [s.name, s.verdict])));
+  check('C2. the verdict that matches no scenario lands in unmatched_verdicts and is never a scenario row', b.unmatched_verdicts.length === 1 && b.unmatched_verdicts[0]?.scenario === '5. [negative] checkout with an empty cart shows an error' && b.unmatched_verdicts[0]?.verdict === 'rework' && !b.scenarios.some((s) => /checkout/.test(s.name)) && !b.scenarios.some((s) => s.replay === null && s.shipped === false && s.verdict === null), JSON.stringify(b.unmatched_verdicts));
   check('D. repair status: none / repaired (rework -> pass, kept) / failed (rework -> reject, dropped)', byName.get('login succeeds with valid credentials')?.repair === 'none' && byName.get('add to cart updates the badge')?.repair === 'repaired' && byName.get('sort by price low to high')?.repair === 'failed' && byName.get('sort by price low to high')?.repair_second === 'reject');
   check('E. shipped yes/no is the emitted list: 2 shipped, the reject not', byName.get('login succeeds with valid credentials')?.shipped === true && byName.get('add to cart updates the badge')?.shipped === true && byName.get('sort by price low to high')?.shipped === false && b.counts.shipped === 2);
   check('F. replay and stability are the recorded outcomes, per-attempt pattern included', byName.get('add to cart updates the badge')?.replay === 'pass' && byName.get('add to cart updates the badge')?.stability?.passes === 2 && byName.get('add to cart updates the badge')?.stability?.iterations === 3 && byName.get('add to cart updates the badge')?.stability?.pattern === 'PFP' && byName.get('add to cart updates the badge')?.stability?.recovered === true && byName.get('sort by price low to high')?.replay === null && byName.get('sort by price low to high')?.stability === null);
   check('G. the reject carries where it was dropped, from the reconciliation', byName.get('sort by price low to high')?.dropped_at === 'critic' && byName.get('sort by price low to high')?.dropped_reason === 'rework -> reject');
   check('H. findings length 1 with expected, url and messages as stored', b.findings.length === 1 && b.findings[0]?.scenario === 'footer social links open' && b.findings[0]?.expected === 'a new tab with twitter.com' && b.counts.findings === 1);
-  check('I. header: host, run id, timing, status, cost split from the index row, stabilizer cost from the report', b.header.host === 'saucedemo.com' && b.header.run_id === runId && b.header.started_at === report.startedAt && b.header.ended_at === report.finishedAt && b.header.status === 'completed' && Math.abs(b.header.cost.total - 1.4114) < 1e-9 && Math.abs(b.header.cost.repair - 0.31) < 1e-9 && b.header.cost.stabilizer === 0.004 && b.header.environment === null, JSON.stringify(b.header));
+  check('I. header: host, run id, timing, status, cost split from the index row, stabilizer cost from the report', b.header.host === 'saucedemo.com' && b.header.run_id === runId && b.header.started_at === report.startedAt && b.header.ended_at === report.finishedAt && b.header.status === 'completed' && Math.abs(b.header.cost.total - 1.4154) < 1e-9 && Math.abs(b.header.cost.repair - 0.31) < 1e-9 && b.header.cost.stabilizer === 0.004 && b.header.environment === null, JSON.stringify(b.header));
+  check('I2. the cost total is the sum of every line shown: explorer (usd) + planner + critic + stabilizer', Math.abs(b.header.cost.total - (report.cost.usd + report.cost.plannerUsd + report.cost.criticUsd + report.stability.stabilizerCostUsd)) < 1e-9 && Math.abs(b.header.cost.total - (b.header.cost.explorer + b.header.cost.repair + b.header.cost.planner + b.header.cost.critic + (b.header.cost.stabilizer ?? 0))) < 1e-9, JSON.stringify(b.header.cost));
   const kinds = b.artifacts.map((a) => `${a.kind}:${a.name}`).sort();
   check('J. artifacts list exactly the files on disk, with kinds and API hrefs', JSON.stringify(kinds) === JSON.stringify(['events:events.jsonl', 'meta:run-meta.json', 'report:run-report.json', 'rule-coverage:rule-coverage.json', 'screenshot:landing.png', 'zip:saucedemo-automation-framework.zip'].sort()) && b.artifacts.every((a) => a.href === `/api/runs/${runId}/artifacts/${encodeURIComponent(a.name)}` && a.size > 0), JSON.stringify(kinds));
-  check('K. events come from events.jsonl, oldest first, thinking_started not stored', b.events.length === 5 && b.events[0]?.type === 'plan_started' && b.events[4]?.type === 'done' && !b.events.some((e) => e.type === 'thinking_started') && b.events[0]?.t === '2026-09-14T10:00:05.000Z');
+  check('K. events come from events.jsonl (status present), oldest first, thinking_started not stored', b.events_status === 'present' && b.events?.length === 5 && b.events[0]?.type === 'plan_started' && b.events[4]?.type === 'done' && !b.events.some((e) => e.type === 'thinking_started') && b.events[0]?.t === '2026-09-14T10:00:05.000Z');
   check('L. the stored counts are copied from the index row, not recomputed', b.counts.planned === 4 && b.counts.generated === 2 && b.counts.dropped === 1 && b.counts.stable === 1);
 }
 const quiet = buildRunDetail(db, root, quietId);
 check('M. a run without findings returns an empty findings array (the page still renders the section)', quiet.status === 200 && quiet.body.legacy === false && quiet.body.findings.length === 0);
+check('M2. no events.jsonl: events null, events_status absent', quiet.status === 200 && quiet.body.events === null && quiet.body.events_status === 'absent');
+const emptyRun = buildRunDetail(db, root, emptyId);
+check('M3. an empty events.jsonl: events [], events_status empty', emptyRun.status === 200 && Array.isArray(emptyRun.body.events) && emptyRun.body.events.length === 0 && emptyRun.body.events_status === 'empty', JSON.stringify(emptyRun.status === 200 ? { e: emptyRun.body.events, s: emptyRun.body.events_status } : emptyRun.body));
 const missing = buildRunDetail(db, root, 'does-not-exist');
 check('N. an unknown run id is a 404 whose message names the path looked for', missing.status === 404 && /does-not-exist/.test(missing.body.error) && /output\/\*\/does-not-exist\/run-report\.json/.test(missing.body.error), JSON.stringify(missing.body));
 const gone = buildRunDetail(db, root, goneId);
@@ -208,6 +223,7 @@ const rendered = await page.evaluate(() => {
     header: { host: document.querySelector('[data-testid="detail-host"]')?.textContent, runId: document.querySelector('[data-testid="detail-run-id"]')?.textContent, cost: document.querySelector('[data-testid="detail-cost"]')?.textContent, status: document.querySelector('[data-testid="run-detail"] [data-status]')?.getAttribute('data-status'), envBadge: !!document.querySelector('[data-testid="env-badge"]') },
     artifacts: Array.from(document.querySelectorAll('[data-testid="artifact-link"]')).map((a) => ({ kind: a.getAttribute('data-kind'), href: a.getAttribute('href') })),
     events: document.querySelectorAll('[data-testid="event-row"]').length,
+    unmatched: { text: document.querySelector('[data-testid="unmatched-verdicts"] h2')?.textContent ?? '', items: Array.from(document.querySelectorAll('[data-testid="unmatched-verdict"]')).map((li) => li.textContent ?? '') },
     eventsOpen: (document.querySelector('[data-testid="events-section"]') as HTMLDetailsElement | null)?.open ?? null,
     back: document.querySelector('[data-testid="back-link"]')?.getAttribute('href'),
     rootColors: { pass: getComputedStyle(document.documentElement).getPropertyValue('--pass').trim(), rework: getComputedStyle(document.documentElement).getPropertyValue('--rework').trim(), reject: getComputedStyle(document.documentElement).getPropertyValue('--reject').trim() },
@@ -216,7 +232,8 @@ const rendered = await page.evaluate(() => {
 check('W. page: three scenario rows with the recorded verdict, repair, replay, stability and shipped values', rendered.rows.length === 3 && JSON.stringify(rendered.rows.map((r) => [r.verdict, r.repair, r.replay, r.shipped])) === JSON.stringify([['pass', 'none', 'pass', 'yes'], ['pass', 'repaired', 'pass', 'yes'], ['reject', 'failed', null, 'no']]) && /2\/3/.test(rendered.rows[1]?.stability ?? '') && /PFP/.test(rendered.rows[1]?.stability ?? ''), JSON.stringify(rendered.rows));
 check('X. page: the finding sits under "Product behavior to review" and is NOT a scenario row', /^Product behavior to review/.test(rendered.heading) && rendered.findings.length === 1 && /footer social links open/.test(rendered.findings[0] ?? '') && !/footer social links open/.test(rendered.tableText), JSON.stringify({ heading: rendered.heading, table: rendered.tableText.slice(0, 200) }));
 check('Y. page: the findings heading is the violet finding color, verdict badges are pass green / reject red (distinct)', rendered.findingsColor !== '' && rendered.verdictColors.find((c) => c.v === 'pass')?.color !== rendered.verdictColors.find((c) => c.v === 'reject')?.color && rendered.verdictColors.find((c) => c.v === 'reject')?.color !== rendered.findingsColor, JSON.stringify(rendered.verdictColors));
-check('Z. page: header shows host, run id, status, cost; no environment badge for "other"', rendered.header.host === 'saucedemo.com' && rendered.header.runId === runId && rendered.header.status === 'completed' && rendered.header.cost === '$1.4114' && !rendered.header.envBadge, JSON.stringify(rendered.header));
+check('Z. page: header shows host, run id, status, the four-term cost; no environment badge (environment stored NULL)', rendered.header.host === 'saucedemo.com' && rendered.header.runId === runId && rendered.header.status === 'completed' && rendered.header.cost === '$1.4154' && !rendered.header.envBadge, JSON.stringify(rendered.header));
+check('Z2. page: the unmatched verdict is shown under "Critic verdicts that matched no scenario", not in the table', /^Critic verdicts that matched no scenario/.test(rendered.unmatched.text) && rendered.unmatched.items.length === 1 && /checkout with an empty cart/.test(rendered.unmatched.items[0] ?? '') && !/checkout with an empty cart/.test(rendered.tableText), JSON.stringify(rendered.unmatched));
 check('AA. page: artifact links only for files present, token carried on the href', rendered.artifacts.length === 6 && rendered.artifacts.every((a) => a.href?.includes(`token=${TOKEN}`)) && rendered.artifacts.some((a) => a.kind === 'zip') && rendered.artifacts.some((a) => a.kind === 'screenshot'), JSON.stringify(rendered.artifacts));
 check('AB. page: events timeline is collapsible (closed) with the 5 stored events', rendered.eventsOpen === false && rendered.events === 5);
 check('AC. page: back link goes to the run\'s project', rendered.back === '/runs?project_id=saucedemo-com', String(rendered.back));
@@ -232,6 +249,10 @@ if (process.env.QA_CORE_SMOKE_SHOTS) {
 await page.goto(`http://127.0.0.1:${PORT}/runs/${quietId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="findings-section"]');
 check('AD. page: a run with zero findings still shows the section with "No findings recorded"', /No findings recorded/.test((await page.textContent('[data-testid="findings-section"]')) ?? ''));
+check('AD2. page: a run with no events.jsonl says so ("No events log; this run predates event capture"), no empty timeline', /No events log; this run predates event capture/.test((await page.textContent('[data-testid="events-section"]')) ?? '') && (await page.$$('[data-testid="event-row"]')).length === 0, (await page.textContent('[data-testid="events-section"]')) ?? '');
+await page.goto(`http://127.0.0.1:${PORT}/runs/${emptyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="events-section"]');
+check('AD3. page: an empty events.jsonl says "No events recorded"', /No events recorded/.test((await page.textContent('[data-testid="events-section"]')) ?? '') && (await page.$$('[data-testid="event-row"]')).length === 0, (await page.textContent('[data-testid="events-section"]')) ?? '');
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-detail"][data-legacy="true"]');

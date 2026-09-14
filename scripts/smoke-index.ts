@@ -114,8 +114,9 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (3: legacy rows count explored, not shipped)', schemaVersion(db) === 3);
+check('A. schema migrated to the current version (4: project environment nullable, no stored default)', schemaVersion(db) === 4);
 const r1 = indexOutput(db, root);
+check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
 check('C. 5 projects: saucedemo, shop, legacy, demo.playwright.dev (records only), Unassigned', r1.projects === 5, String(r1.projects));
 const projects = db.prepare('SELECT id, name, base_url FROM projects ORDER BY id').all() as Array<{ id: string; name: string; base_url: string | null }>;
@@ -139,7 +140,7 @@ for (const row of runs) {
   const expected = {
     planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length, incomplete: rec.incomplete.length, findings: rec.findings.length, skipped: rec.skipped.length,
     stable: rec.stable, flaky: rec.flaky, broken: rec.broken, shipped: rep.scenarios.length,
-    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
+    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0) + (rep.stability?.stabilizerCostUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
     cost_explorer: rep.cost.usd - (rep.cost.repairUsd ?? 0), cost_critic: rep.cost.criticUsd ?? 0, cost_repair: rep.cost.repairUsd ?? 0,
     flake_rate: rep.stability ? rep.stability.flakeRate : null, started_at: rep.startedAt, stopped_reason: rep.stopped?.reason ?? null,
     status: fs.existsSync(path.join(root, path.dirname(String(row.report_path)), 'checkpoint.json')) ? 'stopped' : rep.scenarios.length === 0 ? 'empty' : 'completed',

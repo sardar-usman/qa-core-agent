@@ -117,7 +117,7 @@ for (const row of rows) {
   const expected = rec
     ? { planned: n(rec.planned), generated: n(rec.generated), dropped: n(rec.dropped), incomplete: n(rec.incomplete), findings: n(rec.findings), skipped: n(rec.skipped), stable: n(rec.stable), flaky: n(rec.flaky), broken: n(rec.broken) }
     : { planned: n(rep.plan), generated: rep.scenarios.length, dropped: 0, incomplete: n(rep.incomplete), findings: n(rep.findings), skipped: n(rep.skipped), stable: rep.stability && !rep.stability.skipped ? rep.stability.passed : 0, flaky: rep.stability?.flaky ?? 0, broken: rep.stability?.broken ?? 0 };
-  const exp = { ...expected, shipped: rep.scenarios.length, cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0, cost_critic: rep.cost.criticUsd ?? 0, cost_repair: rep.cost.repairUsd ?? 0, stopped_reason: rep.stopped?.reason ?? null, url: rep.url };
+  const exp = { ...expected, shipped: rep.scenarios.length, cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0) + (rep.stability?.stabilizerCostUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0, cost_critic: rep.cost.criticUsd ?? 0, cost_repair: rep.cost.repairUsd ?? 0, stopped_reason: rep.stopped?.reason ?? null, url: rep.url };
   const bad = Object.entries(exp).filter(([k, v]) => (typeof v === 'number' ? Math.abs(Number(row[k]) - v) > 1e-9 : row[k] !== v)).map(([k]) => k);
   if (bad.length) { mismatches++; console.log(`  mismatch ${String(row.id)}: ${bad.join(', ')}`); }
   const host = hostOf(rep.url);

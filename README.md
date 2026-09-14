@@ -364,7 +364,7 @@ Playwright is configured with Chromium, Firefox, WebKit, and mobile projects. CI
 Every run writes its own directory, so a run never overwrites another and the dashboard index can be rebuilt from the files alone:
 
 ```text
-output/<project-slug>/<run-id>/       project slug = the URL host (www dropped), run id = UTC time + 6-char hash
+output/<project-slug>/<run-id>/       project slug = the URL host with www dropped and dots as hyphens (saucedemo-com), run id = UTC time + 6-char hash
   run-report.json                     always
   <brand>-automation-framework.zip    the framework (POM runs)
   checkpoint.json                     only when the run stopped early (resume with --resume)

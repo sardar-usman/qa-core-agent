@@ -131,7 +131,8 @@ export function runRowFromReport(opts: {
     flaky: rec ? len(rec.flaky) : (r.stability?.flaky ?? 0),
     broken: rec ? len(rec.broken) : (r.stability?.broken ?? 0),
     shipped: scenarios.length,
-    cost_total: (cost.usd ?? 0) + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0),
+    // Every cost line the dashboard shows: explorer (incl. repair) + planner + critic + stabilizer.
+    cost_total: (cost.usd ?? 0) + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0) + (r.stability?.stabilizerCostUsd ?? 0),
     cost_planner: cost.plannerUsd ?? 0,
     cost_explorer: (cost.usd ?? 0) - repair,
     cost_critic: cost.criticUsd ?? 0,
@@ -148,7 +149,7 @@ export function runRowFromReport(opts: {
 export function ensureProjectForUrl(db: Database.Database, url: string | null | undefined, now: string = new Date().toISOString()): string {
   const host = hostOf(url);
   if (!host) {
-    upsertProject(db, { id: UNASSIGNED_PROJECT_ID, name: 'Unassigned', base_url: null, environment: 'other' }, now);
+    upsertProject(db, { id: UNASSIGNED_PROJECT_ID, name: 'Unassigned', base_url: null, environment: null }, now);
     return UNASSIGNED_PROJECT_ID;
   }
   const rows = db.prepare('SELECT id, base_url FROM projects').all() as Array<{ id: string; base_url: string | null }>;
@@ -157,11 +158,12 @@ export function ensureProjectForUrl(db: Database.Database, url: string | null | 
   const id = projectSlug(url!);
   let origin: string;
   try { origin = new URL(url!).origin + '/'; } catch { origin = url!; }
-  upsertProject(db, { id, name: brandSlug(url!), base_url: origin, environment: 'other' }, now);
+  // No environment is known for an auto-created project: stored as NULL, never a default label.
+  upsertProject(db, { id, name: brandSlug(url!), base_url: origin, environment: null }, now);
   return id;
 }
 
-function upsertProject(db: Database.Database, p: { id: string; name: string; base_url: string | null; environment: string }, now: string): void {
+function upsertProject(db: Database.Database, p: { id: string; name: string; base_url: string | null; environment: string | null }, now: string): void {
   db.prepare(`INSERT INTO projects (id, name, base_url, environment, created_at, updated_at)
               VALUES (@id, @name, @base_url, @environment, @now, @now)
               ON CONFLICT(id) DO NOTHING`).run({ ...p, now });

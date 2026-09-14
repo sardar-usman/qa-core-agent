@@ -3,7 +3,7 @@
  * from the page hash (#token=...) or the Connect box and is never persisted.
  */
 export interface ProjectCard {
-  id: string; name: string; base_url: string | null; environment: string; srs_path: string | null;
+  id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null;
   runs: number; shipped: number; legacy_runs: number; open_findings: number; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
@@ -39,12 +39,13 @@ export type RunDetail =
       legacy: false; run: RunRow; header: RunDetailHeader; scenarios: RunDetailScenario[];
       counts: { planned: number; shipped: number | null; generated: number; dropped: number; incomplete: number; findings: number; skipped: number; stable: number; flaky: number; broken: number };
       findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[] }>;
-      review_summary: string | null; artifacts: RunDetailArtifact[]; events: StoredEvent[];
+      review_summary: string | null; unmatched_verdicts: Array<{ scenario: string; verdict: string; reasons: string[] }>;
+      artifacts: RunDetailArtifact[]; events: StoredEvent[] | null; events_status: 'present' | 'empty' | 'absent';
     }
   | {
       legacy: true; run: RunRow; header: RunDetailHeader;
       summary: { explored: number; cost_total: number; started_at: string | null; ended_at: string | null; model: string | null; duration_sec: number | null };
-      artifacts: RunDetailArtifact[]; events: StoredEvent[];
+      artifacts: RunDetailArtifact[]; events: StoredEvent[] | null; events_status: 'present' | 'empty' | 'absent';
     };
 
 let token = '';

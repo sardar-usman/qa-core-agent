@@ -113,6 +113,15 @@ export function RunDetailPage() {
             )}
           </section>
 
+          {detail.unmatched_verdicts.length ? (
+            <section className="rounded-lg border border-transparent bg-rework-soft p-4" data-testid="unmatched-verdicts">
+              <h2 className="text-m font-semibold text-rework">Critic verdicts that matched no scenario <span className="mono text-s font-normal">{detail.unmatched_verdicts.length}</span></h2>
+              <p className="mt-1 text-s text-fg-2">These verdicts came back with names that matched no planned or recorded scenario, even after tolerant matching. They are not scenario rows; nothing is dropped silently.</p>
+              <ul className="mt-2 flex flex-col gap-1">
+                {detail.unmatched_verdicts.map((v) => <li key={v.scenario} className="text-s" data-testid="unmatched-verdict"><Badge variant={VERDICT_VARIANT[v.verdict as keyof typeof VERDICT_VARIANT] ?? 'neutral'}>{v.verdict}</Badge> <span className="ml-2 text-fg">{v.scenario}</span>{v.reasons.length ? <span className="text-fg-3"> · {v.reasons.join(' · ')}</span> : null}</li>)}
+              </ul>
+            </section>
+          ) : null}
           {detail.review_summary ? <section><h2 className="text-m font-semibold">Critic summary</h2><p className="mt-1 text-s text-fg-2">{detail.review_summary}</p></section> : null}
         </>
       )}
@@ -133,10 +142,11 @@ export function RunDetailPage() {
       </section>
 
       <details className="rounded-lg border border-line bg-bg-1" data-testid="events-section">
-        <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Events <span className="text-s font-normal text-fg-3">{detail.events.length} recorded{detail.events.length ? ', oldest first' : ''}</span></summary>
-        {detail.events.length === 0 ? <div className="px-4 pb-4 text-s text-fg-3">No events file for this run.</div> : (
+        <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Events <span className="text-s font-normal text-fg-3" data-testid="events-status">{detail.events_status === 'absent' ? 'no events log' : detail.events_status === 'empty' ? 'none recorded' : `${detail.events!.length} recorded, oldest first`}</span></summary>
+        {detail.events_status === 'absent' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events log; this run predates event capture</div>
+          : detail.events_status === 'empty' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events recorded</div> : (
           <ol className="max-h-[420px] overflow-auto px-4 pb-4 font-mono text-s text-fg-2">
-            {detail.events.map((e, i) => (
+            {detail.events!.map((e, i) => (
               <li key={i} className="flex gap-3 border-t border-line/50 py-1" data-testid="event-row">
                 <span className="shrink-0 text-fg-3">{new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                 <span className="shrink-0 text-accent">{e.type}</span>

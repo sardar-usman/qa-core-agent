@@ -4,6 +4,8 @@ import type Database from 'better-sqlite3';
 import type { RunReport } from '../agent/trace.js';
 import { readRunEvents, type StoredEvent } from './events.js';
 import { hostOf } from './db/indexer.js';
+import { assignVerdicts, verdictMatchesScenario, type ScenarioVerdict } from '../agent/critic.js';
+import { EVENTS_FILE } from './events.js';
 
 /**
  * One run, truthfully, from its stored artifacts (dashboard v2 plan, PR B).
@@ -12,6 +14,14 @@ import { hostOf } from './db/indexer.js';
  * built from those same files. No arithmetic, no derived counts: a scenario
  * is "shipped" because it is in the report's emitted list, a verdict is the
  * Critic's own, a stability pattern is the recorded one.
+ *
+ * Verdicts are matched to scenarios with the Critic's tolerant matcher
+ * (assignVerdicts: prefixes such as "2. [negative] " stripped, normalized key,
+ * then containment, each verdict claimable once), never exact string
+ * equality: a live run's Critic echoed "[happy] ..." names and exact matching
+ * left every scenario unverdicted while inventing rows for the echoes. A
+ * verdict that matches no scenario is never a scenario row; it is reported in
+ * `unmatched_verdicts` so nothing is dropped silently.
  */
 
 export interface RunDetailScenario {
@@ -66,8 +76,12 @@ export interface RunDetailBody {
   review_summary: string | null;
   reconciliation: RunReport['reconciliation'] | null;
   rule_coverage: RunReport['ruleCoverage'] | null;
+  /** Critic verdicts that matched no scenario even after tolerant matching. Shown as a warning, never as rows. */
+  unmatched_verdicts: Array<{ scenario: string; verdict: string; reasons: string[] }>;
   artifacts: RunDetailArtifact[];
-  events: StoredEvent[];
+  /** null when no events.jsonl exists in the run folder (events_status 'absent'). */
+  events: StoredEvent[] | null;
+  events_status: 'present' | 'empty' | 'absent';
 }
 
 export interface RunDetailLegacyBody {
@@ -77,7 +91,8 @@ export interface RunDetailLegacyBody {
   /** The numbers the pre-v2 record carried. Explored, never shipped. */
   summary: { explored: number; cost_total: number; started_at: string | null; ended_at: string | null; model: string | null; duration_sec: number | null };
   artifacts: RunDetailArtifact[];
-  events: StoredEvent[];
+  events: StoredEvent[] | null;
+  events_status: 'present' | 'empty' | 'absent';
 }
 
 export type RunDetailResult =
@@ -163,7 +178,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
           started_at: (run.started_at as string | null) ?? null, ended_at: (run.ended_at as string | null) ?? null,
           model: typeof flags.model === 'string' ? flags.model : null, duration_sec: typeof flags.durationSec === 'number' ? flags.durationSec : null,
         },
-        artifacts: [], events: [],
+        artifacts: [], events: null, events_status: 'absent',
       },
     };
   }
@@ -177,7 +192,10 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   catch (err) { return { status: 404, body: { error: `run-report.json for '${id}' at ${String(run.report_path)} is not valid JSON: ${(err as Error).message}`, looked_for: String(run.report_path) } }; }
   const runDir = path.dirname(reportPath);
 
-  // One row per scenario name the artifacts know about, findings excluded.
+  // One row per scenario name the run's own records know about (plan, emitted
+  // list, replay, stability, reconciliation drops, incomplete, skipped),
+  // findings excluded. Critic verdicts never create rows: they are attached
+  // to these names by the tolerant matcher below.
   const findings = report.findings ?? [];
   const findingNames = new Set(findings.map((f) => f.scenario));
   const rows = new Map<string, RunDetailScenario>();
@@ -191,8 +209,6 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   };
   for (const p of report.plan ?? []) { if (findingNames.has(p.name)) continue; const r = rowFor(p.name); r.feature = p.feature ?? null; r.category = p.category ?? null; }
   for (const s of report.scenarios ?? []) { const r = rowFor(s.name); r.shipped = true; r.feature = s.feature ?? r.feature; r.category = s.category ?? r.category; }
-  for (const v of report.review?.verdicts ?? []) { if (findingNames.has(v.scenario)) continue; const r = rowFor(v.scenario); r.verdict = v.verdict; r.reasons = v.reasons ?? []; r.required_fixes = v.required_fixes ?? []; }
-  for (const j of report.review?.repair ?? []) { const r = rowFor(j.scenario); r.repair = j.outcome === 'kept' ? 'repaired' : 'failed'; r.repair_second = j.second ?? 'not re-recorded'; }
   for (const v of report.replay?.verdicts ?? []) { const r = rowFor(v.name); r.replay = v.passed ? 'pass' : 'fail'; r.replay_error = v.error ?? null; }
   for (const v of report.stability?.verdicts ?? []) {
     const r = rowFor(v.name);
@@ -202,6 +218,15 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   for (const i of report.incomplete ?? []) { const r = rowFor(i.scenario); r.incomplete_reason = i.reason; }
   for (const s of report.skipped ?? []) { const r = rowFor(s.scenario); r.skipped_reason = s.reason; }
   for (const name of findingNames) rows.delete(name);
+  // Critic verdicts and repair journeys, attached by the tolerant matcher.
+  const names = [...rows.keys()];
+  const verdicts: ScenarioVerdict[] = (report.review?.verdicts ?? []).map((v) => ({ scenario: v.scenario, verdict: v.verdict, reasons: v.reasons ?? [], required_fixes: v.required_fixes ?? [] }));
+  const assigned = assignVerdicts(names, verdicts);
+  const claimed = new Set<ScenarioVerdict>();
+  for (const [name, v] of assigned) { const r = rows.get(name)!; r.verdict = v.verdict; r.reasons = v.reasons; r.required_fixes = v.required_fixes; claimed.add(v); }
+  const unmatched_verdicts = verdicts.filter((v) => !claimed.has(v) && ![...findingNames].some((f) => verdictMatchesScenario(v.scenario, f))).map((v) => ({ scenario: v.scenario, verdict: v.verdict, reasons: v.reasons }));
+  const journeys = (report.review?.repair ?? []).map((j) => ({ scenario: j.scenario, verdict: 'rework' as const, reasons: [], required_fixes: [], journey: j }));
+  for (const [name, j] of assignVerdicts(names, journeys)) { const r = rows.get(name)!; const jj = (j as typeof journeys[number]).journey; r.repair = jj.outcome === 'kept' ? 'repaired' : 'failed'; r.repair_second = jj.second ?? 'not re-recorded'; }
   const planOrder = new Map((report.plan ?? []).map((p, i) => [p.name, i]));
   const scenarios = [...rows.values()].sort((a, b) => (planOrder.get(a.name) ?? 1e9) - (planOrder.get(b.name) ?? 1e9) || a.name.localeCompare(b.name));
 
@@ -224,8 +249,16 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
       review_summary: report.review?.summary ?? null,
       reconciliation: report.reconciliation ?? null,
       rule_coverage: report.ruleCoverage ?? null,
+      unmatched_verdicts,
       artifacts: listArtifacts(runDir, id),
-      events: readRunEvents(runDir),
+      ...eventsFor(runDir),
     },
   };
+}
+
+/** The stored timeline with its status: no file, an empty file, or events. */
+export function eventsFor(runDir: string): { events: StoredEvent[] | null; events_status: 'present' | 'empty' | 'absent' } {
+  if (!fs.existsSync(path.join(runDir, EVENTS_FILE))) return { events: null, events_status: 'absent' };
+  const events = readRunEvents(runDir);
+  return { events, events_status: events.length === 0 ? 'empty' : 'present' };
 }
