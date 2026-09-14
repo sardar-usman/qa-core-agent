@@ -175,16 +175,16 @@ for (const theme of ['dark', 'light'] as const) {
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid="run-row"]').length === n, apiRuns.length);
   await page.click(`[data-run-id="${legacyRow.id}"] a`);
   await page.waitForURL(`**/runs/${legacyRow.id}`);
-  await page.waitForFunction(() => /Summary only/.test(document.querySelector('main')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => null);
+  await page.waitForFunction(() => /pre-v2 record, per-scenario detail not captured/.test(document.querySelector('main')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => null);
   const legacyDetail = (await page.textContent('main')) ?? '';
-  check(`${theme}: the legacy run page explains "summary only", labels the count as explored, and offers no report or zip link`, /Summary only \(pre-v2\)/.test(legacyDetail) && /scenarios explored/.test(legacyDetail) && !/Download framework zip/.test(legacyDetail) && !/api\/runs/.test(legacyDetail), legacyDetail.slice(0, 160));
+  check(`${theme}: the legacy run page shows the pre-v2 notice, labels the count as explored, and offers no report or zip link`, /pre-v2 record, per-scenario detail not captured/.test(legacyDetail) && /scenarios explored/.test(legacyDetail) && !/Download/.test(legacyDetail) && !(await page.$('[data-testid="artifact-link"]')), legacyDetail.slice(0, 160));
   await page.goBack();
   await page.waitForSelector('[data-testid="run-row"]');
   await page.click(`[data-run-id="${s1}"] a`);
   await page.waitForURL(`**/runs/${s1}`);
-  await page.waitForFunction(() => /PR B/.test(document.querySelector('main')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => null);
+  await page.waitForSelector('[data-testid="run-detail"][data-legacy="false"]', { timeout: 10_000 }).catch(() => null);
   const detailText = (await page.textContent('main')) ?? '';
-  check(`${theme}: a row links to /runs/:id (placeholder page shows the run)`, /PR B/.test(detailText) && /3\/5/.test(detailText), detailText.slice(0, 200));
+  check(`${theme}: a row links to /runs/:id (the run detail page shows the run)`, /Scenarios/.test(detailText) && /Product behavior to review/.test(detailText) && (await page.textContent('[data-testid="detail-run-id"]')) === s1, detailText.slice(0, 200));
   check(`${theme}: zero console errors`, errors.length === 0, errors.join(' | '));
   await context.close();
 }
