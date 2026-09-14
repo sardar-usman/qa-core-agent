@@ -58,6 +58,12 @@ if (real) {
   // A legacy folder, still in place.
   fs.mkdirSync(path.join(output, 'legacy-automation-framework'), { recursive: true });
   fs.writeFileSync(path.join(output, 'legacy-automation-framework', 'run-report.json'), JSON.stringify(mk('https://legacy.example/', '2026-08-01T10:00:00.000Z', 2, 2)));
+  // The gateway's pre-v2 record store: one record covered by the 09-10 report, one older with no report.
+  fs.mkdirSync(path.join(root, '.qa-core', 'sites'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'www.saucedemo.com.json'), JSON.stringify({ host: 'www.saucedemo.com', recentRuns: [
+    { at: '2026-09-10T10:00:30.000Z', url: 'https://www.saucedemo.com/', scenarios: 3, cost: 0.73, model: 'claude-opus-4-7', durationSec: 30 },
+    { at: '2026-06-01T10:00:00.000Z', url: 'https://www.saucedemo.com/', scenarios: 4, cost: 0.51, model: 'claude-opus-4-7', durationSec: 90 },
+  ] }));
 }
 
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-accept-db-'));
@@ -85,14 +91,25 @@ const r2 = indexOutput(db, root);
 const second = dump(db);
 
 const onDisk = listRunDirs(path.join(root, 'output'));
-check(`${real ? 'real' : 'fixture'}: every run directory on disk is a runs row (${onDisk.length})`, r2.runs === onDisk.length, JSON.stringify({ rows: r2.runs, dirs: onDisk.length }));
+check(`${real ? 'real' : 'fixture'}: every run directory on disk is a runs row (${onDisk.length}) plus ${r2.legacyRecords} imported pre-v2 record(s)`, r2.runs === onDisk.length + r2.legacyRecords, JSON.stringify({ rows: r2.runs, dirs: onDisk.length, records: r2.legacyRecords }));
 check('rows after delete + reindex are identical to the first index', first === second && JSON.stringify(r1) === JSON.stringify({ ...r2, removed: r1.removed }), JSON.stringify({ r1, r2 }));
 
 // 4. Every row equals its report and sits under the right project.
 const rows = db.prepare('SELECT r.*, p.base_url FROM runs r JOIN projects p ON p.id = r.project_id ORDER BY r.started_at').all() as Array<Record<string, unknown>>;
 let mismatches = 0;
 const perProject = new Map<string, { runs: number; shipped: number; cost: number; name: string }>();
+let legacyCount = 0;
 for (const row of rows) {
+  if (row.status === 'legacy') {
+    // A pre-v2 record: no report to compare against; it must carry no invented numbers and no file paths.
+    legacyCount++;
+    if (row.report_path !== null || row.zip_path !== null || Number(row.planned) !== 0 || Number(row.shipped) !== Number(row.generated)) { mismatches++; console.log(`  legacy row ${String(row.id)} carries invented data`); }
+    const pid = String(row.project_id);
+    const agg = perProject.get(pid) ?? { runs: 0, shipped: 0, cost: 0, name: '' };
+    agg.runs++; agg.shipped += Number(row.shipped); agg.cost += Number(row.cost_total);
+    perProject.set(pid, agg);
+    continue;
+  }
   const rep = JSON.parse(fs.readFileSync(path.join(root, String(row.report_path)), 'utf8')) as RunReport;
   const rec = rep.reconciliation;
   // Older reports may lack an array (skipped arrived in a later phase); a missing list counts as 0.
@@ -112,11 +129,13 @@ for (const row of rows) {
   perProject.set(pid, agg);
 }
 check('every runs row equals its run-report and sits under the project matching its host', mismatches === 0, `${mismatches} mismatch(es)`);
+check('legacy rows equal the imported record count', legacyCount === r2.legacyRecords, JSON.stringify({ legacyCount, imported: r2.legacyRecords }));
 if (!real) {
-  check('fixture: two saucedemo hosts (www and bare) share one project; the bad url is Unassigned; the legacy folder has its own project', (db.prepare("SELECT COUNT(*) AS n FROM runs WHERE project_id = 'saucedemo-com'").get() as { n: number }).n === 2 && (db.prepare('SELECT COUNT(*) AS n FROM runs WHERE project_id = ?').get(UNASSIGNED_PROJECT_ID) as { n: number }).n === 1 && r2.projects === 4 && r2.legacy === 1);
+  check('fixture: the record covered by a report was skipped, the older one imported as legacy under saucedemo', r2.legacyRecords === 1 && r2.legacyCovered === 1 && (db.prepare("SELECT COUNT(*) AS n FROM runs WHERE project_id = 'saucedemo-com' AND status = 'legacy'").get() as { n: number }).n === 1);
+  check('fixture: two saucedemo hosts (www and bare) share one project (plus its imported record); the bad url is Unassigned; the legacy folder has its own project', (db.prepare("SELECT COUNT(*) AS n FROM runs WHERE project_id = 'saucedemo-com' AND status != 'legacy'").get() as { n: number }).n === 2 && (db.prepare('SELECT COUNT(*) AS n FROM runs WHERE project_id = ?').get(UNASSIGNED_PROJECT_ID) as { n: number }).n === 1 && r2.projects === 4 && r2.legacy === 1);
 }
 const names = db.prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
-console.log(`\nIndex of ${root === process.cwd() ? 'the real output/' : 'the fixture'}: ${r2.runs} run(s), ${r2.projects} project(s), ${r2.legacy} legacy folder(s) in place, ${r2.findings} finding(s)`);
+console.log(`\nIndex of ${root === process.cwd() ? 'the real output/' : 'the fixture'}: ${r2.runs} run(s) (${r2.runs - r2.legacyRecords} with reports, ${r2.legacyRecords} pre-v2 records imported, ${r2.legacyCovered} records covered by a report), ${r2.projects} project(s), ${r2.legacy} legacy folder(s) in place, ${r2.findings} finding(s)`);
 for (const [pid, agg] of [...perProject.entries()].sort()) console.log(`  ${names.find((n) => n.id === pid)?.name ?? pid} (${pid}): ${agg.runs} run(s), ${agg.shipped} shipped, $${agg.cost.toFixed(4)}`);
 const unassigned = perProject.get(UNASSIGNED_PROJECT_ID);
 console.log(`  unassigned: ${unassigned ? unassigned.runs : 0}`);

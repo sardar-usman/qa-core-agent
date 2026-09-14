@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, schemaVersion } from '../src/server/db/migrate.js';
-import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID } from '../src/server/db/indexer.js';
+import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID, runRowFromLegacyRecord, legacyRunId, importLegacyRecords } from '../src/server/db/indexer.js';
 import { newRunId, setLatest } from '../src/agent/output-layout.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -93,23 +93,43 @@ writeRun('unassigned', bad1, mkReport('', '2026-09-09T10:00:00.000Z', { shipped:
 fs.mkdirSync(path.join(output, 'legacy-automation-framework'), { recursive: true });
 fs.writeFileSync(path.join(output, 'legacy-automation-framework', 'run-report.json'), JSON.stringify(mkReport('https://legacy.example/app', '2026-08-01T10:00:00.000Z', { shipped: 2, planned: 2 })));
 fs.mkdirSync(path.join(output, '.uploads'), { recursive: true });
+// The gateway's pre-v2 record store (.qa-core/sites/<host>.json recentRuns):
+//  - one saucedemo record finishing 40s after sauce2's report -> covered, skipped
+//  - one saucedemo record from July with no report -> imported as 'legacy'
+//  - one record for a host with no runs on disk -> its own project
+//  - the 'unknown' host with url "--" -> Unassigned
+fs.mkdirSync(path.join(root, '.qa-core', 'sites'), { recursive: true });
+const legacyAt = '2026-07-03T09:15:00.000Z';
+fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'www.saucedemo.com.json'), JSON.stringify({ host: 'www.saucedemo.com', recentRuns: [
+  { at: '2026-09-12T10:00:40.000Z', url: 'https://www.saucedemo.com/', scenarios: 4, cost: 1.53, model: 'claude-opus-4-7', durationSec: 40 },
+  { at: legacyAt, url: 'https://www.saucedemo.com/', scenarios: 5, cost: 0.7647535, model: 'claude-opus-4-7', durationSec: 101 },
+] }));
+fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'demo.playwright.dev.json'), JSON.stringify({ host: 'demo.playwright.dev', recentRuns: [
+  { at: '2026-05-14T08:10:23.238Z', url: 'https://demo.playwright.dev/todomvc/', scenarios: 5, cost: 0.242101, model: 'claude-opus-4-7', durationSec: 108 },
+] }));
+fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stringify({ host: 'unknown', recentRuns: [
+  { at: '2026-06-25T11:47:58.921Z', url: '--', scenarios: 0, cost: 0.02517125, model: 'claude-opus-4-7', durationSec: 3 },
+] }));
 
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to version 1', schemaVersion(db) === 1);
+check('A. schema migrated to the current version (2: legacy run records)', schemaVersion(db) === 2);
 const r1 = indexOutput(db, root);
-check('B. 6 runs indexed (5 layout + 1 legacy in place)', r1.runs === 6 && r1.legacy === 1, JSON.stringify(r1));
-check('C. 4 projects: saucedemo, shop, legacy, Unassigned', r1.projects === 4, String(r1.projects));
+check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
+check('C. 5 projects: saucedemo, shop, legacy, demo.playwright.dev (records only), Unassigned', r1.projects === 5, String(r1.projects));
 const projects = db.prepare('SELECT id, name, base_url FROM projects ORDER BY id').all() as Array<{ id: string; name: string; base_url: string | null }>;
 check('D. projects are keyed by host slug with brand names and origin base urls', JSON.stringify(projects) === JSON.stringify([
+  { id: 'demo-playwright-dev', name: 'demo-playwright', base_url: 'https://demo.playwright.dev/' },
   { id: 'legacy-example', name: 'legacy', base_url: 'https://legacy.example/' },
   { id: 'saucedemo-com', name: 'saucedemo', base_url: 'https://www.saucedemo.com/' },
   { id: 'shop-example', name: 'shop', base_url: 'https://shop.example/' },
   { id: 'unassigned', name: 'Unassigned', base_url: null },
 ]), JSON.stringify(projects));
-const runs = db.prepare('SELECT * FROM runs ORDER BY id').all() as Array<Record<string, unknown>>;
-check('E. the three saucedemo runs share one project by host', runs.filter((r) => r.project_id === 'saucedemo-com').length === 3);
+const allRuns = db.prepare('SELECT * FROM runs ORDER BY id').all() as Array<Record<string, unknown>>;
+const runs = allRuns.filter((r) => r.status !== 'legacy');
+const legacyRows = allRuns.filter((r) => r.status === 'legacy');
+check('E. the three reported saucedemo runs plus the imported July record share one project by host', runs.filter((r) => r.project_id === 'saucedemo-com').length === 3 && legacyRows.filter((r) => r.project_id === 'saucedemo-com').length === 1);
 check('F. the run with no parseable host is Unassigned', runs.find((r) => r.id === bad1)?.project_id === UNASSIGNED_PROJECT_ID);
 
 // Every row equals its report, re-derived here.
@@ -144,6 +164,32 @@ check('M. verdict rows: one per scenario per run, rejects carry their repair jou
 const cov = db.prepare('SELECT * FROM rule_coverage WHERE run_id = ? ORDER BY rule_id').all(sauce2) as Array<Record<string, unknown>>;
 check('N. rule coverage rows carry status, text and feature from the requirements map', cov.length === 3 && cov[0]?.status === 'covered' && cov[0]?.rule_text === 'Valid login lands on inventory' && cov[0]?.feature === 'login' && cov[1]?.status === 'planned_but_dropped' && cov[2]?.status === 'not_planned' && cov[2]?.rule_text === 'Reset link expires');
 
+/* ─── pre-v2 gateway records ─── */
+
+const julyRec = { at: legacyAt, url: 'https://www.saucedemo.com/', scenarios: 5, cost: 0.7647535, model: 'claude-opus-4-7', durationSec: 101 };
+const july = legacyRows.find((r) => r.id === legacyRunId('www.saucedemo.com', julyRec))!;
+check('T1. the July record is a legacy row with the numbers it carried and nothing invented', !!july && july.status === 'legacy' && july.shipped === 5 && july.generated === 5 && july.planned === 0 && Math.abs(Number(july.cost_total) - 0.7647535) < 1e-9 && Number(july.cost_explorer) === Number(july.cost_total) && july.report_path === null && july.zip_path === null && july.flake_rate === null, JSON.stringify(july));
+check('T2. legacy timing: ended_at is the record time, started_at is durationSec earlier', july.ended_at === legacyAt && july.started_at === '2026-07-03T09:13:19.000Z', JSON.stringify([july.started_at, july.ended_at]));
+check('T3. legacy flags keep the model and duration; source is cli', JSON.parse(String(july.flags_json)).model === 'claude-opus-4-7' && JSON.parse(String(july.flags_json)).durationSec === 101 && july.source === 'cli');
+check('T4. a record covered by a real report (same host, finished within the window) is NOT imported and the report row is untouched', !legacyRows.some((r) => r.ended_at === '2026-09-12T10:00:40.000Z') && runs.find((r) => r.id === sauce2)?.shipped === 4 && runs.find((r) => r.id === sauce2)?.status === 'completed');
+check('T5. a host with records but no reports gets its own project', legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.shipped === 5);
+check('T6. the unknown host record lands in Unassigned with a null url', legacyRows.find((r) => r.project_id === UNASSIGNED_PROJECT_ID)?.url === null);
+check('T7. runRowFromLegacyRecord is a pure mapping with a deterministic id', runRowFromLegacyRecord('h', julyRec, 'p').id === runRowFromLegacyRecord('h', julyRec, 'p').id && runRowFromLegacyRecord('h', julyRec, 'p').id.startsWith('legacy-20260703T091500Z-'));
+// A legacy id can never overwrite a reported row: force the collision and re-import.
+// (The swap rewrites primary keys that derived rows reference; those rows are
+// rebuilt right after, so the constraint is paused for the swap only.)
+db.pragma('foreign_keys = OFF');
+db.prepare('UPDATE runs SET id = ? WHERE id = ?').run('tmp-swap', sauce1);
+db.prepare('UPDATE runs SET id = ? WHERE id = ?').run(sauce1, july.id);
+db.prepare('UPDATE runs SET id = ? WHERE id = ?').run(july.id, 'tmp-swap');
+db.pragma('foreign_keys = ON');
+const reimport = importLegacyRecords(db, root);
+const shadowed = db.prepare('SELECT report_path, shipped, status FROM runs WHERE id = ?').get(july.id) as { report_path: string | null; shipped: number; status: string } | undefined;
+check('T8. a row that has a real report is never overwritten by a legacy record with the same id', !!shadowed && shadowed.report_path !== null && shadowed.shipped === 3 && shadowed.status === 'completed' && !reimport.ids.includes(String(july.id)), JSON.stringify({ shadowed, imported: reimport.ids.length }));
+// Restore the fixture state for the equality checks below.
+for (const t of ['verdicts', 'rule_coverage', 'findings', 'runs']) db.prepare(`DELETE FROM ${t}`).run();
+indexOutput(db, root);
+
 /* ─── acceptance: delete the database, re-index, identical rows ─── */
 
 function dump(d: ReturnType<typeof openDatabase>): string {
@@ -171,7 +217,10 @@ check('Q. after deleting the database, a fresh index has identical counts', JSON
 check('R. after deleting the database, every row is identical', dump(db2) === dump1);
 fs.rmSync(path.join(output, 'shop-example', shop1), { recursive: true, force: true });
 const r3 = indexOutput(db2, root);
-check('S. a run directory removed from disk vanishes from the index', r3.runs === 5 && r3.removed === 1 && !db2.prepare('SELECT 1 FROM runs WHERE id = ?').get(shop1));
+check('S. a run directory removed from disk vanishes from the index', r3.runs === 8 && r3.removed === 1 && !db2.prepare('SELECT 1 FROM runs WHERE id = ?').get(shop1));
+fs.rmSync(path.join(root, '.qa-core', 'sites', 'demo.playwright.dev.json'));
+const r4 = indexOutput(db2, root);
+check('T9. a record removed from the store vanishes from the index', r4.runs === 7 && r4.removed === 1 && !db2.prepare("SELECT 1 FROM runs WHERE project_id = 'demo-playwright-dev'").get());
 db2.close();
 
 fs.rmSync(root, { recursive: true, force: true });

@@ -22,15 +22,21 @@ export function RunPlaceholderPage() {
         <span className="mono text-s text-fg-3">{run.id}</span>
       </div>
       <dl className="grid gap-3 sm:grid-cols-4">
-        {[['shipped / planned', `${run.shipped}/${run.planned}`], ['total cost', money(run.cost_total, 4)], ['started', fmtDate(run.started_at)], ['source', run.source]].map(([k, v]) => (
+        {[[run.status === 'legacy' ? 'shipped' : 'shipped / planned', run.status === 'legacy' ? String(run.shipped) : `${run.shipped}/${run.planned}`], ['total cost', money(run.cost_total, 4)], ['started', fmtDate(run.started_at)], ['source', run.source]].map(([k, v]) => (
           <div key={k} className="rounded-lg border border-line bg-bg-1 p-3"><dd className="text-l font-semibold">{v}</dd><dt className="mt-1 text-s text-fg-2">{k}</dt></div>
         ))}
       </dl>
-      <EmptyState title="Run detail arrives in PR B">
-        The six-stage view (Discovery, Plan, Explore, Review, Verify, Summary) is ported next. Until then the report is served at <code className="mono">{`/api/runs/${run.id}/report`}</code>.
-      </EmptyState>
+      {run.status === 'legacy' ? (
+        <EmptyState title="Summary only (pre-v2)">
+          This run predates the per-run output layout. Only the numbers the gateway recorded at the time exist: scenarios shipped, cost, duration and model. There is no report or framework zip to open.
+        </EmptyState>
+      ) : (
+        <EmptyState title="Run detail arrives in PR B">
+          The six-stage view (Discovery, Plan, Explore, Review, Verify, Summary) is ported next. Until then the report is served at <code className="mono">{`/api/runs/${run.id}/report`}</code>.
+        </EmptyState>
+      )}
       <div className="flex gap-2">
-        {run.zip_path ? <Button asChild><a href={api.zipUrl(run.id)}>Download framework zip</a></Button> : null}
+        {run.zip_path && run.status !== 'legacy' ? <Button asChild><a href={api.zipUrl(run.id)}>Download framework zip</a></Button> : null}
         <Button variant="outline" asChild><Link to="/runs">Back to runs</Link></Button>
       </div>
     </div>

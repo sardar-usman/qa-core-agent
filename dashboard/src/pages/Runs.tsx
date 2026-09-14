@@ -7,7 +7,7 @@ import { EmptyState } from '@/components/EmptyState';
 import { StatusBadge } from '@/components/StatusBadge';
 import { duration, fmtDate, money, pct } from '@/lib/utils';
 
-const STATUSES = ['completed', 'stopped', 'empty', 'failed', 'running'];
+const STATUSES = ['completed', 'stopped', 'empty', 'failed', 'running', 'legacy'];
 
 export function RunsPage({ refreshKey }: { refreshKey: number }) {
   const [params, setParams] = useSearchParams();
@@ -72,7 +72,7 @@ export function RunsPage({ refreshKey }: { refreshKey: number }) {
               <TableRow key={r.id} className="cursor-pointer" data-testid="run-row" data-run-id={r.id}>
                 <TableCell><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block"><StatusBadge status={r.status} /></Link></TableCell>
                 <TableCell><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block"><div className="font-semibold">{r.project_name ?? r.project_id}</div><div className="mono truncate text-s text-fg-3" title={r.url ?? ''}>{r.url}</div></Link></TableCell>
-                <TableCell className="text-right"><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block"><span className="mono" data-testid="shipped-planned">{r.shipped}/{r.planned}</span></Link></TableCell>
+                <TableCell className="text-right"><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block"><span className="mono" data-testid="shipped-planned">{r.status === 'legacy' ? `${r.shipped}` : `${r.shipped}/${r.planned}`}</span></Link></TableCell>
                 <TableCell className="text-right"><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block money text-cost" data-testid="cost">{money(r.cost_total, 4)}</Link></TableCell>
                 <TableCell className="text-right"><Link to={`/runs/${encodeURIComponent(r.id)}`} className={`block mono ${r.flake_rate ? 'text-rework' : 'text-fg-2'}`}>{pct(r.flake_rate)}</Link></TableCell>
                 <TableCell className="text-right"><Link to={`/runs/${encodeURIComponent(r.id)}`} className="block mono text-fg-2">{duration(r.started_at, r.ended_at)}</Link></TableCell>

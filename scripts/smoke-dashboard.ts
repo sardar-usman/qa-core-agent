@@ -63,6 +63,9 @@ for (const [slug, id, rep, files] of runs) {
   for (const [k, v] of Object.entries(files)) fs.writeFileSync(path.join(dir, k), v);
 }
 setLatest(path.join(output, 'saucedemo-com'), s2);
+// A pre-v2 gateway record with no report: shows as "summary only (pre-v2)".
+fs.mkdirSync(path.join(root, '.qa-core', 'sites'), { recursive: true });
+fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'demoqa.com.json'), JSON.stringify({ host: 'demoqa.com', recentRuns: [{ at: thisMonth(1, 8), url: 'https://demoqa.com/frames', scenarios: 1, cost: 0.627841, model: 'claude-opus-4-7', durationSec: 255 }] }));
 
 /* ─── gateway ─── */
 const PORT = 18797;
@@ -71,13 +74,21 @@ const gw = spawn('npx', ['tsx', path.join(repo, 'src', 'server', 'gateway.ts')],
   cwd: root,
   env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_LEGACY_UI: path.join(repo, 'qa-core-ui.html'), QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? 'unused' },
   stdio: ['ignore', 'pipe', 'pipe'],
+  detached: true,
 });
+// Never leave a gateway behind, whatever happens below. npx and tsx each
+// spawn a child, so the whole process group is killed, not just the wrapper.
+const children: Array<{ pid?: number }> = [gw];
+const cleanup = (): void => { for (const c of children) { if (c.pid) { try { process.kill(-c.pid, 'SIGKILL'); } catch { /* gone */ } } } };
+process.on('exit', cleanup);
+process.on('uncaughtException', (err) => { console.error(err); cleanup(); process.exit(1); });
+process.on('unhandledRejection', (err) => { console.error(err); cleanup(); process.exit(1); });
 let gwLog = '';
 gw.stdout.on('data', (d) => { gwLog += String(d); });
 gw.stderr.on('data', (d) => { gwLog += String(d); });
 const deadline = Date.now() + 60_000;
 while (!/listening on/.test(gwLog) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-check('gateway boots, indexes on start, serves http', /listening on http/.test(gwLog) && /Index: 5 run\(s\) across 3 project\(s\)/.test(gwLog), gwLog.slice(0, 400));
+check('gateway boots, indexes on start, serves http', /listening on http/.test(gwLog) && /Index: 6 run\(s\) across 4 project\(s\)/.test(gwLog) && /1 pre-v2 record\(s\) imported/.test(gwLog), gwLog.slice(0, 400));
 
 const base = `http://127.0.0.1:${PORT}`;
 const authGet = async (p: string) => (await fetch(base + p, { headers: { Authorization: `Bearer ${TOKEN}` } })).json() as Promise<Record<string, unknown>>;
@@ -138,9 +149,13 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: runs table lists every run newest first`, rows.length === apiRuns.length && rows[0]?.id === apiRuns[0]?.id, JSON.stringify(rows.map((r) => r.id)));
   for (const r of apiRuns) {
     const row = rows.find((x) => x.id === r.id)!;
-    check(`${theme}: row ${String(r.id).slice(0, 16)} shows shipped/planned, cost, status from the index`, !!row && row.sp === `${r.shipped}/${r.planned}` && row.cost === `$${Number(r.cost_total).toFixed(4)}` && row.status === r.status, JSON.stringify(row));
+    const expectSp = r.status === 'legacy' ? String(r.shipped) : `${r.shipped}/${r.planned}`;
+    check(`${theme}: row ${String(r.id).slice(0, 16)} shows shipped/planned, cost, status from the index`, !!row && row.sp === expectSp && row.cost === `$${Number(r.cost_total).toFixed(4)}` && row.status === r.status, JSON.stringify(row));
   }
-  check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
+  check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
+  const legacyRow = rows.find((r) => r.status === 'legacy')!;
+  check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, shipped without a planned count, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
+  check(`${theme}: the demoqa project card shows the legacy run as its last run`, cards.find((c) => c.id === 'demoqa-com')?.status === 'legacy' && cards.find((c) => c.id === 'demoqa-com')?.shipped === '1');
   await page.selectOption('[data-testid="filter-project"]', 'saucedemo-com');
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="run-row"]').length === 3);
   check(`${theme}: project filter narrows to that project's runs and updates the URL`, (await page.$$('[data-testid="run-row"]')).length === 3 && /project_id=saucedemo-com/.test(page.url()));
@@ -151,6 +166,14 @@ for (const theme of ['dark', 'light'] as const) {
   await page.waitForSelector('[data-testid="empty-state"]');
   check(`${theme}: an empty filter result shows an empty state`, /No runs match/.test(await page.textContent('[data-testid="empty-state"]') ?? ''));
   await page.selectOption('[data-testid="filter-status"]', '');
+  await page.selectOption('[data-testid="filter-project"]', '');
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid="run-row"]').length === n, apiRuns.length);
+  await page.click(`[data-run-id="${legacyRow.id}"] a`);
+  await page.waitForURL(`**/runs/${legacyRow.id}`);
+  await page.waitForFunction(() => /Summary only/.test(document.querySelector('main')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => null);
+  const legacyDetail = (await page.textContent('main')) ?? '';
+  check(`${theme}: the legacy run page explains "summary only" and offers no report or zip link`, /Summary only \(pre-v2\)/.test(legacyDetail) && !/Download framework zip/.test(legacyDetail) && !/api\/runs/.test(legacyDetail), legacyDetail.slice(0, 160));
+  await page.goBack();
   await page.waitForSelector('[data-testid="run-row"]');
   await page.click(`[data-run-id="${s1}"] a`);
   await page.waitForURL(`**/runs/${s1}`);
@@ -163,15 +186,18 @@ for (const theme of ['dark', 'light'] as const) {
 await browser.close();
 
 /* ─── empty state for an empty output tree ─── */
-gw.kill('SIGINT');
+if (gw.pid) { try { process.kill(-gw.pid, 'SIGKILL'); } catch { /* gone */ } }
 await new Promise((r) => setTimeout(r, 800));
 fs.rmSync(output, { recursive: true, force: true });
+fs.rmSync(path.join(root, '.qa-core'), { recursive: true, force: true });
 fs.mkdirSync(output);
 const gw2 = spawn('npx', ['tsx', path.join(repo, 'src', 'server', 'gateway.ts')], {
   cwd: root,
   env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT + 1), QA_CORE_GATEWAY_TOKEN: '', QA_CORE_DASHBOARD_DIST: dist, QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core-2.sqlite'), ANTHROPIC_API_KEY: 'unused' },
   stdio: ['ignore', 'pipe', 'pipe'],
+  detached: true,
 });
+children.push(gw2);
 let log2 = '';
 gw2.stdout.on('data', (d) => { log2 += String(d); });
 const deadline2 = Date.now() + 60_000;
@@ -185,7 +211,7 @@ await p2.goto(`http://127.0.0.1:${PORT + 1}/runs`, { waitUntil: 'networkidle' })
 await p2.waitForSelector('[data-testid="empty-state"]');
 check('empty output: Runs page has its empty state', /No runs yet/.test((await p2.textContent('[data-testid="empty-state"]')) ?? ''));
 await b2.close();
-gw2.kill('SIGINT');
+if (gw2.pid) { try { process.kill(-gw2.pid, 'SIGKILL'); } catch { /* gone */ } }
 fs.rmSync(root, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

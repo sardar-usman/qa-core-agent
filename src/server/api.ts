@@ -76,6 +76,7 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
         if (!run) { json(res, 404, { error: 'run not found' }); return true; }
         if (parts.length === 3) { json(res, 200, { run }); return true; }
         if (parts[3] === 'report') {
+          if (!run.report_path) { json(res, 404, { error: 'this run is a pre-v2 record with no report on disk' }); return true; }
           const file = safeRunFile(root, String(run.report_path));
           if (!file) { json(res, 404, { error: 'report not found' }); return true; }
           const body = fs.readFileSync(file);

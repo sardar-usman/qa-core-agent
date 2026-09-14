@@ -20,11 +20,26 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
+const schemaSql = (): string => fs.readFileSync(path.join(here, 'schema.sql'), 'utf8');
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: 'initial schema',
-    up: (db) => { db.exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8')); },
+    up: (db) => { db.exec(schemaSql()); },
+  },
+  {
+    // runs.status gained 'legacy' and report_path became nullable for the
+    // imported pre-v2 gateway records. SQLite cannot alter a CHECK, and the
+    // index is rebuilt from disk anyway, so the derived tables are recreated
+    // from the current schema.sql. terminals is kept (user data, none yet
+    // reference runs that would vanish).
+    version: 2,
+    name: 'legacy run records',
+    up: (db) => {
+      db.exec('DROP TABLE IF EXISTS verdicts; DROP TABLE IF EXISTS rule_coverage; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS runs;');
+      db.exec(schemaSql());
+    },
   },
 ];
 

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS runs (
   project_id      TEXT NOT NULL REFERENCES projects(id),
   started_at      TEXT,
   ended_at        TEXT,
-  status          TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'empty', 'failed')),
+  -- 'legacy': a pre-v2 gateway record (.qa-core/sites/<host>.json recentRuns) with no report on disk.
+  status          TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'empty', 'failed', 'legacy')),
   source          TEXT NOT NULL CHECK (source IN ('cli', 'dashboard', 'mcp', 'telegram')),
   url             TEXT,
   flags_json      TEXT,
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS runs (
   cost_critic     REAL NOT NULL DEFAULT 0,
   cost_repair     REAL NOT NULL DEFAULT 0,
   flake_rate      REAL,
-  report_path     TEXT NOT NULL,
+  report_path     TEXT,
   zip_path        TEXT,
   checkpoint_path TEXT,
   stopped_reason  TEXT

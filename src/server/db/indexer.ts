@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 import type { RunReport } from '../../agent/trace.js';
 import type { RequirementsMap } from '../../agent/requirements.js';
 import { brandSlug } from '../../agent/scaffold.js';
-import { listRunDirs, projectSlug, readRunMeta, runIdTime, type RunDirEntry } from '../../agent/output-layout.js';
+import { listRunDirs, projectSlug, readRunMeta, runIdTime, compactTimestamp, shortHash, type RunDirEntry } from '../../agent/output-layout.js';
 
 /**
  * The indexer: scan output/ for run directories and upsert the index rows
@@ -29,7 +29,7 @@ export interface RunRow {
   project_id: string;
   started_at: string | null;
   ended_at: string | null;
-  status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed';
+  status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed' | 'legacy';
   source: 'cli' | 'dashboard' | 'mcp' | 'telegram';
   url: string | null;
   flags_json: string | null;
@@ -49,7 +49,8 @@ export interface RunRow {
   cost_critic: number;
   cost_repair: number;
   flake_rate: number | null;
-  report_path: string;
+  /** Null for a legacy record: no report on disk. */
+  report_path: string | null;
   zip_path: string | null;
   checkpoint_path: string | null;
   stopped_reason: string | null;
@@ -63,6 +64,10 @@ export interface IndexResult {
   ruleCoverage: number;
   /** Run directories still in the legacy layout (indexed in place). */
   legacy: number;
+  /** Pre-v2 gateway records imported from .qa-core/sites/*.json (status 'legacy'). */
+  legacyRecords: number;
+  /** Records skipped because a real report covers the same run. */
+  legacyCovered: number;
   removed: number;
 }
 
@@ -242,6 +247,106 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
   return row;
 }
 
+/* ─────────────────── Pre-v2 gateway records ─────────────────── */
+
+/**
+ * The gateway's per-host record store, written by memory.ts after every run:
+ * .qa-core/sites/<host>.json holds `recentRuns` [{ at, url, scenarios, cost,
+ * model, durationSec }] (the last 5 per host). Runs from before the per-run
+ * layout survive only there, so they are imported as `runs` rows with status
+ * 'legacy', report_path null, and the numbers the record carries: shipped =
+ * generated = scenarios, cost_total = cost, started_at = at - durationSec,
+ * ended_at = at. Nothing else is invented (planned and the funnel stay 0).
+ *
+ * A record is skipped when a real report covers the same run: same host and
+ * the report's finish time within LEGACY_MATCH_MS of the record's `at` (the
+ * record is written when the run ends). A real report therefore always wins
+ * and a legacy row is never allowed to shadow or overwrite it.
+ */
+export interface LegacyRecord { at: string; url: string; scenarios: number; cost: number; model: string; durationSec: number }
+
+export const LEGACY_MATCH_MS = 120_000;
+
+export function legacyRunId(host: string, rec: LegacyRecord): string {
+  const at = new Date(rec.at);
+  return `legacy-${Number.isNaN(at.getTime()) ? 'undated' : compactTimestamp(at)}-${shortHash(`${host}|${rec.at}|${rec.url}`)}`;
+}
+
+export function readLegacyRecords(root: string): Array<{ host: string; record: LegacyRecord }> {
+  const dir = path.join(root, '.qa-core', 'sites');
+  const out: Array<{ host: string; record: LegacyRecord }> = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort()) {
+    try {
+      const site = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as { host?: string; recentRuns?: LegacyRecord[] };
+      for (const r of site.recentRuns ?? []) {
+        if (!r || typeof r.at !== 'string') continue;
+        out.push({ host: String(site.host ?? f.replace(/\.json$/, '')), record: r });
+      }
+    } catch { /* an unreadable memory file is not a run */ }
+  }
+  return out;
+}
+
+/** The runs row a legacy record becomes. Pure, exported for the smoke. */
+export function runRowFromLegacyRecord(host: string, rec: LegacyRecord, projectId: string): RunRow {
+  const at = Date.parse(rec.at);
+  const ended = Number.isNaN(at) ? null : new Date(at).toISOString();
+  const started = Number.isNaN(at) ? null : new Date(at - Math.max(0, Number(rec.durationSec) || 0) * 1000).toISOString();
+  const shipped = Number(rec.scenarios) || 0;
+  const cost = Number(rec.cost) || 0;
+  return {
+    id: legacyRunId(host, rec),
+    project_id: projectId,
+    started_at: started,
+    ended_at: ended,
+    status: 'legacy',
+    source: 'cli',
+    url: rec.url && rec.url !== '--' ? rec.url : null,
+    flags_json: JSON.stringify({ model: rec.model, durationSec: rec.durationSec, legacyHost: host }),
+    planned: 0, generated: shipped, dropped: 0, incomplete: 0, findings: 0, skipped: 0,
+    stable: 0, flaky: 0, broken: 0, shipped,
+    cost_total: cost, cost_planner: 0, cost_explorer: cost, cost_critic: 0, cost_repair: 0,
+    flake_rate: null,
+    report_path: null, zip_path: null, checkpoint_path: null, stopped_reason: null,
+  };
+}
+
+/** Does a real (reported) run cover this record? Same host, finished within the match window. */
+function coveredByReport(db: Database.Database, host: string | null, rec: LegacyRecord): boolean {
+  const at = Date.parse(rec.at);
+  if (Number.isNaN(at)) return false;
+  const rows = db.prepare("SELECT url, ended_at, started_at FROM runs WHERE report_path IS NOT NULL").all() as Array<{ url: string | null; ended_at: string | null; started_at: string | null }>;
+  return rows.some((r) => {
+    if (hostOf(r.url) !== host) return false;
+    const end = r.ended_at ? Date.parse(r.ended_at) : NaN;
+    const start = r.started_at ? Date.parse(r.started_at) : NaN;
+    return (!Number.isNaN(end) && Math.abs(end - at) <= LEGACY_MATCH_MS) || (!Number.isNaN(start) && at >= start - LEGACY_MATCH_MS && !Number.isNaN(end) && at <= end + LEGACY_MATCH_MS);
+  });
+}
+
+/**
+ * Import the record store. Returns the ids now present so indexOutput can
+ * keep them, plus the count skipped because a report covers them.
+ */
+export function importLegacyRecords(db: Database.Database, root: string): { ids: string[]; covered: number } {
+  const ids: string[] = [];
+  let covered = 0;
+  for (const { host, record } of readLegacyRecords(root)) {
+    const recHost = hostOf(record.url) ?? (host && host !== 'unknown' ? host.toLowerCase().replace(/^www\./, '') : null);
+    if (coveredByReport(db, recHost, record)) { covered++; continue; }
+    const projectId = ensureProjectForUrl(db, record.url && record.url !== '--' ? record.url : (recHost ? `https://${recHost}/` : null));
+    const row = runRowFromLegacyRecord(host, record, projectId);
+    // Never overwrite a row that has a real report (a legacy id never
+    // collides with a run-id, this guards the invariant explicitly).
+    const existing = db.prepare('SELECT report_path FROM runs WHERE id = ?').get(row.id) as { report_path: string | null } | undefined;
+    if (existing && existing.report_path) continue;
+    upsertRun(db, row);
+    ids.push(row.id);
+  }
+  return { ids, covered };
+}
+
 /** Ordering key for first/last seen: the run's start time, then its id. */
 function runOrder(runId: string, db: Database.Database): string {
   const row = db.prepare('SELECT started_at FROM runs WHERE id = ?').get(runId) as { started_at: string | null } | undefined;
@@ -262,7 +367,10 @@ export function indexOutput(db: Database.Database, root: string): IndexResult {
     const row = indexRunDir(db, root, e);
     if (row) { seen.add(row.id); if (e.legacy) legacy++; }
   }
-  // Runs that vanished from disk.
+  // Pre-v2 gateway records, after the reports so a report always wins.
+  const legacyImport = importLegacyRecords(db, root);
+  for (const id of legacyImport.ids) seen.add(id);
+  // Runs that vanished from disk (and legacy rows whose record is gone or is now covered by a report).
   const known = db.prepare('SELECT id FROM runs').all() as Array<{ id: string }>;
   let removed = 0;
   const del = db.transaction((ids: string[]) => {
@@ -284,6 +392,8 @@ export function indexOutput(db: Database.Database, root: string): IndexResult {
     verdicts: count('SELECT COUNT(*) AS n FROM verdicts'),
     ruleCoverage: count('SELECT COUNT(*) AS n FROM rule_coverage'),
     legacy,
+    legacyRecords: legacyImport.ids.length,
+    legacyCovered: legacyImport.covered,
     removed,
   };
 }
@@ -299,5 +409,7 @@ function startedAtOf(e: RunDirEntry): string | null {
 export function renderIndexResult(r: IndexResult): string {
   return `Index: ${r.runs} run(s) across ${r.projects} project(s), ${r.findings} finding(s), ${r.verdicts} verdict(s), ${r.ruleCoverage} rule row(s)` +
     (r.legacy ? ` · ${r.legacy} legacy folder(s) indexed in place, run \`npm run migrate-output\` to move them` : '') +
+    (r.legacyRecords ? ` · ${r.legacyRecords} pre-v2 record(s) imported as summary-only runs` : '') +
+    (r.legacyCovered ? ` · ${r.legacyCovered} pre-v2 record(s) covered by a report` : '') +
     (r.removed ? ` · ${r.removed} vanished run(s) removed` : '');
 }
