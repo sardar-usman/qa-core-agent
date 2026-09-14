@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-14 (night). Update this file at the end of every working day.
+Updated: 2026-09-14 (late night). Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -58,8 +58,17 @@ Schedule: two focused days, then the audit.
   + critic + stabilizer), schema v4 (environment nullable, no default).
 - PR B2 stage view: IN PROGRESS. Branch dashboard/pr-b2-stage-view. Six
   panels from run-report only; live events land in PR C.
-- PR C parallel runs + Terminals, PR D projects/findings/coverage/trends,
-  PR E settings/resume/transcribe + retire legacy UI.
+- PR C terminal + live run view (PR #13): MERGED Sept 14. Single-terminal
+  composer through explore-request.ts, SRS attach into the run folder,
+  live stage view converging on the history view via run-report. First
+  dashboard-started run: saucedemo SRS, 4 planned, 4 shipped, 4 of 4
+  rules, $0.6187. Parallel-run plumbing deferred to after the audit.
+- PR D projects/findings/coverage/trends: IN PROGRESS. Branch
+  dashboard/pr-d-projects.
+- PR E settings/resume/transcribe + retire legacy UI, plus polish: MCP
+  srsText into the run folder, placeholders styled as placeholders (e.g.
+  prefix, dimmer), header cost sub-line not truncated, site URL and
+  wordmark as links.
 
 Cut line if the schedule slips: the Terminals page cannot move after the
 audit, it is the only way to start a run from the new dashboard and the
@@ -90,6 +99,8 @@ during the maturity pass:
 - run-report records its own budgets (step budget, explorer sub-ceiling,
   repair-pass budget, per-page planner cost) so the dashboard can show spend
   against limit; today those four are not recorded.
+- runtime emits discovery events (rung, page count, filter result) so the
+  live Discovery panel has numbers.
 
 ## Then: go to market
 
