@@ -438,7 +438,7 @@ export function verdictFor(verdicts: ScenarioVerdict[], scenarioName: string): S
  * This is what keeps a verdict for "s-rework-a" from also gating its sibling
  * "s-rework-b" when the sibling's own verdict is missing.
  */
-function assignVerdicts(names: string[], verdicts: ScenarioVerdict[]): Map<string, ScenarioVerdict> {
+export function assignVerdicts(names: string[], verdicts: ScenarioVerdict[]): Map<string, ScenarioVerdict> {
   const out = new Map<string, ScenarioVerdict>();
   const claimed = new Set<ScenarioVerdict>();
   for (const name of names) {

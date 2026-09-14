@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, schemaVersion } from '../src/server/db/migrate.js';
+import Database from 'better-sqlite3';
+import { fileURLToPath } from 'node:url';
 import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID, runRowFromLegacyRecord, legacyRunId, importLegacyRecords } from '../src/server/db/indexer.js';
 import { newRunId, setLatest } from '../src/agent/output-layout.js';
 import type { RunReport } from '../src/agent/trace.js';
@@ -114,8 +116,9 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (3: legacy rows count explored, not shipped)', schemaVersion(db) === 3);
+check('A. schema migrated to the current version (4: project environment nullable, no stored default)', schemaVersion(db) === 4);
 const r1 = indexOutput(db, root);
+check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
 check('C. 5 projects: saucedemo, shop, legacy, demo.playwright.dev (records only), Unassigned', r1.projects === 5, String(r1.projects));
 const projects = db.prepare('SELECT id, name, base_url FROM projects ORDER BY id').all() as Array<{ id: string; name: string; base_url: string | null }>;
@@ -139,7 +142,7 @@ for (const row of runs) {
   const expected = {
     planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length, incomplete: rec.incomplete.length, findings: rec.findings.length, skipped: rec.skipped.length,
     stable: rec.stable, flaky: rec.flaky, broken: rec.broken, shipped: rep.scenarios.length,
-    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
+    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0) + (rep.stability?.stabilizerCostUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
     cost_explorer: rep.cost.usd - (rep.cost.repairUsd ?? 0), cost_critic: rep.cost.criticUsd ?? 0, cost_repair: rep.cost.repairUsd ?? 0,
     flake_rate: rep.stability ? rep.stability.flakeRate : null, started_at: rep.startedAt, stopped_reason: rep.stopped?.reason ?? null,
     status: fs.existsSync(path.join(root, path.dirname(String(row.report_path)), 'checkpoint.json')) ? 'stopped' : rep.scenarios.length === 0 ? 'empty' : 'completed',
@@ -215,6 +218,47 @@ const db2 = openDatabase(dbPath);
 const r2 = indexOutput(db2, root);
 check('Q. after deleting the database, a fresh index has identical counts', JSON.stringify(r2) === JSON.stringify({ ...r1, removed: 0 }), JSON.stringify({ r1, r2 }));
 check('R. after deleting the database, every row is identical', dump(db2) === dump1);
+
+/* ─── migration v4 on a v3-shaped database with referencing runs rows ─── */
+// The real failure: a v3 database whose runs rows reference a project. The
+// old v4 dropped projects with foreign keys ON (the pragma is a no-op inside
+// the transaction) and died with SQLITE_CONSTRAINT_FOREIGNKEY.
+const v3Path = path.join(root, 'data', 'qa-core-v3.sqlite');
+{
+  const schemaFile = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'server', 'db', 'schema.sql');
+  const v3Schema = fs.readFileSync(schemaFile, 'utf8').replace(
+    /environment\s+TEXT CHECK \(environment IS NULL OR environment IN \('staging', 'production', 'other'\)\)/,
+    "environment TEXT NOT NULL DEFAULT 'other' CHECK (environment IN ('staging', 'production', 'other'))",
+  );
+  if (!/DEFAULT 'other'/.test(v3Schema)) throw new Error('could not shape the v3 schema from schema.sql');
+  const v3 = new Database(v3Path);
+  v3.pragma('foreign_keys = ON');
+  v3.exec(v3Schema);
+  v3.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+  for (const [v, n] of [[1, 'initial schema'], [2, 'legacy run records'], [3, 'legacy rows count explored, not shipped']] as const) v3.prepare('INSERT INTO schema_version VALUES (?, ?, ?)').run(v, n, '2026-09-14T12:00:00.000Z');
+  v3.prepare("INSERT INTO projects (id, name, base_url, environment, created_at, updated_at) VALUES ('saucedemo-com', 'saucedemo', 'https://www.saucedemo.com/', 'other', '2026-09-14T12:00:00.000Z', '2026-09-14T12:00:00.000Z')").run();
+  const reportedRow = runRowFromReport({ runId: sauce1, projectId: 'saucedemo-com', report: JSON.parse(fs.readFileSync(path.join(output, 'saucedemo-com', sauce1, 'run-report.json'), 'utf8')) as RunReport, reportPath: path.join('output', 'saucedemo-com', sauce1, 'run-report.json'), zipPath: null, checkpointPath: null });
+  const legacyRow = runRowFromLegacyRecord('www.saucedemo.com', julyRec, 'saucedemo-com');
+  const cols = Object.keys(reportedRow);
+  const ins = v3.prepare(`INSERT INTO runs (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`);
+  ins.run(reportedRow as unknown as Record<string, unknown>);
+  ins.run(Object.fromEntries(cols.map((c) => [c, (legacyRow as unknown as Record<string, unknown>)[c] ?? null])));
+  check('V1. the v3-shaped database has one project (environment other) and two referencing runs rows before migration', (v3.prepare('SELECT COUNT(*) AS n FROM runs WHERE project_id = ?').get('saucedemo-com') as { n: number }).n === 2 && (v3.prepare('SELECT environment FROM projects').get() as { environment: string }).environment === 'other' && schemaVersion(v3) === 3);
+  v3.close();
+}
+let migrated: ReturnType<typeof openDatabase> | null = null;
+let migrateError: string | null = null;
+try { migrated = openDatabase(v3Path); } catch (e) { migrateError = String(e); }
+check('V2. migration reaches v4 on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 4, migrateError ?? '');
+if (migrated) {
+  const runsAfter = migrated.prepare("SELECT id, project_id, status FROM runs ORDER BY id").all() as Array<{ id: string; project_id: string; status: string }>;
+  check('V3. every runs row survives with its project_id intact (one reported, one legacy)', runsAfter.length === 2 && runsAfter.every((r) => r.project_id === 'saucedemo-com') && runsAfter.some((r) => r.status === 'legacy') && runsAfter.some((r) => r.id === sauce1), JSON.stringify(runsAfter));
+  check('V4. the migrated project stores environment NULL', (migrated.prepare('SELECT environment FROM projects').get() as { environment: string | null }).environment === null);
+  check('V5. PRAGMA foreign_key_check returns nothing and foreign keys are back on', (migrated.pragma('foreign_key_check') as unknown[]).length === 0 && (migrated.pragma('foreign_keys', { simple: true }) as number) === 1);
+  const rm = indexOutput(migrated, root);
+  check('V6. a migrated database and a fresh database produce identical rows after reindex', dump(migrated) === dump(db2) && JSON.stringify(rm) === JSON.stringify(r2), JSON.stringify(rm));
+  migrated.close();
+}
 fs.rmSync(path.join(output, 'shop-example', shop1), { recursive: true, force: true });
 const r3 = indexOutput(db2, root);
 check('S. a run directory removed from disk vanishes from the index', r3.runs === 8 && r3.removed === 1 && !db2.prepare('SELECT 1 FROM runs WHERE id = ?').get(shop1));
