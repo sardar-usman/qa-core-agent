@@ -5,154 +5,35 @@ import { explore, type ReviewPaused } from '../agent/runtime.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
 import { zipFrameworkToFile } from '../agent/zip-framework.js';
-import { parseCommaSeparated } from '../agent/parse-features.js';
 import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
 import { deleteCheckpoint, loadCheckpoint, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import type { PlannedScenario } from '../agent/planner.js';
+import {
+  applyCheckpointFlags, buildExploreOptions, outDirForRequest, parseExploreArgv, resumeConflicts, slugUrl,
+  type ExploreRequest,
+} from '../agent/explore-request.js';
+import { slimFrameworkDir } from '../agent/framework-dir.js';
 
 /**
  * CLI:  npm run explore -- <url> [--lang ts|js] [--name <basename>] [--out <dir>]
  *
  * Drives the tool-use loop against <url>, then transcribes the verified trace
  * into a Playwright spec under output/<run-id>/.
+ *
+ * Flag parsing lives in src/agent/explore-request.ts, shared with the gateway
+ * and the MCP server so every surface accepts the same options.
  */
 
-interface ParsedArgs {
-  url?: string;
-  lang: 'ts' | 'js';
-  name?: string;
-  outBase?: string;
-  review: boolean;
-  fromPlan?: string;
-  /** Emit a Page Object Model framework instead of a single inline spec. Default: true. */
-  pom: boolean;
-  /** Run the reality-check replay pass after the Critic. Default: true. */
-  replay: boolean;
-  /** Run the stability iteration after replay. Default: true. */
-  stability: boolean;
-  /** Number of stability iterations per scenario. Default: 3. */
-  stabilityIterations: number;
-  /**
-   * Run Stage 5b — the Stabilizer LLM that proposes a wait or selector swap
-   * when a scenario is flaky. Default: true. Set false to keep stability
-   * fully deterministic + offline (no Sonnet call on flake).
-   */
-  stabilize: boolean;
-  /**
-   * Max Stabilizer fix attempts per flaky scenario. Default: 3. Higher values
-   * give the LLM more tries to find a strategy that works (each attempt sees
-   * the history of what didn't); cap is for cost containment.
-   */
-  stabilizeAttempts: number;
-  /**
-   * Feature names from --features X,Y,Z. Currently surfaced in the README
-   * and the README's "Features covered" section. Planner steering by feature
-   * is a separate piece of work (deferred).
-   */
-  features: string[];
-  /**
-   * Path to an SRS document (--srs). Loaded and converted to a requirements
-   * map before the browser launches; the map steers rule-first planning and
-   * produces the rule-coverage report.
-   */
-  srs?: string;
-  /** Multi-page discovery (--discover). Also activated by --urls or --srs. */
-  discover: boolean;
-  /** Explicit page list from --urls (comma-separated). */
-  urls: string[];
-  /** Path to a checkpoint.json to resume from (--resume). */
-  resume?: string;
-  /** True when --lang was passed explicitly (resume conflict detection). */
-  langProvided: boolean;
-  /** True when --pom / --no-pom / --inline was passed explicitly. */
-  pomProvided: boolean;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const args = argv.slice(2);
-  const parsed: ParsedArgs = {
-    lang: 'ts',
-    review: false,
-    pom: true,
-    replay: true,
-    stability: true,
-    stabilityIterations: 3,
-    stabilize: true,
-    stabilizeAttempts: 3,
-    features: [],
-    discover: false,
-    urls: [],
-    langProvided: false,
-    pomProvided: false,
-  };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--lang') { const v = args[++i]; parsed.lang = (v === 'js' ? 'js' : 'ts'); parsed.langProvided = true; }
-    else if (a === '--name') parsed.name = args[++i];
-    else if (a === '--out') parsed.outBase = args[++i];
-    else if (a === '--review') parsed.review = true;
-    else if (a === '--from-plan') parsed.fromPlan = args[++i];
-    else if (a === '--no-pom' || a === '--inline') { parsed.pom = false; parsed.pomProvided = true; }
-    else if (a === '--pom') { parsed.pom = true; parsed.pomProvided = true; }
-    else if (a === '--resume') {
-      const v = args[++i];
-      if (!v) {
-        console.error('✗ --resume expects a checkpoint.json path');
-        process.exit(1);
-      }
-      parsed.resume = v;
-    }
-    else if (a === '--no-replay') parsed.replay = false;
-    else if (a === '--replay') parsed.replay = true;
-    else if (a === '--no-stability') parsed.stability = false;
-    else if (a === '--stability') {
-      const n = Number(args[++i]);
-      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-        console.error(`✗ --stability expects a positive integer (got "${args[i]}")`);
-        process.exit(1);
-      }
-      parsed.stabilityIterations = n;
-    }
-    else if (a === '--no-stabilize') parsed.stabilize = false;
-    else if (a === '--stabilize') parsed.stabilize = true;
-    else if (a === '--stabilize-attempts') {
-      const n = Number(args[++i]);
-      if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-        console.error(`✗ --stabilize-attempts expects a positive integer (got "${args[i]}")`);
-        process.exit(1);
-      }
-      parsed.stabilizeAttempts = n;
-    }
-    else if (a === '--features') {
-      const v = args[++i];
-      if (!v) {
-        console.error('✗ --features expects a comma-separated value (e.g. --features login,cart,checkout)');
-        process.exit(1);
-      }
-      parsed.features = parseCommaSeparated(v);
-    }
-    else if (a === '--discover') parsed.discover = true;
-    else if (a === '--urls') {
-      const v = args[++i];
-      if (!v) {
-        console.error('✗ --urls expects a comma-separated list of page URLs');
-        process.exit(1);
-      }
-      parsed.urls = v.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    else if (a === '--srs') {
-      const v = args[++i];
-      if (!v) {
-        console.error('✗ --srs expects a file path (.md, .txt, .pdf, or .docx)');
-        process.exit(1);
-      }
-      parsed.srs = v;
-    }
-    else if (a && !parsed.url) parsed.url = a;
+function parseArgs(argv: string[]): ExploreRequest {
+  const result = parseExploreArgv(argv.slice(2));
+  if (!result.ok) {
+    console.error(`✗ ${result.error}`);
+    process.exit(1);
   }
+  const parsed = result.request;
   if (!parsed.url && !parsed.fromPlan && !parsed.resume) {
     console.error('Usage:');
     console.error('  npm run explore -- <url> [--lang ts|js] [--name foo] [--out dir] [--review]');
@@ -167,6 +48,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     console.error('');
     console.error('  --no-stabilize          Skip Stage 5b. Flaky scenarios always drop.');
     console.error('  --stabilize-attempts N  Max Stabilizer fix attempts per flaky scenario (default 3).');
+    console.error('  --ceiling USD           Per-run QA_CORE_COST_CEILING (also --repair-reserve, --max-steps,');
+    console.error('                          --planner-model, --explorer-model, --critic-model, --env NAME=VALUE).');
     process.exit(1);
   }
   return parsed;
@@ -219,13 +102,13 @@ function runId(): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-function slug(s: string): string {
-  return s.replace(/^https?:\/\//, '').replace(/[^a-z0-9-]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40).toLowerCase();
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv);
+  let args = parseArgs(process.argv);
   const base = args.outBase ?? path.join(process.cwd(), 'output');
+
+  // Per-run setting overrides (--ceiling, --planner-model, --env ...) are
+  // applied through the same env names the runtime reads.
+  for (const [name, value] of Object.entries(args.env)) process.env[name] = value;
 
   // Checkpoint resume (--resume): load, check conflicts, restore flags.
   let resumeCp: Checkpoint | undefined;
@@ -236,25 +119,12 @@ async function main(): Promise<void> {
       console.error(`✗ ${(err as Error).message}`);
       process.exit(1);
     }
-    const conflicts: string[] = [];
+    let normalizedUrl: string | undefined;
     if (args.url) {
       const check = normalizeAndValidateUrl(args.url);
-      if (check.ok && check.url !== resumeCp.url) {
-        conflicts.push(`URL ${check.url} conflicts with the checkpoint's ${resumeCp.url}`);
-      }
+      if (check.ok) normalizedUrl = check.url;
     }
-    if (args.langProvided && args.lang !== resumeCp.flags.lang) {
-      conflicts.push(`--lang ${args.lang} conflicts with the checkpoint's ${resumeCp.flags.lang}`);
-    }
-    if (args.pomProvided && args.pom !== resumeCp.flags.pom) {
-      conflicts.push(`--${args.pom ? 'pom' : 'no-pom'} conflicts with the checkpoint's ${resumeCp.flags.pom ? 'pom' : 'no-pom'} mode`);
-    }
-    if (args.srs) conflicts.push('--srs conflicts with --resume (the checkpoint already carries the requirements map)');
-    if (args.features.length > 0) conflicts.push('--features conflicts with --resume (features are recorded in the checkpoint)');
-    if (args.urls.length > 0) conflicts.push('--urls conflicts with --resume (the page set is recorded in the checkpoint)');
-    if (args.discover) conflicts.push('--discover conflicts with --resume (discovery is recorded in the checkpoint)');
-    if (args.review) conflicts.push('--review conflicts with --resume');
-    if (args.fromPlan) conflicts.push('--from-plan conflicts with --resume');
+    const conflicts = resumeConflicts(args, resumeCp, normalizedUrl);
     if (conflicts.length > 0) {
       console.error('✗ Cannot resume:');
       for (const c of conflicts) console.error(`  • ${c}`);
@@ -268,9 +138,7 @@ async function main(): Promise<void> {
       console.error(`✗ Cannot resume: ${resumeCp.url} is not reachable (${(err as Error).message}). Check the network and try again.`);
       process.exit(1);
     }
-    args.lang = resumeCp.flags.lang;
-    args.pom = resumeCp.flags.pom;
-    args.features = resumeCp.flags.features;
+    args = applyCheckpointFlags(args, resumeCp);
   }
 
   // Resolve URL + scenarios depending on mode (review-resume vs fresh).
@@ -308,15 +176,11 @@ async function main(): Promise<void> {
       console.log(`  Note: added https:// for you — using ${urlCheck.url}`);
     }
     url = urlCheck.url;
-    const baseName = args.name ?? slug(url);
     // v3.1 naming for the scaffold path: <brand>-automation-framework/. Stable
     // across re-runs (overwrites previous). The --name flag (if provided) takes
     // precedence so power users can override. Inline mode (--no-pom) keeps the
     // old timestamped naming so power users don't accidentally lose history.
-    const dirName = args.pom
-      ? (args.name ? `${baseName}-automation-framework` : frameworkDirName(url))
-      : `${runId()}-${baseName}`;
-    outDir = path.join(base, dirName);
+    outDir = outDirForRequest(args, url, base, frameworkDirName, runId);
     // Wipe the framework dir before re-running so stale POM files (e.g. a
     // page object from a previous run with different features) don't linger.
     if (args.pom && fs.existsSync(outDir)) {
@@ -367,28 +231,16 @@ async function main(): Promise<void> {
     console.log('');
   }
 
-  const specName = args.name ?? slug(url);
-  const lang = args.lang;
+  const specName = args.name ?? slugUrl(url);
 
   const totalStages = 3 + (args.replay ? 1 : 0) + (args.stability ? 1 : 0);
   const result = await explore({
-    url, language: lang, outDir,
-    review: args.review,
-    fromPlan,
-    skipReplay: !args.replay,
-    skipStability: !args.stability,
-    stabilityIterations: args.stabilityIterations,
-    stabilize: args.stabilize,
-    maxStabilizeAttempts: args.stabilizeAttempts,
-    features: args.features,
-    requirements,
-    discover: resumeCp?.flags.discover ?? args.discover,
-    urls: resumeCp ? resumeCp.flags.urls : args.urls,
-    resume: resumeCp,
-    checkpointFlags: {
-      pom: args.pom,
-      ...(args.srs ? { srsPath: args.srs } : resumeCp?.flags.srs ? { srsPath: resumeCp.flags.srs } : {}),
-    },
+    ...buildExploreOptions(args, {
+      url, outDir,
+      ...(requirements ? { requirements } : {}),
+      ...(resumeCp ? { resume: resumeCp } : {}),
+      ...(fromPlan ? { fromPlan } : {}),
+    }),
     onEvent: (e) => {
       switch (e.type) {
         case 'plan_started':
@@ -662,29 +514,6 @@ async function main(): Promise<void> {
 /** Hostname of a URL, falling back to the raw URL if parsing fails. */
 function hostnameOf(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
-}
-
-/**
- * After the zip is written, replace the on-disk framework directory with a
- * stub that contains only the run reports: `run-report.json`, plus (on SRS
- * runs) `requirements-map.json` and `rule-coverage.json`. The zip is the
- * deliverable; the dir stays as a tombstone so the dashboard's run-history
- * scan still recognises this run and the rule-coverage report stays
- * inspectable without unzipping.
- */
-function slimFrameworkDir(dir: string): void {
-  const KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json'];
-  const kept: Array<{ name: string; content: string }> = [];
-  for (const name of KEEP) {
-    const p = path.join(dir, name);
-    if (!fs.existsSync(p)) continue;
-    try { kept.push({ name, content: fs.readFileSync(p, 'utf8') }); } catch { /* skip */ }
-  }
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
-  if (kept.length > 0) {
-    fs.mkdirSync(dir, { recursive: true });
-    for (const f of kept) fs.writeFileSync(path.join(dir, f.name), f.content);
-  }
 }
 
 function isPaused(r: { paused?: boolean }): r is ReviewPaused {

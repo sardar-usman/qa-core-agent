@@ -1092,6 +1092,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       } else {
         const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
         review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        // Nothing parsed: keep the verbatim response on the report so the
+        // cause is readable there, not reconstructed from memory.
+        if (review.verdicts.length === 0 && c.raw) review.rawResponse = c.raw;
         // Accumulate (a resumed run seeds criticUsd with the prior spend).
         cost.criticUsd = (cost.criticUsd ?? 0) + c.costUsd;
         opts.onEvent?.({ type: 'critic_done', verdicts: review.verdicts, usd: c.costUsd });
@@ -1166,6 +1169,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           cost.cacheReadTokens += repair.cost.cacheReadTokens;
           cost.cacheCreationTokens += repair.cost.cacheCreationTokens;
           cost.usd += repair.cost.usd;
+          cost.repairUsd = (cost.repairUsd ?? 0) + repair.cost.usd;
           steps += repair.steps;
           cpState.spend.repair += repair.cost.usd;
           // Heals carry over (no funnel impact). The repair attempt's own

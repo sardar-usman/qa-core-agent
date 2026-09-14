@@ -60,7 +60,7 @@ function looksLikeUrl(token: string): boolean {
 
 export interface CliPasteHint {
   /** The slash command we infer the user wanted (e.g. "/explore"). */
-  slash: '/explore' | '/generate' | '/heal';
+  slash: '/explore' | '/generate' | '/heal' | '/transcribe';
   /** The arguments after the npm prefix, trimmed. Always at least "<args>". */
   args: string;
   /** A fully formed, copy-pasteable suggestion. */
@@ -68,15 +68,17 @@ export interface CliPasteHint {
 }
 
 /**
- * Detects when the whole input is `npm run (explore|generate|heal) [--] <args>`
- * — i.e. the user pasted a terminal command into the chat. Returns a tailored
- * hint, or null if the input isn't an npm-paste.
+ * Detects when the whole input is `npm run (explore|generate|heal|transcribe)
+ * [--] <args>`, i.e. the user pasted a terminal command into the chat.
+ * Returns a tailored hint, or null if the input isn't an npm-paste. The args
+ * (URL, --srs, --urls, --discover, --resume, ...) carry over verbatim: the
+ * slash commands accept the same flags.
  */
 export function detectPastedCliCommand(content: string): CliPasteHint | null {
-  const m = content.match(/^\s*npm\s+run\s+(explore|generate|heal)\b\s*(?:--\s+)?(.*)$/i);
+  const m = content.match(/^\s*npm\s+run\s+(explore|generate|heal|transcribe)\b\s*(?:--\s+)?(.*)$/i);
   if (!m) return null;
   const cmd = (m[1] ?? '').toLowerCase();
-  if (cmd !== 'explore' && cmd !== 'generate' && cmd !== 'heal') return null;
+  if (cmd !== 'explore' && cmd !== 'generate' && cmd !== 'heal' && cmd !== 'transcribe') return null;
   const slash = `/${cmd}` as CliPasteHint['slash'];
   const rawArgs = (m[2] ?? '').trim();
   const args = rawArgs.length > 0 ? rawArgs : '<args>';

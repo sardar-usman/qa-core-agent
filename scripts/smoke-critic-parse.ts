@@ -12,7 +12,7 @@
  *
  * Pure in-code fixtures. No network. No LLM. No browser.
  */
-import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic } from '../src/agent/critic.js';
+import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson } from '../src/agent/critic.js';
 import type { TraceStep } from '../src/agent/trace.js';
 import { attachRuleIds, computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
@@ -175,6 +175,33 @@ const selectStep: TraceStep = {
 check('H5. a long select_option label renders intact too',
   describeStep(selectStep).includes(JSON.stringify('Saint Vincent and the Grenadines (Kingstown metropolitan region)')),
   describeStep(selectStep));
+
+/* ─── K. Lenient JSON: escapes and trailing commas that models write ─────── */
+// The saucedemo dashboard run: the critic quoted the URL regex it was shown.
+// "\." is not a JSON escape, so strict JSON.parse threw on a whole, well-formed
+// array and the run reported zero verdicts while the summary parsed fine.
+const regexQuoted = `[
+  { "scenario": "logged in", "verdict": "pass", "reasons": ["asserts /inventory\\.html"], "required_fixes": [] },
+  { "scenario": "blank username", "verdict": "rework", "reasons": ["regex /saucedemo\\.com// doubled slash"], "required_fixes": ["drop it"], }
+]
+<summary>ok</summary>`;
+const k1 = parseVerdicts(regexQuoted);
+check('K1. a reason quoting a regex with a non-JSON escape still parses (2 verdicts)', k1.length === 2, JSON.stringify(k1));
+check('K2. the invalid escape is kept literally in the reason text', k1[0]?.reasons[0] === 'asserts /inventory\\.html', k1[0]?.reasons[0]);
+check('K3. a trailing comma before } does not break the parse', k1[1]?.verdict === 'rework' && k1[1]?.required_fixes[0] === 'drop it');
+const legalEscapes = `[{ "scenario": "s", "verdict": "pass", "reasons": ["line\\nbreak \\"quoted\\" tab\\t slash\\/ uni\\u00e9"], "required_fixes": [] }]`;
+const k4 = parseVerdicts(legalEscapes);
+check('K4. legal JSON escapes are untouched by the repair', k4[0]?.reasons[0] === 'line\nbreak "quoted" tab\t slash/ uni\u00e9', k4[0]?.reasons[0]);
+check('K5. repairJson leaves already-valid JSON byte-identical', repairJson(legalEscapes) === legalEscapes);
+const truncated = `[
+  { "scenario": "first", "verdict": "pass", "reasons": ["ok"], "required_fixes": [] },
+  { "scenario": "second", "verdict": "reject", "reasons": ["bad"], "required_fixes": [] },
+  { "scenario": "third", "verdict": "pass", "reasons": ["cut off by the tok`;
+const k6 = parseVerdicts(truncated);
+check('K6. a response cut off mid-array salvages the complete verdicts and drops the partial one', k6.length === 2 && k6[1]?.scenario === 'second', JSON.stringify(k6));
+check('K7. toHaveURL renders as a quoted regex string (no /pattern// artefact)',
+  describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }) === 'assert URL matches regex "saucedemo\\\\.com/"',
+  describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

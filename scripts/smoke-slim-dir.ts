@@ -19,22 +19,8 @@ import { scaffold } from '../src/agent/scaffold.js';
 import { zipFrameworkToFile } from '../src/agent/zip-framework.js';
 import type { RunReport } from '../src/agent/trace.js';
 
-// Mirror of the slimFrameworkDir helper in cli/explore.ts and server/gateway.ts.
-// Kept inline here so this smoke is self-contained (the production helpers are
-// not exported — they're file-local utilities. If we ever extract them to a
-// shared module, we should switch to importing from there).
-function slimFrameworkDir(dir: string): void {
-  const reportPath = path.join(dir, 'run-report.json');
-  let reportContent: string | null = null;
-  if (fs.existsSync(reportPath)) {
-    try { reportContent = fs.readFileSync(reportPath, 'utf8'); } catch { /* leave null */ }
-  }
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
-  if (reportContent !== null) {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(reportPath, reportContent);
-  }
-}
+// The production helper, shared by the CLI, the gateway and the MCP server.
+import { slimFrameworkDir } from '../src/agent/framework-dir.js';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-slim-'));
 const frameworkDir = path.join(tmpRoot, 'saucedemo-framework');
