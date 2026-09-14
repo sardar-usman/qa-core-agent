@@ -116,4 +116,4 @@ for (const v of variants) {
 
 console.log(`\n${pass}/${pass + fail} cases passed.`);
 if (fail > 0) process.exit(1);
-console.log('All Planner format variants (v3.1 + legacy) parse correctly.');
+console.log('OK: all Planner format variants (v3.1 + legacy) parse correctly.');

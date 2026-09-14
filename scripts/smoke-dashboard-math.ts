@@ -102,3 +102,4 @@ const withPass = runs.filter(r => typeof r.passRate === 'number');
 const overallAvg = withPass.length ? Math.round(withPass.reduce((a, r) => a + (r.passRate ?? 0), 0) / withPass.length) : null;
 console.log('\nOverall (TOTAL panel) avg pass-rate:', overallAvg == null ? 'no data' : overallAvg + '%');
 console.log(`  (computed over ${withPass.length} runs that have a passRate, out of ${runs.length} total)`);
+console.log('OK: dashboard per-site pass-rate math divides by runsWithPass, not total runs.');
