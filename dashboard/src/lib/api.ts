@@ -33,7 +33,7 @@ export interface RunDetailHeader {
   stopped_reason: string | null;
 }
 export interface RunDetailArtifact { name: string; kind: string; size: number; href: string }
-export type StageStatus = 'done' | 'warning' | 'not-applicable';
+export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable';
 export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
 /** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
 export interface RunDetailStages {

@@ -9,6 +9,11 @@ export function money(v: number | null | undefined, digits = 2): string {
   return `$${Number(v ?? 0).toFixed(digits)}`;
 }
 
+/** The one currency formatter for the run detail page and the stage view: always 4 decimals, so 0.66823075 renders as $0.6682, never $0.66. */
+export function usd(v: number | null | undefined): string {
+  return money(v, 4);
+}
+
 export function pct(v: number | null | undefined): string {
   return v == null ? '–' : `${(v * 100).toFixed(1)}%`;
 }

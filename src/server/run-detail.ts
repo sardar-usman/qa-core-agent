@@ -58,7 +58,15 @@ export interface RunDetailArtifact {
   href: string;
 }
 
-export type StageStatus = 'done' | 'warning' | 'not-applicable';
+/**
+ * done: the stage ran with nothing to flag. warning: a run problem (stopped
+ * with a checkpoint, Critic verdicts that matched no scenario, an unbalanced
+ * funnel; and for the middle stages, a reject/rework, an incomplete or gate-
+ * broken scenario, a flake). attention: the run completed but recorded
+ * findings or uncovered rules, product behavior to review, rendered with the
+ * finding token, never the warning token. not-applicable: the stage did not run.
+ */
+export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable';
 
 /**
  * The six-stage view, every value a field of run-report.json (or the index
@@ -326,7 +334,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
       reconciliation: report.reconciliation ?? null,
       rule_coverage: report.ruleCoverage ?? null,
       unmatched_verdicts,
-      stages: buildStages(report, artifacts, Number(run.cost_total) || 0),
+      stages: buildStages(report, artifacts, Number(run.cost_total) || 0, unmatched_verdicts.length),
       artifacts,
       ...eventsFor(runDir),
     },
@@ -337,7 +345,7 @@ const usd = (v: number | undefined | null): number => (typeof v === 'number' && 
 const plural = (n: number, one: string, many = one + 's'): string => `${n} ${n === 1 ? one : many}`;
 
 /** The six stages, read off the report. See RunDetailStages. */
-export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], totalUsd: number): RunDetailStages {
+export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], totalUsd: number, unmatchedVerdicts = 0): RunDetailStages {
   const plan = report.plan ?? [];
   const shipped = report.scenarios ?? [];
   const cost = report.cost ?? ({ usd: 0 } as RunReport['cost']);
@@ -362,7 +370,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const gateBroken = (report.gate?.broken ?? []).map((b) => ({ scenario: b.scenario, reason: b.reason, attempts: b.attempts }));
   const explore: RunDetailStages['explore'] = {
     status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
-    stat: `${shipped.length} recorded · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(2)}`,
+    stat: `${shipped.length} recorded · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(4)}`,
     steps: report.steps ?? 0, scenarios_recorded: shipped.length,
     explorer_usd: usd(cost.usd), repair_usd: usd(cost.repairUsd),
     gate_injections: (report.gate?.injections ?? []).map((g) => ({ scenario: g.scenario, step_index: g.stepIndex, assertion_type: g.assertionType, detail: g.detail })),
@@ -403,7 +411,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const uncoveredCount = rc ? (rc.uncovered ?? []).length : 0;
   const stabilizer = usd(report.stability?.stabilizerCostUsd);
   const summary: RunDetailStages['summary'] = {
-    status: stopped || (rec && rec.balanced === false) || findingsCount > 0 ? 'warning' : 'done',
+    status: stopped || (rec && rec.balanced === false) || unmatchedVerdicts > 0 ? 'warning' : findingsCount + uncoveredCount > 0 ? 'attention' : 'done',
     stat: `${shipped.length} shipped`,
     shipped: shipped.length, total_usd: totalUsd,
     findings_count: findingsCount, uncovered_count: uncoveredCount, attention: findingsCount + uncoveredCount,

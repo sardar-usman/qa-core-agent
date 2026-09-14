@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/EmptyState';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StageView, formatSize } from '@/components/StageView';
-import { fmtDate, money } from '@/lib/utils';
+import { fmtDate, usd } from '@/lib/utils';
 
 /**
  * Run Detail: one run, from its stored artifacts only. Every value on this
@@ -63,7 +63,7 @@ export function RunDetailPage() {
         <dl className="grid gap-3 sm:grid-cols-4">
           <Fact label="started" value={fmtDate(h.started_at)} title={h.started_at ?? ''} testid="detail-started" />
           <Fact label="ended" value={fmtDate(h.ended_at)} title={h.ended_at ?? ''} testid="detail-ended" />
-          <Fact label="total cost" value={money(h.cost.total, 4)} mono cost testid="detail-cost" sub={`planner ${money(h.cost.planner, 4)} · explorer ${money(h.cost.explorer, 4)} · critic ${money(h.cost.critic, 4)}${h.cost.repair ? ` · repair ${money(h.cost.repair, 4)}` : ''}`} />
+          <Fact label="total cost" value={usd(h.cost.total)} mono cost testid="detail-cost" sub={`planner ${usd(h.cost.planner)} · explorer ${usd(h.cost.explorer)} · critic ${usd(h.cost.critic)}${h.cost.repair ? ` · repair ${usd(h.cost.repair)}` : ''}`} />
           <Fact label="source" value={h.source} testid="detail-source" sub={h.url ?? undefined} />
         </dl>
         {h.stopped_reason ? <div className="rounded-md border border-transparent bg-rework-soft px-3 py-2 text-s text-rework" data-testid="detail-stopped">stopped early: {h.stopped_reason}</div> : null}
@@ -74,7 +74,7 @@ export function RunDetailPage() {
           <div className="rounded-lg border border-line bg-bg-1 px-4 py-3 text-m" data-testid="legacy-notice">pre-v2 record, per-scenario detail not captured</div>
           <dl className="grid gap-3 sm:grid-cols-4">
             <Fact label="scenarios explored" value={String(detail.summary.explored)} testid="legacy-explored" />
-            <Fact label="total cost" value={money(detail.summary.cost_total, 4)} mono cost testid="legacy-cost" />
+            <Fact label="total cost" value={usd(detail.summary.cost_total)} mono cost testid="legacy-cost" />
             <Fact label="duration" value={detail.summary.duration_sec != null ? `${detail.summary.duration_sec}s` : '–'} testid="legacy-duration" />
             <Fact label="model" value={detail.summary.model ?? '–'} mono testid="legacy-model" />
           </dl>

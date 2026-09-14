@@ -2,7 +2,7 @@ import { Download } from 'lucide-react';
 import { api, type RunDetailFinding, type RunDetailStages, type StageKey, type StageStatus } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { money } from '@/lib/utils';
+import { usd } from '@/lib/utils';
 
 /**
  * The six-stage run view (dashboard v2 plan, PR B, deferred part), ported
@@ -21,8 +21,9 @@ const STAGES: Array<{ key: StageKey; num: number; name: string; sub: string }> =
   { key: 'summary', num: 6, name: 'Summary', sub: 'what shipped, what it cost' },
 ];
 
-const STATUS_LABEL: Record<StageStatus, string> = { done: 'done', warning: 'warning', 'not-applicable': 'not run' };
-const STATUS_CLASS: Record<StageStatus, string> = { done: 'text-pass', warning: 'text-rework', 'not-applicable': 'text-fg-2' };
+const STATUS_LABEL: Record<StageStatus, string> = { done: 'done', warning: 'warning', attention: 'to review', 'not-applicable': 'not run' };
+// attention is product behavior to review: the finding token, never the warning token.
+const STATUS_CLASS: Record<StageStatus, string> = { done: 'text-pass', warning: 'text-rework', attention: 'text-finding', 'not-applicable': 'text-fg-2' };
 const VERDICT_VARIANT = { pass: 'pass', rework: 'rework', reject: 'reject' } as const;
 const CATEGORY_VARIANT: Record<string, 'pass' | 'reject' | 'rework' | 'neutral'> = { happy: 'pass', negative: 'reject', edge: 'rework' };
 
@@ -132,7 +133,7 @@ function Plan({ p }: { p: RunDetailStages['plan'] }) {
     <>
       <KV>
         <K label="scenarios" value={p.scenarios.length} testid="plan-count" />
-        <K label="planner" value={money(p.planner_usd, 4)} cost testid="plan-cost" />
+        <K label="planner" value={usd(p.planner_usd)} cost testid="plan-cost" />
       </KV>
       {multiPage ? (
         <>
@@ -162,8 +163,8 @@ function Explore({ e }: { e: RunDetailStages['explore'] }) {
       <KV>
         <K label="steps" value={e.steps} testid="explore-steps" />
         <K label="scenarios recorded" value={e.scenarios_recorded} testid="explore-recorded" />
-        <K label="explorer" value={money(e.explorer_usd, 4)} cost testid="explore-cost" />
-        {e.repair_usd ? <K label="of which repair pass" value={money(e.repair_usd, 4)} cost /> : null}
+        <K label="explorer" value={usd(e.explorer_usd)} cost testid="explore-cost" />
+        {e.repair_usd ? <K label="of which repair pass" value={usd(e.repair_usd)} cost /> : null}
         {e.heals.length ? <K label="recovered selectors" value={e.heals.length} testid="explore-heals-count" /> : null}
       </KV>
       <div className="mt-1 text-s text-fg-2">The step budget and the explorer sub-ceiling are console settings, not recorded in run-report.json; steps and cost above are the report's own.</div>
@@ -213,10 +214,10 @@ function Review({ r, unmatched }: { r: RunDetailStages['review']; unmatched: Unm
         <span className="text-pass">pass <b data-testid="review-pass">{r.counts.pass}</b></span>
         <span className="text-rework">rework <b data-testid="review-rework">{r.counts.rework}</b></span>
         <span className="text-reject">reject <b data-testid="review-reject">{r.counts.reject}</b></span>
-        <K label="critic" value={money(r.critic_usd, 4)} cost testid="review-cost" />
+        <K label="critic" value={usd(r.critic_usd)} cost testid="review-cost" />
       </KV>
       {r.repair ? (
-        <div className="mt-2 rounded-md bg-accent-soft px-3 py-2 text-s text-fg" data-testid="repair-banner"><b>repair pass</b> {r.repair.count} scenario{r.repair.count === 1 ? '' : 's'} re-explored · spent <span className="mono text-cost">{money(r.repair.spent_usd, 4)}</span> <span className="text-fg-2">(the repair budget is a console setting, not recorded in run-report.json)</span></div>
+        <div className="mt-2 rounded-md bg-accent-soft px-3 py-2 text-s text-fg" data-testid="repair-banner"><b>repair pass</b> {r.repair.count} scenario{r.repair.count === 1 ? '' : 's'} re-explored · spent <span className="mono text-cost">{usd(r.repair.spent_usd)}</span> <span className="text-fg-2">(the repair budget is a console setting, not recorded in run-report.json)</span></div>
       ) : (
         <div className="mt-2 text-s text-fg-2" data-testid="repair-banner">{r.counts.rework + r.counts.reject === 0 ? 'Nothing gated: every scenario passed review, so no repair pass was needed.' : 'No repair pass recorded.'}</div>
       )}
@@ -294,7 +295,7 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
           </ul>
           <KV>
             <K label="stabilizer attempts" value={(v.stability.recovered ?? 0) + v.stability.verdicts.filter((x) => x.gave_up).length ? `${v.stability.recovered ?? 0} recovered, ${v.stability.verdicts.filter((x) => x.gave_up).length} gave up` : 'none recorded'} testid="stabilizer-attempts" />
-            <K label="stabilizer cost" value={money(v.stability.stabilizer_cost_usd ?? 0, 4)} cost testid="stabilizer-cost" />
+            <K label="stabilizer cost" value={usd(v.stability.stabilizer_cost_usd ?? 0)} cost testid="stabilizer-cost" />
           </KV>
         </>
       ) : <Empty>Stability did not run on this run.</Empty>}
@@ -325,7 +326,7 @@ function Summary({ sm, findings }: { sm: RunDetailStages['summary']; findings: R
     <>
       <div className="grid gap-3 sm:grid-cols-3" data-testid="hero">
         <Hero n={String(sm.shipped)} label="tests shipped" testid="hero-shipped" />
-        <Hero n={money(sm.total_usd, 2)} label="total cost" cost testid="hero-cost" />
+        <Hero n={usd(sm.total_usd)} label="total cost" cost testid="hero-cost" />
         <Hero n={String(sm.attention)} label={`need${sm.attention === 1 ? 's' : ''} attention`} sub={`${sm.findings_count} finding${sm.findings_count === 1 ? '' : 's'} · ${sm.uncovered_count} uncovered rule${sm.uncovered_count === 1 ? '' : 's'}`} attention={sm.attention > 0} testid="hero-attention" />
       </div>
       {sm.stopped ? <div className="mt-3 rounded-md bg-rework-soft px-3 py-2 text-s text-rework"><b>stopped early</b> {sm.stopped.reason}</div> : null}
@@ -352,12 +353,12 @@ function Summary({ sm, findings }: { sm: RunDetailStages['summary']; findings: R
 
       <SubLabel>Cost split</SubLabel>
       <div data-testid="cost-split">
-        <div className="text-s text-fg-2"><span className="mono text-cost" data-testid="cost-total">{money(cs.total, 4)}</span> total</div>
+        <div className="text-s text-fg-2"><span className="mono text-cost" data-testid="cost-total">{usd(cs.total)}</span> total</div>
         <div className="mt-1 flex h-2 overflow-hidden rounded-sm bg-bg-3">
-          {parts.filter((p) => p.usd > 0 && cs.total > 0).map((p) => <i key={p.key} className={`block h-2 bg-cost ${p.opacity}`} style={{ width: `${((p.usd / cs.total) * 100).toFixed(2)}%` }} title={`${p.key} ${money(p.usd, 4)}`} />)}
+          {parts.filter((p) => p.usd > 0 && cs.total > 0).map((p) => <i key={p.key} className={`block h-2 bg-cost ${p.opacity}`} style={{ width: `${((p.usd / cs.total) * 100).toFixed(2)}%` }} title={`${p.key} ${usd(p.usd)}`} />)}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-s text-fg-2">
-          {parts.map((p) => <span key={p.key} data-testid="cost-part" data-part={p.key} data-usd={p.usd}>{p.key} <span className="mono text-cost">{money(p.usd, 4)}</span></span>)}
+          {parts.map((p) => <span key={p.key} data-testid="cost-part" data-part={p.key} data-usd={p.usd}>{p.key} <span className="mono text-cost">{usd(p.usd)}</span></span>)}
         </div>
       </div>
 

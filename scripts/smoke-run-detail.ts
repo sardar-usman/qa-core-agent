@@ -120,7 +120,8 @@ fs.writeFileSync(path.join(quietDir, 'run-report.json'), JSON.stringify({ ...rep
 const emptyId = newRunId(new Date('2026-09-11T10:00:00Z'), 'empty0');
 const emptyDir = path.join(output, 'saucedemo-com', emptyId);
 fs.mkdirSync(emptyDir, { recursive: true });
-fs.writeFileSync(path.join(emptyDir, 'run-report.json'), JSON.stringify({ ...report, startedAt: '2026-09-11T10:00:00.000Z', finishedAt: '2026-09-11T10:02:00.000Z' }));
+// Same run without the unmatched verdict: findings and an uncovered rule remain, so Summary is 'attention', not 'warning'.
+fs.writeFileSync(path.join(emptyDir, 'run-report.json'), JSON.stringify({ ...report, review: { ...report.review, verdicts: report.review.verdicts.filter((v) => !/checkout/.test(v.scenario)) }, startedAt: '2026-09-11T10:00:00.000Z', finishedAt: '2026-09-11T10:02:00.000Z' }));
 fs.writeFileSync(path.join(emptyDir, 'events.jsonl'), '');
 // A run whose report vanishes after indexing.
 const goneId = newRunId(new Date('2026-09-12T10:00:00Z'), 'gone');
@@ -163,12 +164,13 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SA. every rail stat equals the report field it reads',
     st.discovery.stat === `${report.discovery.pages.length} pages found`
     && st.plan.stat === `${report.plan.length} planned`
-    && st.explore.stat === `${report.scenarios.length} recorded · ${report.steps} steps · $${report.cost.usd.toFixed(2)}`
+    && st.explore.stat === `${report.scenarios.length} recorded · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
     && st.review.stat === `${vc.pass} pass / ${vc.rework} rework / ${vc.reject} reject`
     && st.verify.stat === `${report.stability.passed} stable / ${report.stability.flaked} flaky`
     && st.summary.stat === `${report.scenarios.length} shipped`,
     JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, v.stat]))));
-  check('SB. rail statuses follow the report: discovery warning (robots warning), plan done, explore done, review warning (a reject), verify done, summary warning (a finding)',
+  check('SA2. the rail Explore stat carries the 4-decimal explorer cost and no 2-decimal truncation of it', /\$\d+\.\d{4}(?!\d)/.test(st.explore.stat) && !/\$\d+\.\d{2}(?!\d)/.test(st.explore.stat), st.explore.stat);
+  check('SB. rail statuses follow the report: discovery warning (robots warning), plan done, explore done, review warning (a reject), verify done, summary warning (an unmatched verdict is a run problem)',
     st.discovery.status === 'warning' && st.plan.status === 'done' && st.explore.status === 'done' && st.review.status === 'warning' && st.verify.status === 'done' && st.summary.status === 'warning',
     JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, v.status]))));
   const f = st.summary.funnel!;
@@ -185,9 +187,10 @@ if (d.status === 200 && d.body.legacy === false) {
 const quiet = buildRunDetail(db, root, quietId);
 check('M. a run without findings returns an empty findings array (the page still renders the section)', quiet.status === 200 && quiet.body.legacy === false && quiet.body.findings.length === 0);
 check('M2. no events.jsonl: events null, events_status absent', quiet.status === 200 && quiet.body.events === null && quiet.body.events_status === 'absent');
-check('SK. a report without a discovery block: discovery stage not-applicable, stat "single page", and nothing else changes', quiet.status === 200 && quiet.body.legacy === false && quiet.body.stages.discovery.status === 'not-applicable' && quiet.body.stages.discovery.stat === 'single page' && quiet.body.stages.discovery.pages.length === 0 && quiet.body.stages.summary.status === 'done', quiet.status === 200 && quiet.body.legacy === false ? JSON.stringify(quiet.body.stages.discovery) : '');
+check('SK. a report without a discovery block: discovery stage not-applicable, stat "single page"; its one uncovered rule alone makes Summary attention', quiet.status === 200 && quiet.body.legacy === false && quiet.body.stages.discovery.status === 'not-applicable' && quiet.body.stages.discovery.stat === 'single page' && quiet.body.stages.discovery.pages.length === 0 && quiet.body.stages.summary.status === 'attention' && quiet.body.stages.summary.findings_count === 0 && quiet.body.stages.summary.uncovered_count === 1, quiet.status === 200 && quiet.body.legacy === false ? JSON.stringify(quiet.body.stages.discovery) : '');
 const emptyRun = buildRunDetail(db, root, emptyId);
 check('M3. an empty events.jsonl: events [], events_status empty', emptyRun.status === 200 && Array.isArray(emptyRun.body.events) && emptyRun.body.events.length === 0 && emptyRun.body.events_status === 'empty', JSON.stringify(emptyRun.status === 200 ? { e: emptyRun.body.events, s: emptyRun.body.events_status } : emptyRun.body));
+check('SB2. a completed run with 1 finding and 1 uncovered rule and no unmatched verdicts: Summary status attention (product behavior to review), not warning', emptyRun.status === 200 && emptyRun.body.legacy === false && emptyRun.body.unmatched_verdicts.length === 0 && emptyRun.body.stages.summary.status === 'attention' && emptyRun.body.stages.summary.attention === 2, emptyRun.status === 200 && emptyRun.body.legacy === false ? emptyRun.body.stages.summary.status : '');
 const missing = buildRunDetail(db, root, 'does-not-exist');
 check('N. an unknown run id is a 404 whose message names the path looked for', missing.status === 404 && /does-not-exist/.test(missing.body.error) && /output\/\*\/does-not-exist\/run-report\.json/.test(missing.body.error), JSON.stringify(missing.body));
 const gone = buildRunDetail(db, root, goneId);
@@ -323,7 +326,7 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SN. page: funnel rows are the reconciliation counts, zero rows collapse into one line, balanced shown', JSON.stringify(rendered.funnelRows) === JSON.stringify([{ key: 'planned', n: f.planned }, { key: 'generated', n: f.generated }, { key: 'dropped', n: f.dropped }, { key: 'findings', n: f.findings }, { key: 'skipped', n: f.skipped }]) && rendered.funnelZero === 'incomplete 0' && rendered.funnelBalanced === 'balanced', JSON.stringify({ rows: rendered.funnelRows, zero: rendered.funnelZero, bal: rendered.funnelBalanced }));
   const partSum = rendered.costParts.reduce((a, c) => a + c.usd, 0);
   check('SO. page: the cost split shows planner / explorer / critic / repair / stabilizer and they sum to the displayed total', rendered.costParts.map((c) => c.part).join(',') === 'planner,explorer,critic,repair,stabilizer' && Math.abs(partSum - st.summary.cost_split.total) < 1e-9 && rendered.costTotal === `$${st.summary.cost_split.total.toFixed(4)}`, JSON.stringify({ parts: rendered.costParts, total: rendered.costTotal }));
-  check('SP. page: the three summary numbers lead (tests shipped, total cost, findings plus uncovered rules)', rendered.hero.shipped === '2' && rendered.hero.cost === '$1.42' && rendered.hero.attention === '2' && rendered.hero.sub === '1 finding · 1 uncovered rule', JSON.stringify(rendered.hero));
+  check('SP. page: the three summary numbers lead (tests shipped, total cost at 4 decimals, findings plus uncovered rules)', rendered.hero.shipped === '2' && rendered.hero.cost === '$1.4154' && rendered.hero.attention === '2' && rendered.hero.sub === '1 finding · 1 uncovered rule', JSON.stringify(rendered.hero));
   check('SQ. page: discovery panel shows the rung, both pages and the robots warning', rendered.discovery.method === 'sitemap' && rendered.discovery.pages === 2 && rendered.discovery.warnings === true, JSON.stringify(rendered.discovery));
   check('SR. page: plan panel lists every scenario with its rule-id tag', rendered.plan.count === '5' && rendered.plan.scenarios === 5 && JSON.stringify(rendered.plan.ruleTags) === JSON.stringify(['R1']), JSON.stringify(rendered.plan));
   check('SS. page: explore panel shows steps, the gate injection, the skip with its reason and the selector recovery', rendered.explore.steps === '31' && rendered.explore.injections === '1' && /opens an external site, out of scope/.test(rendered.explore.skipped) && rendered.explore.heals === 1, JSON.stringify(rendered.explore));
@@ -366,6 +369,8 @@ check('AD2. page: a run with no events.jsonl says so ("No events log; this run p
 await page.goto(`http://127.0.0.1:${PORT}/runs/${emptyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="events-section"]');
 check('AD3. page: an empty events.jsonl says "No events recorded"', /No events recorded/.test((await page.textContent('[data-testid="events-section"]')) ?? '') && (await page.$$('[data-testid="event-row"]')).length === 0, (await page.textContent('[data-testid="events-section"]')) ?? '');
+const attentionRail = await page.evaluate(() => { const item = document.querySelector('[data-testid="rail-item"][data-stage="summary"]'); const status = item?.querySelector('[data-testid="rail-status"]'); return { status: item?.getAttribute('data-status'), cls: status?.className ?? '', text: status?.textContent, color: status ? getComputedStyle(status).color : '', findingColor: getComputedStyle(document.documentElement).getPropertyValue('--finding').trim(), reworkColor: getComputedStyle(document.documentElement).getPropertyValue('--rework').trim() }; });
+check('SB3. page: the attention rail item carries the finding colour class, not the warning class', attentionRail.status === 'attention' && /text-finding/.test(attentionRail.cls) && !/text-rework/.test(attentionRail.cls) && attentionRail.text === 'to review', JSON.stringify(attentionRail));
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-detail"][data-legacy="true"]');
