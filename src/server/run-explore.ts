@@ -33,6 +33,15 @@ export interface RunExploreInput {
   model?: string;
   /** Which surface started the run; written to run-meta.json next to the report. */
   source?: 'dashboard' | 'mcp' | 'telegram' | 'cli';
+  /**
+   * An SRS document uploaded with the request (the dashboard's Attach SRS and
+   * the Terminal page). Saved into the run directory under its original name
+   * and passed to the run as --srs <that path>. Ignored on a resume (the
+   * checkpoint carries the requirements map) and when --srs names a file.
+   */
+  srsUpload?: SrsUpload;
+  /** Called once the run directory is known, before the browser launches: the run id the dashboard navigates to. */
+  onPrepared?: (p: { runId: string; outDir: string; url: string; resume: boolean }) => void;
   onEvent?: (e: AgentEvent) => void;
   /** Human-readable progress lines (what the CLI would print). */
   onNote?: (text: string) => void;
@@ -43,6 +52,50 @@ export interface RunExploreInput {
    * model. Production callers leave it unset.
    */
   exploreImpl?: typeof explore;
+}
+
+export interface SrsUpload { name: string; base64: string }
+
+/** The SRS document types every surface accepts. */
+export const SRS_EXTENSIONS = ['.md', '.txt', '.pdf', '.docx'] as const;
+/** Upload size cap for an SRS document. */
+export const SRS_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Reject an SRS upload by name or size. Returns the user-facing message, or
+ * null when the file is acceptable. The same rule runs client-side in the
+ * Terminal page and here on the server, so a bad file never reaches a run.
+ */
+export function validateSrsUpload(name: string, sizeBytes: number): string | null {
+  const ext = path.extname(path.basename(name)).toLowerCase();
+  if (!(SRS_EXTENSIONS as readonly string[]).includes(ext)) {
+    return `Unsupported SRS type "${ext || 'none'}" for ${path.basename(name) || 'the upload'}. Allowed: ${SRS_EXTENSIONS.join(', ')}.`;
+  }
+  if (sizeBytes > SRS_MAX_BYTES) {
+    return `The SRS ${path.basename(name)} is ${(sizeBytes / 1024 / 1024).toFixed(1)} MB; the cap is 2 MB.`;
+  }
+  return null;
+}
+
+/** A safe file name for the upload: its original basename, unsafe characters replaced. */
+export function srsFileName(name: string): string {
+  const base = path.basename(name).replace(/[^a-z0-9._ -]+/gi, '-').replace(/^\.+/, '').slice(0, 120);
+  return base || 'srs.txt';
+}
+
+/**
+ * Write an uploaded SRS into the run directory under its original name.
+ * Validates first (extension, size) and throws the same message the client
+ * shows. Returns the absolute path of the written file.
+ */
+export function saveSrsUpload(outDir: string, upload: SrsUpload): string {
+  const bytes = Buffer.from(upload.base64 ?? '', 'base64');
+  const err = validateSrsUpload(upload.name, bytes.length);
+  if (err) throw new Error(err);
+  fs.mkdirSync(outDir, { recursive: true });
+  const file = path.join(outDir, srsFileName(upload.name));
+  fs.writeFileSync(file, bytes);
+  return file;
 }
 
 export interface FrameworkZip {
@@ -110,6 +163,8 @@ export interface PreparedRun {
   outDir: string;
   requirements?: RequirementsMap;
   resume?: Checkpoint;
+  /** Absolute path of the uploaded SRS saved in the run directory, when one was attached. */
+  srsFile?: string;
   notes: string[];
 }
 
@@ -118,8 +173,13 @@ export interface PreparedRun {
  * checkpoint load + conflict check + reachability, SRS ingestion. Throws with
  * a user-facing message on any failure, so nothing is billed for a bad ask.
  */
-export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' | 'onNote' | 'model'>): Promise<PreparedRun> {
+export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' | 'onNote' | 'model' | 'onPrepared'>): Promise<PreparedRun> {
   let req = input.request;
+  // Reject a bad upload before anything else is decided or billed.
+  if (input.srsUpload) {
+    const err = validateSrsUpload(input.srsUpload.name, Buffer.byteLength(input.srsUpload.base64 ?? '', 'base64'));
+    if (err) throw new Error(err);
+  }
   const root = input.projectRoot;
   const notes: string[] = [];
   const base = path.join(root, 'output');
@@ -166,6 +226,19 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
   notes.push(`  language: ${req.lang}`);
   notes.push(`  output:   ${rel(root, outDir)}`);
 
+  // An uploaded SRS lands in the run directory under its original name and
+  // becomes --srs <that path>, so Run Detail lists it as an artifact.
+  let srsFile: string | undefined;
+  if (input.srsUpload) {
+    if (resumeCp) notes.push('Note: the uploaded SRS is ignored on a resume; the checkpoint carries the requirements map.');
+    else if (req.srs) notes.push(`Note: --srs ${req.srs} was given, so the uploaded SRS is ignored.`);
+    else {
+      srsFile = saveSrsUpload(outDir, input.srsUpload);
+      req = { ...req, srs: rel(root, srsFile) };
+      notes.push(`Note: using the uploaded SRS ${path.basename(srsFile)} (saved as ${rel(root, srsFile)}).`);
+    }
+  }
+
   let requirements: RequirementsMap | undefined;
   if (resumeCp?.requirementsMap) {
     requirements = resumeCp.requirementsMap;
@@ -187,7 +260,7 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     if (req.features.length > 0) notes.push('  (--features wins for feature selection; the SRS rules still steer the Planner)');
   }
 
-  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(resumeCp ? { resume: resumeCp } : {}), notes };
+  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes };
 }
 
 /** Prepare, run, emit. */
@@ -196,8 +269,9 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
   const note = input.onNote ?? (() => {});
   return withEnvOverrides(input.request.env, async () => {
     const prepared = await prepareExploreRun(input);
-    for (const n of prepared.notes) note(n);
     const { request: req, url, outDir } = prepared;
+    input.onPrepared?.({ runId: path.basename(outDir), outDir, url, resume: !!prepared.resume });
+    for (const n of prepared.notes) note(n);
 
     const exploreFn = input.exploreImpl ?? explore;
     const result = await exploreFn({
@@ -253,12 +327,17 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       // a complete run, held aside and restored on a stopped one.
       const heldCheckpoint = report.stopped && fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8') : undefined;
       deleteCheckpoint(outDir);
+      // An uploaded SRS is a run artifact, not framework content: held out of
+      // the zip and restored after slimming.
+      const heldSrs = prepared.srsFile && fs.existsSync(prepared.srsFile) ? fs.readFileSync(prepared.srsFile) : undefined;
+      if (heldSrs !== undefined) fs.rmSync(prepared.srsFile!, { force: true });
       // The zip lives inside the run directory: zip, slim, then write it.
       const zipBuf = zipFrameworkToBuffer(outDir);
       const filename = `${req.name ? `${req.name}-automation-framework` : frameworkDirName(url)}.zip`;
       slimFrameworkDir(outDir);
       fs.writeFileSync(path.join(outDir, filename), zipBuf);
       if (heldCheckpoint !== undefined) fs.writeFileSync(cpFile, heldCheckpoint);
+      if (heldSrs !== undefined) fs.writeFileSync(prepared.srsFile!, heldSrs);
       // The zip carries the redacted report; the working copy keeps raw values.
       try { fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(report, null, 2)); } catch { /* best effort */ }
       writeRunMeta(outDir, { source: input.source ?? 'dashboard', flags: runFlags(req) });
