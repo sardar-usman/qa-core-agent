@@ -58,6 +58,72 @@ export interface RunDetailArtifact {
   href: string;
 }
 
+export type StageStatus = 'done' | 'warning' | 'not-applicable';
+
+/**
+ * The six-stage view, every value a field of run-report.json (or the index
+ * row built from it). Statuses and one-line stats are derived here, on the
+ * server, from named report fields so the page renders and never computes.
+ * The one arithmetic step is the subtraction invariant 47 allows:
+ * explorer = cost.usd minus cost.repairUsd (repair is included in usd).
+ */
+export interface RunDetailStages {
+  discovery: {
+    status: StageStatus; stat: string;
+    method: string | null;
+    pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
+    warnings: string[];
+  };
+  plan: {
+    status: StageStatus; stat: string;
+    planner_usd: number;
+    scenarios: Array<{ name: string; feature: string | null; category: string | null; rule_ids: string[]; page_url: string | null }>;
+    /** Scenario count per planned page (from plan[].pageUrl); one entry with url null on a single-page plan. */
+    pages: Array<{ url: string | null; count: number }>;
+  };
+  explore: {
+    status: StageStatus; stat: string;
+    steps: number; scenarios_recorded: number;
+    /** cost.usd: the Explorer loop including the repair pass. */
+    explorer_usd: number; repair_usd: number;
+    gate_injections: Array<{ scenario: string; step_index: number; assertion_type: string; detail: string }>;
+    gate_broken: Array<{ scenario: string; reason: string; attempts: number }>;
+    skipped: Array<{ scenario: string; reason: string }>;
+    incomplete: Array<{ scenario: string; reason: string }>;
+    heals: Array<{ scenario: string | null; intent: string; from: string; to: string }>;
+    stopped: { kind: string; reason: string } | null;
+  };
+  review: {
+    status: StageStatus; stat: string;
+    ran: boolean;
+    counts: { pass: number; rework: number; reject: number };
+    critic_usd: number;
+    verdicts: Array<{ scenario: string; verdict: 'pass' | 'rework' | 'reject'; reasons: string[]; required_fixes: string[] }>;
+    journeys: Array<{ scenario: string; first: 'rework'; second: string | null; outcome: 'kept' | 'dropped' }>;
+    /** The repair pass as the report recorded it: how many journeys, what it spent. Budget is not on the report. */
+    repair: { count: number; spent_usd: number } | null;
+    summary: string | null;
+  };
+  verify: {
+    status: StageStatus; stat: string;
+    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null }> } | null;
+    stability: {
+      iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null;
+      verdicts: Array<{ name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean }>;
+    } | null;
+  };
+  summary: {
+    status: StageStatus; stat: string;
+    shipped: number; total_usd: number;
+    findings_count: number; uncovered_count: number; attention: number;
+    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; balanced: boolean; added: number } | null;
+    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; total: number };
+    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
+    zip: RunDetailArtifact | null;
+    stopped: { kind: string; reason: string } | null;
+  };
+}
+
 export interface RunDetailBody {
   legacy: false;
   run: Record<string, unknown>;
@@ -70,8 +136,10 @@ export interface RunDetailBody {
   scenarios: RunDetailScenario[];
   /** Stored counts, copied from the index row (which copied them from the report). */
   counts: { planned: number; shipped: number | null; generated: number; dropped: number; incomplete: number; findings: number; skipped: number; stable: number; flaky: number; broken: number };
-  findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[] }>;
+  /** A Critic verdict whose name matched the finding is attached here, never discarded. */
+  findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[]; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }>;
   replay: RunReport['replay'] | null;
+  stages: RunDetailStages;
   stability: { iterations: number; passed: number; flaked: number; flakeRate: number; recovered: number | null; stabilizerCostUsd: number | null } | null;
   review_summary: string | null;
   reconciliation: RunReport['reconciliation'] | null;
@@ -224,13 +292,21 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   const assigned = assignVerdicts(names, verdicts);
   const claimed = new Set<ScenarioVerdict>();
   for (const [name, v] of assigned) { const r = rows.get(name)!; r.verdict = v.verdict; r.reasons = v.reasons; r.required_fixes = v.required_fixes; claimed.add(v); }
-  const unmatched_verdicts = verdicts.filter((v) => !claimed.has(v) && ![...findingNames].some((f) => verdictMatchesScenario(v.scenario, f))).map((v) => ({ scenario: v.scenario, verdict: v.verdict, reasons: v.reasons }));
+  // A verdict whose name matches a finding is attached to that finding (Task 2 of PR B2): nothing is discarded.
+  const findingVerdict = new Map<string, ScenarioVerdict>();
+  for (const v of verdicts) {
+    if (claimed.has(v)) continue;
+    const f = findings.find((x) => !findingVerdict.has(x.scenario) && verdictMatchesScenario(v.scenario, x.scenario));
+    if (f) { findingVerdict.set(f.scenario, v); claimed.add(v); }
+  }
+  const unmatched_verdicts = verdicts.filter((v) => !claimed.has(v)).map((v) => ({ scenario: v.scenario, verdict: v.verdict, reasons: v.reasons }));
   const journeys = (report.review?.repair ?? []).map((j) => ({ scenario: j.scenario, verdict: 'rework' as const, reasons: [], required_fixes: [], journey: j }));
   for (const [name, j] of assignVerdicts(names, journeys)) { const r = rows.get(name)!; const jj = (j as typeof journeys[number]).journey; r.repair = jj.outcome === 'kept' ? 'repaired' : 'failed'; r.repair_second = jj.second ?? 'not re-recorded'; }
   const planOrder = new Map((report.plan ?? []).map((p, i) => [p.name, i]));
   const scenarios = [...rows.values()].sort((a, b) => (planOrder.get(a.name) ?? 1e9) - (planOrder.get(b.name) ?? 1e9) || a.name.localeCompare(b.name));
 
   const stab = report.stability && !report.stability.skipped ? report.stability : null;
+  const artifacts = listArtifacts(runDir, id);
   return {
     status: 200,
     body: {
@@ -243,17 +319,102 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
         dropped: Number(run.dropped) || 0, incomplete: Number(run.incomplete) || 0, findings: Number(run.findings) || 0, skipped: Number(run.skipped) || 0,
         stable: Number(run.stable) || 0, flaky: Number(run.flaky) || 0, broken: Number(run.broken) || 0,
       },
-      findings: findings.map((f) => ({ scenario: f.scenario, category: f.category ?? null, expected: f.expected, url: f.url, messages: f.messages ?? [] })),
+      findings: findings.map((f) => { const v = findingVerdict.get(f.scenario); return { scenario: f.scenario, category: f.category ?? null, expected: f.expected, url: f.url, messages: f.messages ?? [], verdict: v ? { verdict: v.verdict, reasons: v.reasons } : null }; }),
       replay: report.replay && !report.replay.skipped ? report.replay : null,
       stability: stab ? { iterations: stab.iterations, passed: stab.passed, flaked: stab.flaked, flakeRate: stab.flakeRate, recovered: stab.recovered ?? null, stabilizerCostUsd: stab.stabilizerCostUsd ?? null } : null,
       review_summary: report.review?.summary ?? null,
       reconciliation: report.reconciliation ?? null,
       rule_coverage: report.ruleCoverage ?? null,
       unmatched_verdicts,
-      artifacts: listArtifacts(runDir, id),
+      stages: buildStages(report, artifacts, Number(run.cost_total) || 0),
+      artifacts,
       ...eventsFor(runDir),
     },
   };
+}
+
+const usd = (v: number | undefined | null): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+const plural = (n: number, one: string, many = one + 's'): string => `${n} ${n === 1 ? one : many}`;
+
+/** The six stages, read off the report. See RunDetailStages. */
+export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], totalUsd: number): RunDetailStages {
+  const plan = report.plan ?? [];
+  const shipped = report.scenarios ?? [];
+  const cost = report.cost ?? ({ usd: 0 } as RunReport['cost']);
+  const stopped = report.stopped ? { kind: report.stopped.kind, reason: report.stopped.reason } : null;
+
+  const disc = report.discovery;
+  const discovery: RunDetailStages['discovery'] = disc
+    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), warnings: disc.warnings ?? [] }
+    : { status: 'not-applicable', stat: 'single page', method: null, pages: [], warnings: [] };
+
+  const pageCounts = new Map<string | null, number>();
+  for (const p of plan) pageCounts.set(p.pageUrl ?? null, (pageCounts.get(p.pageUrl ?? null) ?? 0) + 1);
+  const planStage: RunDetailStages['plan'] = {
+    status: plan.length ? 'done' : 'warning', stat: plan.length ? `${plan.length} planned` : 'no plan',
+    planner_usd: usd(cost.plannerUsd),
+    scenarios: plan.map((p) => ({ name: p.name, feature: p.feature ?? null, category: p.category ?? null, rule_ids: p.ruleIds ?? [], page_url: p.pageUrl ?? null })),
+    pages: [...pageCounts.entries()].map(([url, count]) => ({ url, count })),
+  };
+
+  const incomplete = (report.incomplete ?? []).map((i) => ({ scenario: i.scenario, reason: i.reason }));
+  const skipped = (report.skipped ?? []).map((s) => ({ scenario: s.scenario, reason: s.reason }));
+  const gateBroken = (report.gate?.broken ?? []).map((b) => ({ scenario: b.scenario, reason: b.reason, attempts: b.attempts }));
+  const explore: RunDetailStages['explore'] = {
+    status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
+    stat: `${shipped.length} recorded · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(2)}`,
+    steps: report.steps ?? 0, scenarios_recorded: shipped.length,
+    explorer_usd: usd(cost.usd), repair_usd: usd(cost.repairUsd),
+    gate_injections: (report.gate?.injections ?? []).map((g) => ({ scenario: g.scenario, step_index: g.stepIndex, assertion_type: g.assertionType, detail: g.detail })),
+    gate_broken: gateBroken, skipped, incomplete,
+    heals: (report.heals ?? []).map((h) => ({ scenario: h.scenario ?? null, intent: h.intent, from: h.from, to: h.to })),
+    stopped,
+  };
+
+  const review = report.review;
+  const verdicts = (review?.verdicts ?? []).map((v) => ({ scenario: v.scenario, verdict: v.verdict, reasons: v.reasons ?? [], required_fixes: v.required_fixes ?? [] }));
+  const counts = { pass: verdicts.filter((v) => v.verdict === 'pass').length, rework: verdicts.filter((v) => v.verdict === 'rework').length, reject: verdicts.filter((v) => v.verdict === 'reject').length };
+  const journeys = (review?.repair ?? []).map((j) => ({ scenario: j.scenario, first: j.first, second: j.second ?? null, outcome: j.outcome }));
+  const reviewStage: RunDetailStages['review'] = {
+    status: !review ? 'not-applicable' : counts.rework + counts.reject > 0 ? 'warning' : 'done',
+    stat: review ? `${counts.pass} pass / ${counts.rework} rework / ${counts.reject} reject` : 'critic skipped',
+    ran: !!review, counts, critic_usd: usd(cost.criticUsd), verdicts, journeys,
+    repair: journeys.length ? { count: journeys.length, spent_usd: usd(cost.repairUsd) } : null,
+    summary: review?.summary ?? null,
+  };
+
+  const rep = report.replay && !report.replay.skipped ? report.replay : null;
+  const stab = report.stability && !report.stability.skipped ? report.stability : null;
+  const verify: RunDetailStages['verify'] = {
+    status: !rep && !stab ? 'not-applicable' : (rep?.failed ?? 0) > 0 || (stab?.flaked ?? 0) > 0 ? 'warning' : 'done',
+    stat: stab ? `${stab.passed} stable / ${stab.flaked} flaky` : rep ? `${rep.passed} passed replay / ${rep.failed} dropped` : 'replay skipped',
+    replay: rep ? { passed: rep.passed, failed: rep.failed, duration_ms: rep.durationMs, verdicts: rep.verdicts.map((v) => ({ name: v.name, passed: v.passed, failed_step: v.failedStep ?? null, step_kind: v.stepKind ?? null, error: v.error ?? null })) } : null,
+    stability: stab ? {
+      iterations: stab.iterations, passed: stab.passed, flaked: stab.flaked, flaky: stab.flaky ?? null, broken: stab.broken ?? null, recovered: stab.recovered ?? null, flake_rate: stab.flakeRate, stabilizer_cost_usd: stab.stabilizerCostUsd ?? null,
+      verdicts: stab.verdicts.map((v) => ({ name: v.name, iterations: v.iterations, passes: v.passes, pattern: v.pattern ?? null, classification: v.classification ?? (v.stable ? 'stable' : null), recovered: v.relaxed === true, gave_up: v.gaveUp === true })),
+    } : null,
+  };
+
+  const rec = report.reconciliation;
+  const droppedByStage: Record<string, number> = {};
+  for (const d of rec?.dropped ?? []) droppedByStage[d.stage] = (droppedByStage[d.stage] ?? 0) + 1;
+  const findingsCount = (report.findings ?? []).length;
+  const rc = report.ruleCoverage;
+  const uncoveredCount = rc ? (rc.uncovered ?? []).length : 0;
+  const stabilizer = usd(report.stability?.stabilizerCostUsd);
+  const summary: RunDetailStages['summary'] = {
+    status: stopped || (rec && rec.balanced === false) || findingsCount > 0 ? 'warning' : 'done',
+    stat: `${shipped.length} shipped`,
+    shipped: shipped.length, total_usd: totalUsd,
+    findings_count: findingsCount, uncovered_count: uncoveredCount, attention: findingsCount + uncoveredCount,
+    funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, skipped: (rec.skipped ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
+    cost_split: { planner: usd(cost.plannerUsd), explorer: usd(cost.usd) - usd(cost.repairUsd), critic: usd(cost.criticUsd), repair: usd(cost.repairUsd), stabilizer, total: totalUsd },
+    rule_coverage: rc ? { covered: (rc.covered ?? []).map((c) => ({ rule_id: c.ruleId, scenarios: c.scenarios ?? [] })), uncovered: (rc.uncovered ?? []).map((u) => ({ rule_id: u.ruleId, text: u.text, reason: u.reason })) } : null,
+    zip: artifacts.find((a) => a.kind === 'zip') ?? null,
+    stopped,
+  };
+
+  return { discovery, plan: planStage, explore, review: reviewStage, verify, summary };
 }
 
 /** The stored timeline with its status: no file, an empty file, or events. */
