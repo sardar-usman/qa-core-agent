@@ -84,6 +84,33 @@ export const MIGRATIONS: Migration[] = [
       db.exec('ALTER TABLE projects_v4 RENAME TO projects');
     },
   },
+  {
+    // findings.status becomes the dashboard's triage set (open / triaged /
+    // fixed / wont-fix) and finding_runs records every run a finding was
+    // seen in. Statuses and notes a person set are carried over: the old
+    // values map onto the new set; nothing is reset.
+    version: 5,
+    name: 'finding triage statuses and finding_runs',
+    rebuild: true,
+    up: (db) => {
+      db.exec(`CREATE TABLE findings_v5 (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), project_id TEXT NOT NULL REFERENCES projects(id),
+        scenario TEXT NOT NULL, expected TEXT NOT NULL, observed TEXT, page_url TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'triaged', 'fixed', 'wont-fix')),
+        first_seen_run_id TEXT NOT NULL, last_seen_run_id TEXT NOT NULL, notes TEXT
+      )`);
+      db.exec(`INSERT INTO findings_v5 SELECT id, run_id, project_id, scenario, expected, observed, page_url,
+               CASE status WHEN 'new' THEN 'open' WHEN 'confirmed' THEN 'triaged' WHEN 'not_a_bug' THEN 'wont-fix' WHEN 'fixed' THEN 'fixed' ELSE 'open' END,
+               first_seen_run_id, last_seen_run_id, notes FROM findings`);
+      db.exec('DROP TABLE findings');
+      db.exec('ALTER TABLE findings_v5 RENAME TO findings');
+      db.exec('CREATE INDEX IF NOT EXISTS findings_project_status ON findings(project_id, status)');
+      db.exec(`CREATE TABLE IF NOT EXISTS finding_runs (finding_id TEXT NOT NULL REFERENCES findings(id), run_id TEXT NOT NULL REFERENCES runs(id), PRIMARY KEY (finding_id, run_id))`);
+      // Seed the run references we know about; the next index pass completes them.
+      db.exec('INSERT OR IGNORE INTO finding_runs (finding_id, run_id) SELECT id, first_seen_run_id FROM findings');
+      db.exec('INSERT OR IGNORE INTO finding_runs (finding_id, run_id) SELECT id, last_seen_run_id FROM findings');
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */
