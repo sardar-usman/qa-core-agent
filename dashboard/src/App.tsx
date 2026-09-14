@@ -3,7 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { Header } from '@/components/Header';
 import { ProjectsPage } from '@/pages/Projects';
 import { RunsPage } from '@/pages/Runs';
-import { RunPlaceholderPage } from '@/pages/RunPlaceholder';
+import { RunDetailPage } from '@/pages/RunDetail';
 import { connectGateway, useGateway } from '@/lib/gateway';
 
 export default function App() {
@@ -20,7 +20,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<ProjectsPage refreshKey={refreshKey} />} />
             <Route path="/runs" element={<RunsPage refreshKey={refreshKey} />} />
-            <Route path="/runs/:id" element={<RunPlaceholderPage />} />
+            <Route path="/runs/:id" element={<RunDetailPage />} />
             <Route path="*" element={<ProjectsPage refreshKey={refreshKey} />} />
           </Routes>
         </main>

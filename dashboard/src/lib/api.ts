@@ -18,6 +18,35 @@ export interface RunRow {
   flake_rate: number | null; report_path: string | null; zip_path: string | null; checkpoint_path: string | null; stopped_reason: string | null;
 }
 
+export interface RunDetailScenario {
+  name: string; feature: string | null; category: string | null;
+  verdict: 'pass' | 'rework' | 'reject' | null; reasons: string[]; required_fixes: string[];
+  repair: 'none' | 'repaired' | 'failed'; repair_second: string | null;
+  replay: 'pass' | 'fail' | null; replay_error: string | null;
+  stability: { passes: number; iterations: number; pattern: string | null; classification: string | null; recovered: boolean } | null;
+  shipped: boolean; dropped_at: string | null; dropped_reason: string | null; incomplete_reason: string | null; skipped_reason: string | null;
+}
+export interface RunDetailHeader {
+  run_id: string; project_id: string; project_name: string; host: string | null; url: string | null;
+  started_at: string | null; ended_at: string | null; environment: string | null; status: string; source: string;
+  cost: { total: number; planner: number; explorer: number; critic: number; repair: number; stabilizer: number | null };
+  stopped_reason: string | null;
+}
+export interface RunDetailArtifact { name: string; kind: string; size: number; href: string }
+export interface StoredEvent { t: string; type: string; [k: string]: unknown }
+export type RunDetail =
+  | {
+      legacy: false; run: RunRow; header: RunDetailHeader; scenarios: RunDetailScenario[];
+      counts: { planned: number; shipped: number | null; generated: number; dropped: number; incomplete: number; findings: number; skipped: number; stable: number; flaky: number; broken: number };
+      findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[] }>;
+      review_summary: string | null; artifacts: RunDetailArtifact[]; events: StoredEvent[];
+    }
+  | {
+      legacy: true; run: RunRow; header: RunDetailHeader;
+      summary: { explored: number; cost_total: number; started_at: string | null; ended_at: string | null; model: string | null; duration_sec: number | null };
+      artifacts: RunDetailArtifact[]; events: StoredEvent[];
+    };
+
 let token = '';
 export function setToken(t: string): void { token = t; }
 export function getToken(): string { return token; }
@@ -47,6 +76,9 @@ export const api = {
     return get<{ runs: RunRow[] }>(`/api/runs${p.toString() ? '?' + p : ''}`).then((r) => r.runs);
   },
   run: (id: string) => get<{ run: RunRow }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => r.run),
+  runDetail: (id: string) => get<RunDetail>(`/api/runs/${encodeURIComponent(id)}/detail`),
+  /** Append the in-memory token to a file link (an <a href> cannot carry a header). */
+  withToken: (href: string) => (token ? `${href}${href.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : href),
   report: (id: string) => get<Record<string, unknown>>(`/api/runs/${encodeURIComponent(id)}/report`),
   zipUrl: (id: string) => `/api/runs/${encodeURIComponent(id)}/zip${token ? `?token=${encodeURIComponent(token)}` : ''}`,
   reindex: async () => {
