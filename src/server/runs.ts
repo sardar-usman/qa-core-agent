@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RunReport } from '../agent/trace.js';
 import type { Reconciliation } from '../agent/reconcile.js';
+import { listRunDirs } from '../agent/output-layout.js';
 
 /**
  * Run history from disk: every run-report.json under output/ and
@@ -49,13 +50,15 @@ function rel(root: string, p: string): string {
   return path.relative(root, p).split(path.sep).join('/');
 }
 
-/** Newest first, capped at 50. */
+/** Newest first, capped at 50. Both layouts; symlinks (latest) are never followed. */
 export function listRunsFromDisk(root: string): DiskRun[] {
   const found: DiskRun[] = [];
-  for (const sub of ['output', 'eval-results']) {
-    const dir = path.join(root, sub);
-    if (fs.existsSync(dir)) walk(root, dir, found, 0);
+  for (const entry of listRunDirs(path.join(root, 'output'))) {
+    const run = parseRunReport(root, entry.dir, path.join(entry.dir, 'run-report.json'));
+    if (run) found.push(run);
   }
+  const evalDir = path.join(root, 'eval-results');
+  if (fs.existsSync(evalDir)) walk(root, evalDir, found, 0);
   found.sort((a, b) => b.timestamp - a.timestamp);
   return found.slice(0, 50);
 }
@@ -72,7 +75,7 @@ function walk(root: string, dir: string, out: DiskRun[], depth: number): void {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry);
-    try { if (fs.statSync(full).isDirectory()) walk(root, full, out, depth + 1); } catch { /* skip */ }
+    try { const st = fs.lstatSync(full); if (st.isDirectory() && !st.isSymbolicLink()) walk(root, full, out, depth + 1); } catch { /* skip */ }
   }
 }
 

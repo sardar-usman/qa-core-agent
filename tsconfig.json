@@ -17,5 +17,5 @@
     "rootDir": "."
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "playwright.config.ts"],
-  "exclude": ["node_modules", "output", "test-results", "playwright-report"]
+  "exclude": ["node_modules", "output", "test-results", "playwright-report", "dashboard"]
 }

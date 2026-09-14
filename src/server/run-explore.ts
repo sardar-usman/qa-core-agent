@@ -14,6 +14,7 @@ import {
   type ExploreRequest,
 } from '../agent/explore-request.js';
 import { slimFrameworkDir } from '../agent/framework-dir.js';
+import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
 
 /**
  * The explore run the gateway and the MCP server share: prepare (resume
@@ -29,6 +30,8 @@ export interface RunExploreInput {
   projectRoot: string;
   /** Explorer model override (the dashboard's model chip). */
   model?: string;
+  /** Which surface started the run; written to run-meta.json next to the report. */
+  source?: 'dashboard' | 'mcp' | 'telegram' | 'cli';
   onEvent?: (e: AgentEvent) => void;
   /** Human-readable progress lines (what the CLI would print). */
   onNote?: (text: string) => void;
@@ -75,10 +78,13 @@ function hostnameOf(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
-function stamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+/** The request flags worth keeping next to the report (never engine data). */
+function runFlags(req: ExploreRequest): Record<string, unknown> {
+  return {
+    lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
+    resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
+    stability: req.stability, stabilityIterations: req.stabilityIterations, env: req.env,
+  };
 }
 
 /**
@@ -115,7 +121,7 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
   let req = input.request;
   const root = input.projectRoot;
   const notes: string[] = [];
-  const base = req.outBase ? path.resolve(root, req.outBase) : path.join(root, 'output');
+  const base = path.join(root, 'output');
 
   if (req.fromPlan || req.review) {
     throw new Error('Review mode (--review / --from-plan) needs the CLI: it pauses for a CSV edit at the terminal.');
@@ -151,8 +157,8 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     if (!urlCheck.ok) throw new Error(`Couldn't run /explore: ${urlCheck.reason}. Try a full URL like https://www.saucedemo.com/`);
     if (urlCheck.normalized) notes.push(`Note: added https:// for you, using ${urlCheck.url}`);
     url = urlCheck.url;
-    outDir = outDirForRequest(req, url, base, frameworkDirName, stamp);
-    if (req.pom && fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true });
+    outDir = outDirForRequest({ ...req, ...(req.outBase ? { outBase: path.resolve(root, req.outBase) } : {}) }, url, base, newRunId());
+    if (req.outBase && req.pom && fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true });
     notes.push(`▸ Exploring ${url}`);
     notes.push(req.features.length > 0 ? `  features: ${req.features.join(', ')}` : '  features: (none specified, the Planner will infer from the page)');
   }
@@ -244,13 +250,16 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       // a complete run, held aside and restored on a stopped one.
       const heldCheckpoint = report.stopped && fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8') : undefined;
       deleteCheckpoint(outDir);
+      // The zip lives inside the run directory: zip, slim, then write it.
       const zipBuf = zipFrameworkToBuffer(outDir);
-      const filename = `${path.basename(outDir)}.zip`;
-      fs.writeFileSync(path.join(path.dirname(outDir), filename), zipBuf);
+      const filename = `${req.name ? `${req.name}-automation-framework` : frameworkDirName(url)}.zip`;
       slimFrameworkDir(outDir);
+      fs.writeFileSync(path.join(outDir, filename), zipBuf);
       if (heldCheckpoint !== undefined) fs.writeFileSync(cpFile, heldCheckpoint);
       // The zip carries the redacted report; the working copy keeps raw values.
       try { fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(report, null, 2)); } catch { /* best effort */ }
+      writeRunMeta(outDir, { source: input.source ?? 'dashboard', flags: runFlags(req) });
+      finalizeRunDir(outDir);
       const hint = resumeHintForRun({
         ...(report.stopped ? { stopped: report.stopped } : {}),
         emptyCause: null,
@@ -266,8 +275,10 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       };
     }
 
-    const r = transcribe({ report, outDir, name: req.name ?? path.basename(outDir) });
+    const r = transcribe({ report, outDir, name: req.name ?? frameworkDirName(url).replace(/-automation-framework$/, '') });
     if (!report.stopped) deleteCheckpoint(outDir);
+    writeRunMeta(outDir, { source: input.source ?? 'dashboard', flags: runFlags(req) });
+    finalizeRunDir(outDir);
     const hint = resumeHintForRun({
       ...(report.stopped ? { stopped: report.stopped } : {}),
       emptyCause: null,
@@ -357,21 +368,21 @@ export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string
   const held = new Map<string, string>();
   if (sameDir) {
     // Keep the run's own files intact through the re-emission.
-    for (const name of ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json']) {
+    for (const name of ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json']) {
       const p = path.join(dir, name);
       if (fs.existsSync(p)) held.set(name, fs.readFileSync(p, 'utf8'));
     }
   }
   const result = scaffold({ report, outDir: dir, siteName: hostnameOf(report.url), ...(requirements ? { requirements } : {}) });
   const zipBuf = zipFrameworkToBuffer(dir);
-  const filename = dir.endsWith('-automation-framework') ? `${path.basename(dir)}.zip` : `${frameworkDirName(report.url)}.zip`;
-  fs.writeFileSync(path.join(path.dirname(dir), filename), zipBuf);
+  const filename = `${frameworkDirName(report.url)}.zip`;
   if (sameDir) {
     slimFrameworkDir(dir);
     for (const [name, content] of held) fs.writeFileSync(path.join(dir, name), content);
   }
+  fs.writeFileSync(path.join(dir, filename), zipBuf);
   notes.push(`Transcribed ${rel(projectRoot, resolved)}: ${report.scenarios.length} scenario(s) · ${report.language} · ${report.url}`);
-  notes.push(`zip: ${rel(projectRoot, path.join(path.dirname(dir), filename))} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
+  notes.push(`zip: ${rel(projectRoot, path.join(dir, filename))} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
   return {
     report, outDir: dir, notes,
     zip: { buffer: zipBuf, filename, sizeBytes: zipBuf.length, fileCount: result.fileCount, scenarios: result.pomResult.scenarios },

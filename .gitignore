@@ -17,6 +17,8 @@ pnpm-debug.log*
 
 # Build / agent output
 output/
+data/
+dashboard/dist/
 dist/
 build/
 *.log

@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens (plan section 8). HSL triples so Tailwind can add alpha.
+   Dark is the default; .light flips the surfaces. Every text/background pair
+   used by the app keeps at least 4.5:1 in both themes. */
+:root {
+  --bg-0: 240 8% 3%;
+  --bg-1: 240 8% 6%;
+  --bg-2: 240 10% 9%;
+  --bg-3: 240 10% 13%;
+  --line: 0 0% 100% / 0.07;
+  --line-strong: 0 0% 100% / 0.12;
+  --text: 240 10% 96%;
+  --text-2: 240 6% 66%;
+  --text-3: 240 6% 48%;
+  --accent: 252 100% 82%;
+  --pass: 156 58% 60%;
+  --rework: 40 87% 67%;
+  --reject: 352 78% 71%;
+  --finding: 254 100% 85%;
+  --neutral: 240 6% 66%;
+  --cost: 191 71% 70%;
+  color-scheme: dark;
+}
+.light {
+  --bg-0: 240 14% 96%;
+  --bg-1: 0 0% 100%;
+  --bg-2: 240 14% 97%;
+  --bg-3: 240 14% 93%;
+  --line: 240 30% 10% / 0.08;
+  --line-strong: 240 30% 10% / 0.14;
+  --text: 240 10% 9%;
+  --text-2: 240 6% 34%;
+  --text-3: 240 6% 45%;
+  --accent: 252 62% 55%;
+  --pass: 156 75% 30%;
+  --rework: 40 100% 30%;
+  --reject: 350 66% 46%;
+  --finding: 254 55% 50%;
+  --neutral: 240 6% 38%;
+  --cost: 191 78% 26%;
+  color-scheme: light;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
+  .money, .mono { @apply font-mono; }
+}
