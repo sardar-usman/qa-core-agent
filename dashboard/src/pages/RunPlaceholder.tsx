@@ -22,13 +22,13 @@ export function RunPlaceholderPage() {
         <span className="mono text-s text-fg-3">{run.id}</span>
       </div>
       <dl className="grid gap-3 sm:grid-cols-4">
-        {[[run.status === 'legacy' ? 'shipped' : 'shipped / planned', run.status === 'legacy' ? String(run.shipped) : `${run.shipped}/${run.planned}`], ['total cost', money(run.cost_total, 4)], ['started', fmtDate(run.started_at)], ['source', run.source]].map(([k, v]) => (
+        {[[run.status === 'legacy' ? 'scenarios explored' : 'shipped / planned', run.status === 'legacy' ? String(run.generated) : `${run.shipped ?? 0}/${run.planned}`], ['total cost', money(run.cost_total, 4)], ['started', fmtDate(run.started_at)], ['source', run.source]].map(([k, v]) => (
           <div key={k} className="rounded-lg border border-line bg-bg-1 p-3"><dd className="text-l font-semibold">{v}</dd><dt className="mt-1 text-s text-fg-2">{k}</dt></div>
         ))}
       </dl>
       {run.status === 'legacy' ? (
         <EmptyState title="Summary only (pre-v2)">
-          This run predates the per-run output layout. Only the numbers the gateway recorded at the time exist: scenarios shipped, cost, duration and model. There is no report or framework zip to open.
+          This run predates the per-run output layout. Only the numbers the gateway recorded at the time exist: scenarios explored (not shipped), cost, duration and model. There is no report or framework zip to open.
         </EmptyState>
       ) : (
         <EmptyState title="Run detail arrives in PR B">

@@ -114,7 +114,7 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (2: legacy run records)', schemaVersion(db) === 2);
+check('A. schema migrated to the current version (3: legacy rows count explored, not shipped)', schemaVersion(db) === 3);
 const r1 = indexOutput(db, root);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
 check('C. 5 projects: saucedemo, shop, legacy, demo.playwright.dev (records only), Unassigned', r1.projects === 5, String(r1.projects));
@@ -168,13 +168,13 @@ check('N. rule coverage rows carry status, text and feature from the requirement
 
 const julyRec = { at: legacyAt, url: 'https://www.saucedemo.com/', scenarios: 5, cost: 0.7647535, model: 'claude-opus-4-7', durationSec: 101 };
 const july = legacyRows.find((r) => r.id === legacyRunId('www.saucedemo.com', julyRec))!;
-check('T1. the July record is a legacy row with the numbers it carried and nothing invented', !!july && july.status === 'legacy' && july.shipped === 5 && july.generated === 5 && july.planned === 0 && Math.abs(Number(july.cost_total) - 0.7647535) < 1e-9 && Number(july.cost_explorer) === Number(july.cost_total) && july.report_path === null && july.zip_path === null && july.flake_rate === null, JSON.stringify(july));
+check('T1. the July record is a legacy row: its scenario count is EXPLORED (generated), shipped is NULL, nothing invented', !!july && july.status === 'legacy' && july.shipped === null && july.generated === 5 && july.planned === 0 && Math.abs(Number(july.cost_total) - 0.7647535) < 1e-9 && Number(july.cost_explorer) === Number(july.cost_total) && july.report_path === null && july.zip_path === null && july.flake_rate === null, JSON.stringify(july));
 check('T2. legacy timing: ended_at is the record time, started_at is durationSec earlier', july.ended_at === legacyAt && july.started_at === '2026-07-03T09:13:19.000Z', JSON.stringify([july.started_at, july.ended_at]));
 check('T3. legacy flags keep the model and duration; source is cli', JSON.parse(String(july.flags_json)).model === 'claude-opus-4-7' && JSON.parse(String(july.flags_json)).durationSec === 101 && july.source === 'cli');
 check('T4. a record covered by a real report (same host, finished within the window) is NOT imported and the report row is untouched', !legacyRows.some((r) => r.ended_at === '2026-09-12T10:00:40.000Z') && runs.find((r) => r.id === sauce2)?.shipped === 4 && runs.find((r) => r.id === sauce2)?.status === 'completed');
-check('T5. a host with records but no reports gets its own project', legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.shipped === 5);
+check('T5. a host with records but no reports gets its own project', legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.generated === 5 && legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.shipped === null);
 check('T6. the unknown host record lands in Unassigned with a null url', legacyRows.find((r) => r.project_id === UNASSIGNED_PROJECT_ID)?.url === null);
-check('T7. runRowFromLegacyRecord is a pure mapping with a deterministic id', runRowFromLegacyRecord('h', julyRec, 'p').id === runRowFromLegacyRecord('h', julyRec, 'p').id && runRowFromLegacyRecord('h', julyRec, 'p').id.startsWith('legacy-20260703T091500Z-'));
+check('T7. runRowFromLegacyRecord is a pure mapping with a deterministic id and a NULL shipped', runRowFromLegacyRecord('h', julyRec, 'p').id === runRowFromLegacyRecord('h', julyRec, 'p').id && runRowFromLegacyRecord('h', julyRec, 'p').id.startsWith('legacy-20260703T091500Z-') && runRowFromLegacyRecord('h', julyRec, 'p').shipped === null && runRowFromLegacyRecord('h', julyRec, 'p').generated === 5);
 // A legacy id can never overwrite a reported row: force the collision and re-import.
 // (The swap rewrites primary keys that derived rows reference; those rows are
 // rebuilt right after, so the constraint is paused for the swap only.)

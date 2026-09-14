@@ -4,8 +4,8 @@
  */
 export interface ProjectCard {
   id: string; name: string; base_url: string | null; environment: string; srs_path: string | null;
-  runs: number; shipped: number; open_findings: number; spend_month: number; spend_total: number;
-  last_run: { id: string; status: string; started_at: string | null; shipped: number; cost_total: number } | null;
+  runs: number; shipped: number; legacy_runs: number; open_findings: number; spend_month: number; spend_total: number;
+  last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
 }
 
@@ -13,7 +13,7 @@ export interface RunRow {
   id: string; project_id: string; project_name?: string; started_at: string | null; ended_at: string | null;
   status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed' | 'legacy'; source: string; url: string | null;
   planned: number; generated: number; dropped: number; incomplete: number; findings: number; skipped: number;
-  stable: number; flaky: number; broken: number; shipped: number;
+  stable: number; flaky: number; broken: number; shipped: number | null;
   cost_total: number; cost_planner: number; cost_explorer: number; cost_critic: number; cost_repair: number;
   flake_rate: number | null; report_path: string | null; zip_path: string | null; checkpoint_path: string | null; stopped_reason: string | null;
 }

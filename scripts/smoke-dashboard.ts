@@ -118,6 +118,8 @@ for (const theme of ['dark', 'light'] as const) {
     shipped: el.querySelector('[data-testid="shipped"]')?.textContent,
     findings: el.querySelector('[data-testid="open-findings"]')?.textContent,
     spend: el.querySelector('[data-testid="spend-month"]')?.textContent,
+    legacySub: el.querySelector('[data-testid="shipped-sub"]')?.textContent ?? null,
+    envBadge: el.querySelector('[data-testid="env-badge"]')?.textContent ?? null,
     status: el.querySelector('[data-status]')?.getAttribute('data-status'),
     text: el.textContent ?? '',
   })));
@@ -149,13 +151,16 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: runs table lists every run newest first`, rows.length === apiRuns.length && rows[0]?.id === apiRuns[0]?.id, JSON.stringify(rows.map((r) => r.id)));
   for (const r of apiRuns) {
     const row = rows.find((x) => x.id === r.id)!;
-    const expectSp = r.status === 'legacy' ? String(r.shipped) : `${r.shipped}/${r.planned}`;
+    const expectSp = r.status === 'legacy' ? `${r.generated} explored` : `${r.shipped}/${r.planned}`;
     check(`${theme}: row ${String(r.id).slice(0, 16)} shows shipped/planned, cost, status from the index`, !!row && row.sp === expectSp && row.cost === `$${Number(r.cost_total).toFixed(4)}` && row.status === r.status, JSON.stringify(row));
   }
   check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
   const legacyRow = rows.find((r) => r.status === 'legacy')!;
-  check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, shipped without a planned count, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
-  check(`${theme}: the demoqa project card shows the legacy run as its last run`, cards.find((c) => c.id === 'demoqa-com')?.status === 'legacy' && cards.find((c) => c.id === 'demoqa-com')?.shipped === '1');
+  check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, "N explored" instead of shipped/planned, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1 explored' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
+  const demoqa = cards.find((c) => c.id === 'demoqa-com');
+  check(`${theme}: the demoqa card counts 0 tests shipped (legacy scenarios were explored, not shipped) with a muted "+1 legacy run" line`, demoqa?.status === 'legacy' && demoqa?.shipped === '0' && demoqa?.legacySub === '+1 legacy run', JSON.stringify(demoqa));
+  check(`${theme}: cards with real runs carry no legacy line`, cards.filter((c) => c.id !== 'demoqa-com').every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
+  check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
   await page.selectOption('[data-testid="filter-project"]', 'saucedemo-com');
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="run-row"]').length === 3);
   check(`${theme}: project filter narrows to that project's runs and updates the URL`, (await page.$$('[data-testid="run-row"]')).length === 3 && /project_id=saucedemo-com/.test(page.url()));
@@ -172,7 +177,7 @@ for (const theme of ['dark', 'light'] as const) {
   await page.waitForURL(`**/runs/${legacyRow.id}`);
   await page.waitForFunction(() => /Summary only/.test(document.querySelector('main')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => null);
   const legacyDetail = (await page.textContent('main')) ?? '';
-  check(`${theme}: the legacy run page explains "summary only" and offers no report or zip link`, /Summary only \(pre-v2\)/.test(legacyDetail) && !/Download framework zip/.test(legacyDetail) && !/api\/runs/.test(legacyDetail), legacyDetail.slice(0, 160));
+  check(`${theme}: the legacy run page explains "summary only", labels the count as explored, and offers no report or zip link`, /Summary only \(pre-v2\)/.test(legacyDetail) && /scenarios explored/.test(legacyDetail) && !/Download framework zip/.test(legacyDetail) && !/api\/runs/.test(legacyDetail), legacyDetail.slice(0, 160));
   await page.goBack();
   await page.waitForSelector('[data-testid="run-row"]');
   await page.click(`[data-run-id="${s1}"] a`);

@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS runs (
   stable          INTEGER NOT NULL DEFAULT 0,
   flaky           INTEGER NOT NULL DEFAULT 0,
   broken          INTEGER NOT NULL DEFAULT 0,
-  shipped         INTEGER NOT NULL DEFAULT 0,
+  -- NULL for a legacy record: those carried scenarios EXPLORED (kept in generated), never a shipped count.
+  shipped         INTEGER,
   cost_total      REAL NOT NULL DEFAULT 0,
   cost_planner    REAL NOT NULL DEFAULT 0,
   cost_explorer   REAL NOT NULL DEFAULT 0,

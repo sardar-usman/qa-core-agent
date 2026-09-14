@@ -97,16 +97,16 @@ check('rows after delete + reindex are identical to the first index', first === 
 // 4. Every row equals its report and sits under the right project.
 const rows = db.prepare('SELECT r.*, p.base_url FROM runs r JOIN projects p ON p.id = r.project_id ORDER BY r.started_at').all() as Array<Record<string, unknown>>;
 let mismatches = 0;
-const perProject = new Map<string, { runs: number; shipped: number; cost: number; name: string }>();
+const perProject = new Map<string, { runs: number; shipped: number; explored: number; legacy: number; cost: number; name: string }>();
 let legacyCount = 0;
 for (const row of rows) {
   if (row.status === 'legacy') {
     // A pre-v2 record: no report to compare against; it must carry no invented numbers and no file paths.
     legacyCount++;
-    if (row.report_path !== null || row.zip_path !== null || Number(row.planned) !== 0 || Number(row.shipped) !== Number(row.generated)) { mismatches++; console.log(`  legacy row ${String(row.id)} carries invented data`); }
+    if (row.report_path !== null || row.zip_path !== null || Number(row.planned) !== 0 || row.shipped !== null) { mismatches++; console.log(`  legacy row ${String(row.id)} carries invented data (shipped must be NULL, the record only knew explored)`); }
     const pid = String(row.project_id);
-    const agg = perProject.get(pid) ?? { runs: 0, shipped: 0, cost: 0, name: '' };
-    agg.runs++; agg.shipped += Number(row.shipped); agg.cost += Number(row.cost_total);
+    const agg = perProject.get(pid) ?? { runs: 0, shipped: 0, explored: 0, legacy: 0, cost: 0, name: '' };
+    agg.runs++; agg.legacy++; agg.explored += Number(row.generated); agg.cost += Number(row.cost_total);
     perProject.set(pid, agg);
     continue;
   }
@@ -124,7 +124,7 @@ for (const row of rows) {
   const rightProject = host ? hostOf(String(row.base_url)) === host : row.project_id === UNASSIGNED_PROJECT_ID;
   if (!rightProject) { mismatches++; console.log(`  wrong project for ${String(row.id)}: ${String(row.project_id)} (host ${host})`); }
   const pid = String(row.project_id);
-  const agg = perProject.get(pid) ?? { runs: 0, shipped: 0, cost: 0, name: '' };
+  const agg = perProject.get(pid) ?? { runs: 0, shipped: 0, explored: 0, legacy: 0, cost: 0, name: '' };
   agg.runs++; agg.shipped += Number(row.shipped); agg.cost += Number(row.cost_total);
   perProject.set(pid, agg);
 }
@@ -136,7 +136,7 @@ if (!real) {
 }
 const names = db.prepare('SELECT id, name FROM projects').all() as Array<{ id: string; name: string }>;
 console.log(`\nIndex of ${root === process.cwd() ? 'the real output/' : 'the fixture'}: ${r2.runs} run(s) (${r2.runs - r2.legacyRecords} with reports, ${r2.legacyRecords} pre-v2 records imported, ${r2.legacyCovered} records covered by a report), ${r2.projects} project(s), ${r2.legacy} legacy folder(s) in place, ${r2.findings} finding(s)`);
-for (const [pid, agg] of [...perProject.entries()].sort()) console.log(`  ${names.find((n) => n.id === pid)?.name ?? pid} (${pid}): ${agg.runs} run(s), ${agg.shipped} shipped, $${agg.cost.toFixed(4)}`);
+for (const [pid, agg] of [...perProject.entries()].sort()) console.log(`  ${names.find((n) => n.id === pid)?.name ?? pid} (${pid}): ${agg.runs} run(s), ${agg.shipped} shipped${agg.legacy ? ` (+${agg.legacy} legacy run(s), ${agg.explored} explored)` : ''}, $${agg.cost.toFixed(4)}`);
 const unassigned = perProject.get(UNASSIGNED_PROJECT_ID);
 console.log(`  unassigned: ${unassigned ? unassigned.runs : 0}`);
 db.close();

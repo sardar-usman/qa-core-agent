@@ -41,6 +41,16 @@ export const MIGRATIONS: Migration[] = [
       db.exec(schemaSql());
     },
   },
+  {
+    // runs.shipped became nullable: a legacy record's scenario count is what
+    // the run EXPLORED, so it lives in `generated` and shipped stays NULL.
+    version: 3,
+    name: 'legacy rows count explored, not shipped',
+    up: (db) => {
+      db.exec('DROP TABLE IF EXISTS verdicts; DROP TABLE IF EXISTS rule_coverage; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS runs;');
+      db.exec(schemaSql());
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */

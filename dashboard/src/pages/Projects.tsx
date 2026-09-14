@@ -39,7 +39,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
             <CardHeader>
               <div className="flex items-start justify-between gap-2">
                 <CardTitle className="truncate" title={p.name}>{p.name}</CardTitle>
-                <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'}>{p.environment}</Badge>
+                {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} data-testid="env-badge">{p.environment}</Badge> : null}
               </div>
               <CardDescription className="mono truncate" title={p.base_url ?? ''}>{p.base_url ?? 'no base URL'}</CardDescription>
             </CardHeader>
@@ -48,7 +48,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
                 {p.last_run ? (<><span>Last run</span><StatusBadge status={p.last_run.status} /><span>{fmtDate(p.last_run.started_at)}</span></>) : <span>No runs yet</span>}
               </div>
               <dl className="grid grid-cols-3 gap-2">
-                <Stat label="tests shipped" value={String(p.shipped)} testid="shipped" />
+                <Stat label="tests shipped" value={String(p.shipped)} testid="shipped" sub={p.legacy_runs ? `+${p.legacy_runs} legacy run${p.legacy_runs === 1 ? '' : 's'}` : undefined} />
                 <Stat label="open findings" value={String(p.open_findings)} tone={p.open_findings ? 'finding' : undefined} testid="open-findings" />
                 <Stat label="spend this month" value={money(p.spend_month)} tone="cost" mono testid="spend-month" />
               </dl>
@@ -66,11 +66,12 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   );
 }
 
-function Stat({ label, value, tone, mono, testid }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string }) {
+function Stat({ label, value, tone, mono, testid, sub }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string; sub?: string }) {
   return (
     <div>
       <dd className={`text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : ''} ${mono ? 'mono' : ''}`} data-testid={testid}>{value}</dd>
       <dt className="mt-1 text-s text-fg-2">{label}</dt>
+      {sub ? <div className="mt-0.5 text-s text-fg-3" data-testid={`${testid}-sub`} title="Pre-v2 records only recorded scenarios explored, never a shipped count">{sub}</div> : null}
     </div>
   );
 }

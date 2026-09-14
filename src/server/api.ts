@@ -125,8 +125,14 @@ function monthStart(now = new Date()): string {
 
 export interface ProjectCard {
   id: string; name: string; base_url: string | null; environment: string; srs_path: string | null;
-  runs: number; shipped: number; open_findings: number; spend_month: number; spend_total: number;
-  last_run: { id: string; status: string; started_at: string | null; shipped: number; cost_total: number } | null;
+  /** All runs, reported and legacy. */
+  runs: number;
+  /** Tests shipped, summed over runs that have a report. Legacy rows never contribute. */
+  shipped: number;
+  /** Pre-v2 records (summary only): counted apart, never added to shipped. */
+  legacy_runs: number;
+  open_findings: number; spend_month: number; spend_total: number;
+  last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   /** Rule coverage percent per run (oldest first), for the sparkline; empty without SRS runs. */
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
 }
@@ -138,18 +144,21 @@ export function listProjects(db: Database.Database): ProjectCard[] {
 
 function projectCard(db: Database.Database, p: Record<string, unknown>): ProjectCard {
   const id = String(p.id);
-  const agg = db.prepare(`SELECT COUNT(*) AS runs, COALESCE(SUM(shipped), 0) AS shipped, COALESCE(SUM(cost_total), 0) AS spend_total,
+  const agg = db.prepare(`SELECT COUNT(*) AS runs,
+                          COALESCE(SUM(CASE WHEN report_path IS NOT NULL THEN shipped ELSE 0 END), 0) AS shipped,
+                          SUM(CASE WHEN status = 'legacy' THEN 1 ELSE 0 END) AS legacy_runs,
+                          COALESCE(SUM(cost_total), 0) AS spend_total,
                           COALESCE(SUM(CASE WHEN started_at >= ? THEN cost_total ELSE 0 END), 0) AS spend_month
-                          FROM runs WHERE project_id = ?`).get(monthStart(), id) as { runs: number; shipped: number; spend_total: number; spend_month: number };
+                          FROM runs WHERE project_id = ?`).get(monthStart(), id) as { runs: number; shipped: number; legacy_runs: number; spend_total: number; spend_month: number };
   const open = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE project_id = ? AND status IN ('new', 'confirmed')").get(id) as { n: number };
-  const last = db.prepare('SELECT id, status, started_at, shipped, cost_total FROM runs WHERE project_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(id) as ProjectCard['last_run'] | undefined;
+  const last = db.prepare('SELECT id, status, started_at, shipped, generated, cost_total FROM runs WHERE project_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(id) as ProjectCard['last_run'] | undefined;
   const coverage = db.prepare(`SELECT r.id AS run_id, r.started_at,
                                  SUM(CASE WHEN c.status = 'covered' THEN 1 ELSE 0 END) AS covered, COUNT(*) AS total
                                FROM rule_coverage c JOIN runs r ON r.id = c.run_id WHERE r.project_id = ?
                                GROUP BY r.id ORDER BY r.started_at ASC, r.id ASC`).all(id) as Array<{ run_id: string; started_at: string | null; covered: number; total: number }>;
   return {
     id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: String(p.environment), srs_path: (p.srs_path as string | null) ?? null,
-    runs: agg.runs, shipped: agg.shipped, open_findings: open.n, spend_month: agg.spend_month, spend_total: agg.spend_total,
+    runs: agg.runs, shipped: agg.shipped, legacy_runs: agg.legacy_runs ?? 0, open_findings: open.n, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
     coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),
   };
@@ -164,7 +173,7 @@ export function projectDetail(db: Database.Database, id: string): Record<string,
   const openFindings = db.prepare("SELECT * FROM findings WHERE project_id = ? AND status IN ('new', 'confirmed') ORDER BY last_seen_run_id DESC").all(id);
   return {
     project: p,
-    summary: { runs: card.runs, shipped: card.shipped, open_findings: card.open_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
+    summary: { runs: card.runs, shipped: card.shipped, legacy_runs: card.legacy_runs, open_findings: card.open_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
     trend: trend.map((t) => ({ ...t, coverage_percent: coverageByRun.get(String(t.run_id)) ?? null })),
     open_findings: openFindings,
   };

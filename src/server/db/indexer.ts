@@ -42,7 +42,8 @@ export interface RunRow {
   stable: number;
   flaky: number;
   broken: number;
-  shipped: number;
+  /** Scenarios in the emitted framework. NULL for a legacy record, which only knew how many were explored. */
+  shipped: number | null;
   cost_total: number;
   cost_planner: number;
   cost_explorer: number;
@@ -254,9 +255,12 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
  * .qa-core/sites/<host>.json holds `recentRuns` [{ at, url, scenarios, cost,
  * model, durationSec }] (the last 5 per host). Runs from before the per-run
  * layout survive only there, so they are imported as `runs` rows with status
- * 'legacy', report_path null, and the numbers the record carries: shipped =
- * generated = scenarios, cost_total = cost, started_at = at - durationSec,
- * ended_at = at. Nothing else is invented (planned and the funnel stay 0).
+ * 'legacy', report_path null, and the numbers the record carries. The
+ * record's `scenarios` is how many the run EXPLORED (memory.saveRun wrote it
+ * before replay and stability dropped anything), so it is stored as
+ * `generated` and `shipped` stays NULL: a legacy row never claims a shipped
+ * count. cost_total = cost, started_at = at - durationSec, ended_at = at.
+ * Nothing else is invented (planned and the funnel stay 0).
  *
  * A record is skipped when a real report covers the same run: same host and
  * the report's finish time within LEGACY_MATCH_MS of the record's `at` (the
@@ -293,7 +297,7 @@ export function runRowFromLegacyRecord(host: string, rec: LegacyRecord, projectI
   const at = Date.parse(rec.at);
   const ended = Number.isNaN(at) ? null : new Date(at).toISOString();
   const started = Number.isNaN(at) ? null : new Date(at - Math.max(0, Number(rec.durationSec) || 0) * 1000).toISOString();
-  const shipped = Number(rec.scenarios) || 0;
+  const explored = Number(rec.scenarios) || 0;
   const cost = Number(rec.cost) || 0;
   return {
     id: legacyRunId(host, rec),
@@ -304,8 +308,8 @@ export function runRowFromLegacyRecord(host: string, rec: LegacyRecord, projectI
     source: 'cli',
     url: rec.url && rec.url !== '--' ? rec.url : null,
     flags_json: JSON.stringify({ model: rec.model, durationSec: rec.durationSec, legacyHost: host }),
-    planned: 0, generated: shipped, dropped: 0, incomplete: 0, findings: 0, skipped: 0,
-    stable: 0, flaky: 0, broken: 0, shipped,
+    planned: 0, generated: explored, dropped: 0, incomplete: 0, findings: 0, skipped: 0,
+    stable: 0, flaky: 0, broken: 0, shipped: null,
     cost_total: cost, cost_planner: 0, cost_explorer: cost, cost_critic: 0, cost_repair: 0,
     flake_rate: null,
     report_path: null, zip_path: null, checkpoint_path: null, stopped_reason: null,
