@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-14 (late evening). Update this file at the end of every working day.
+Updated: 2026-09-14 (night). Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -52,7 +52,12 @@ Schedule: two focused days, then the audit.
   Projects page and Runs table. Legacy gateway records imported as "summary
   only (pre-v2)" rows (30 rows, 8 hosts), showing explored counts only;
   missing counts render n/a, never 0. Unset environment renders no badge.
-- PR B run detail: IN PROGRESS. Branch dashboard/pr-b-run-detail.
+- PR B run detail (PR #11): MERGED Sept 14 (merge f7a001c). Scenarios
+  table, findings, artifacts, events status (absent vs empty), tolerant
+  verdict matching via assignVerdicts, four-term cost total (usd + planner
+  + critic + stabilizer), schema v4 (environment nullable, no default).
+- PR B2 stage view: IN PROGRESS. Branch dashboard/pr-b2-stage-view. Six
+  panels from run-report only; live events land in PR C.
 - PR C parallel runs + Terminals, PR D projects/findings/coverage/trends,
   PR E settings/resume/transcribe + retire legacy UI.
 
@@ -110,12 +115,14 @@ Pitching starts the day the audit report exists.
    arithmetic.
 4. Compiled is not executed: emitted frameworks get run, not just type-checked.
 5. Every behavioral fix lands with an invariant in CLAUDE.md and a smoke lock.
+6. Any change under src/server/db/ is verified against a copy of the real
+   data/qa-core.sqlite, not only a fixture. The v4 migration passed its
+   fixture and crashed on the real file.
 
 ## Environment and cost
 
-- Anthropic Console: separate workspaces qa-core ($30/month cap) and openclaw
-  ($10/month cap); org limit raised to $100. Claude Code runs on the Max
-  subscription, not the API.
+- Anthropic Console: separate workspaces for qa-core and openclaw, each
+  capped. Claude Code runs on the Max subscription, not the API.
 - OpenClaw on the VPS is on Sonnet, Telegram bound to agent main, unrelated to
   running QA-Core.
 - Typical costs: single-page run about $0.50 to $1; multi-page discovery run
