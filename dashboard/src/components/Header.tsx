@@ -19,7 +19,7 @@ export function Header({ onReindexed }: { onReindexed?: () => void }) {
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-5 py-3">
         <NavLink to="/" className="text-m font-semibold tracking-tight">QA-Core</NavLink>
         <nav className="flex items-center gap-1 text-s">
-          {[['/', 'Projects'], ['/runs', 'Runs']].map(([to, label]) => (
+          {[['/', 'Projects'], ['/runs', 'Runs'], ['/terminal', 'Terminal']].map(([to, label]) => (
             <NavLink key={to} to={to!} end={to === '/'} className={({ isActive }) => `rounded-md px-2.5 py-1.5 ${isActive ? 'bg-bg-3 text-fg' : 'text-fg-2 hover:text-fg'}`}>{label}</NavLink>
           ))}
         </nav>

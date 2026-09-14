@@ -4,6 +4,7 @@ import { Header } from '@/components/Header';
 import { ProjectsPage } from '@/pages/Projects';
 import { RunsPage } from '@/pages/Runs';
 import { RunDetailPage } from '@/pages/RunDetail';
+import { TerminalPage } from '@/pages/Terminal';
 import { connectGateway, useGateway } from '@/lib/gateway';
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/" element={<ProjectsPage refreshKey={refreshKey} />} />
             <Route path="/runs" element={<RunsPage refreshKey={refreshKey} />} />
             <Route path="/runs/:id" element={<RunDetailPage />} />
+            <Route path="/terminal" element={<TerminalPage />} />
             <Route path="*" element={<ProjectsPage refreshKey={refreshKey} />} />
           </Routes>
         </main>

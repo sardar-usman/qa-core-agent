@@ -52,7 +52,7 @@ export interface RunDetailScenario {
 
 export interface RunDetailArtifact {
   name: string;
-  kind: 'zip' | 'report' | 'rule-coverage' | 'requirements-map' | 'checkpoint' | 'events' | 'screenshot' | 'spec' | 'meta' | 'other';
+  kind: 'zip' | 'report' | 'rule-coverage' | 'requirements-map' | 'checkpoint' | 'events' | 'screenshot' | 'spec' | 'meta' | 'srs' | 'other';
   size: number;
   /** API path that serves the file. */
   href: string;
@@ -188,6 +188,8 @@ function artifactKind(name: string): RunDetailArtifact['kind'] {
   if (name.endsWith('.zip')) return 'zip';
   if (/\.(png|jpe?g|webp)$/i.test(name)) return 'screenshot';
   if (/\.spec\.[jt]s$/.test(name)) return 'spec';
+  // An SRS uploaded with the run lives here under its original name (run-explore.ts, saveSrsUpload).
+  if (/\.(md|txt|pdf|docx)$/i.test(name)) return 'srs';
   return 'other';
 }
 

@@ -33,7 +33,8 @@ export interface RunDetailHeader {
   stopped_reason: string | null;
 }
 export interface RunDetailArtifact { name: string; kind: string; size: number; href: string }
-export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable';
+/** The server emits the first four; pending and running exist only in the live view built from events. */
+export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable' | 'pending' | 'running';
 export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
 /** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
 export interface RunDetailStages {
@@ -82,6 +83,11 @@ export type RunDetail =
       artifacts: RunDetailArtifact[]; events: StoredEvent[] | null; events_status: 'present' | 'empty' | 'absent';
     };
 
+export type ParsedCommand =
+  | { ok: true; kind: 'explore'; request: Record<string, unknown>; notes: string[]; naturalHint: string | null }
+  | { ok: true; kind: 'transcribe' | 'generate' | 'heal' | 'eval'; summary: string }
+  | { ok: false; error: string };
+
 let token = '';
 export function setToken(t: string): void { token = t; }
 export function getToken(): string { return token; }
@@ -116,6 +122,12 @@ export const api = {
   withToken: (href: string) => (token ? `${href}${href.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : href),
   report: (id: string) => get<Record<string, unknown>>(`/api/runs/${encodeURIComponent(id)}/report`),
   zipUrl: (id: string) => `/api/runs/${encodeURIComponent(id)}/zip${token ? `?token=${encodeURIComponent(token)}` : ''}`,
+  /** The Terminal page's one parser: the gateway's parseGatewayCommand over the displayed command. */
+  parseCommand: async (content: string, lang: 'ts' | 'js') => {
+    const res = await fetch('/api/command/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ content, lang }) });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return (await res.json()) as ParsedCommand;
+  },
   reindex: async () => {
     const res = await fetch('/api/reindex', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!res.ok) throw new ApiError(res.status, res.statusText);

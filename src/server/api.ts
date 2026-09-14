@@ -4,6 +4,7 @@ import type http from 'node:http';
 import type Database from 'better-sqlite3';
 import { indexOutput, renderIndexResult, type IndexResult } from './db/indexer.js';
 import { buildRunDetail, runArtifactFile } from './run-detail.js';
+import { parseGatewayCommand } from './commands.js';
 
 /**
  * REST API over the index (dashboard v2 plan, section 6; PR A ships the GET
@@ -111,6 +112,14 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
           fs.createReadStream(file).pipe(res); return true;
         }
       }
+      // The Terminal page's one parser: the same parseGatewayCommand the
+      // socket runs, so the form never parses a flag itself.
+      if (method === 'POST' && parts.length === 3 && parts[1] === 'command' && parts[2] === 'parse') {
+        const body = await readJsonBody(req);
+        const content = typeof body.content === 'string' ? body.content : '';
+        const lang = body.lang === 'js' ? 'js' : 'ts';
+        json(res, 200, parseCommandForUi(content, lang)); return true;
+      }
       if (method === 'POST' && parts.length === 2 && parts[1] === 'reindex') {
         const result = reindex();
         ctx.log?.(renderIndexResult(result));
@@ -123,6 +132,35 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
       return true;
     }
   };
+}
+
+async function readJsonBody(req: http.IncomingMessage, limit = 256 * 1024): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c: Buffer) => { if (data.length < limit) data += c.toString('utf8'); });
+    req.on('end', () => { try { const v = JSON.parse(data || '{}') as unknown; resolve(v && typeof v === 'object' ? v as Record<string, unknown> : {}); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
+}
+
+/** What POST /api/command/parse returns: the parsed command, or the parser's own message. */
+export type ParsedCommandForUi =
+  | { ok: true; kind: 'explore'; request: Record<string, unknown>; notes: string[]; naturalHint: string | null }
+  | { ok: true; kind: 'transcribe' | 'generate' | 'heal' | 'eval'; summary: string }
+  | { ok: false; error: string };
+
+export function parseCommandForUi(content: string, lang: 'ts' | 'js'): ParsedCommandForUi {
+  const trimmed = content.trim();
+  if (!trimmed) return { ok: false, error: 'Type a command: /explore <url> [flags], /resume <checkpoint.json>, /transcribe <run-report.json>, /heal <spec>, /generate <story>.' };
+  const cmd = parseGatewayCommand(trimmed, { lang });
+  switch (cmd.kind) {
+    case 'reply': return { ok: false, error: cmd.text };
+    case 'explore': return { ok: true, kind: 'explore', request: cmd.request as unknown as Record<string, unknown>, notes: cmd.notes, naturalHint: cmd.naturalHint ?? null };
+    case 'transcribe': return { ok: true, kind: 'transcribe', summary: `regenerate the framework from ${cmd.reportPath}${cmd.outDir ? ` into ${cmd.outDir}` : ''}` };
+    case 'generate': return { ok: true, kind: 'generate', summary: `generate an unverified spec from the story` };
+    case 'heal': return { ok: true, kind: 'heal', summary: `heal the selectors in ${cmd.specPath}` };
+    case 'eval': return { ok: true, kind: 'eval', summary: `run the benchmark${cmd.pom ? '' : ' (inline mode)'}` };
+  }
 }
 
 /**

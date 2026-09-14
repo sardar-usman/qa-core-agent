@@ -21,6 +21,7 @@ import {
 import { parseGatewayCommand } from '../src/server/commands.js';
 import { exploreRequestFromToolArgs, resumeRequestFromToolArgs, TOOL_SCHEMAS, TOOL_NAMES, exploreArgs, resumeArgs } from '../src/mcp/tools.js';
 import type { Checkpoint } from '../src/agent/checkpoint.js';
+import { FORM_FIELDS } from '../dashboard/src/lib/command.js';
 
 let pass = 0;
 let fail = 0;
@@ -116,6 +117,15 @@ for (const f of EXPLORE_FLAGS) {
     const g = parseGatewayCommand(`/explore https://shop.example/ ${tokens.join(' ')}`, { lang: 'ts' });
     check(`R. ${f.flag} refused by /explore with a reason`, g.kind === 'reply' && !!f.note, g.kind);
   }
+}
+// The Terminal page's composer: every form field is a registered, gateway-reachable flag, and
+// every flag the registry marks as a form field exists on the form (the raw command box covers the rest).
+for (const f of FORM_FIELDS.filter((x) => x.field !== 'url')) {
+  const row = EXPLORE_FLAGS.find((r) => r.form === f.field && (r.flag === f.flag || ['--pom', '--inline', '--stabilize'].includes(r.flag)));
+  check(`FT. Terminal form field ${f.field} maps to a gateway-reachable EXPLORE_FLAGS row (${f.flag})`, !!row && row.gateway);
+}
+for (const r of EXPLORE_FLAGS.filter((x) => x.form)) {
+  check(`FR. EXPLORE_FLAGS ${r.flag} names a form field that exists on the Terminal page (${r.form})`, FORM_FIELDS.some((f) => f.field === r.form));
 }
 // The registry must cover the parser: probe a flag that is not registered.
 check('S. an unregistered flag is rejected by the parser', !parseExploreTokens(['--not-a-flag']).ok);
