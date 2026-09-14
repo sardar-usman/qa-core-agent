@@ -8,7 +8,7 @@ import path from 'node:path';
  * itself is written INTO the run directory after slimming. Everything else
  * lives in the zip.
  */
-export const SLIM_KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json'];
+export const SLIM_KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json', 'events.jsonl'];
 
 /**
  * Replace the on-disk framework directory with a stub holding only the

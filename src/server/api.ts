@@ -3,10 +3,12 @@ import path from 'node:path';
 import type http from 'node:http';
 import type Database from 'better-sqlite3';
 import { indexOutput, renderIndexResult, type IndexResult } from './db/indexer.js';
+import { buildRunDetail, runArtifactFile } from './run-detail.js';
 
 /**
  * REST API over the index (dashboard v2 plan, section 6; PR A ships the GET
- * routes plus POST /api/reindex). JSON only. Every route is guarded by the
+ * routes plus POST /api/reindex; PR B adds /api/runs/:id/detail and
+ * /api/runs/:id/artifacts/:name). JSON only. Every route is guarded by the
  * same token as the WebSocket: `Authorization: Bearer <token>` or `?token=`.
  * Without a configured token the gateway is local-only and the API is open,
  * exactly like the socket.
@@ -73,8 +75,25 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
         const id = decodeURIComponent(parts[2]!);
         if (!RUN_ID_SAFE.test(id)) { json(res, 400, { error: 'bad run id' }); return true; }
         const run = db.prepare('SELECT r.*, p.name AS project_name FROM runs r JOIN projects p ON p.id = r.project_id WHERE r.id = ?').get(id) as Record<string, unknown> | undefined;
-        if (!run) { json(res, 404, { error: 'run not found' }); return true; }
+        if (!run) {
+          // Loud, and it names what was looked for (the detail route carries the same message).
+          const lookedFor = `output/*/${id}/run-report.json`;
+          json(res, 404, { error: `no run '${id}' in the index; looked for ${lookedFor}`, looked_for: lookedFor }); return true;
+        }
         if (parts.length === 3) { json(res, 200, { run }); return true; }
+        if (parts[3] === 'detail') {
+          const detail = buildRunDetail(db, root, id);
+          json(res, detail.status, detail.body); return true;
+        }
+        if (parts[3] === 'artifacts' && parts.length === 5) {
+          const name = decodeURIComponent(parts[4]!);
+          const file = runArtifactFile(root, { report_path: (run.report_path as string | null) ?? null }, name);
+          if (!file) { json(res, 404, { error: `no artifact '${name}' in this run's directory` }); return true; }
+          const stat = fs.statSync(file);
+          const type = name.endsWith('.json') ? 'application/json; charset=utf-8' : name.endsWith('.jsonl') ? 'application/x-ndjson; charset=utf-8' : name.endsWith('.zip') ? 'application/zip' : /\.png$/i.test(name) ? 'image/png' : /\.jpe?g$/i.test(name) ? 'image/jpeg' : /\.webp$/i.test(name) ? 'image/webp' : 'application/octet-stream';
+          res.writeHead(200, { 'Content-Type': type, 'Content-Length': stat.size, 'Cache-Control': 'no-store', ...(name.endsWith('.zip') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
+          fs.createReadStream(file).pipe(res); return true;
+        }
         if (parts[3] === 'report') {
           if (!run.report_path) { json(res, 404, { error: 'this run is a pre-v2 record with no report on disk' }); return true; }
           const file = safeRunFile(root, String(run.report_path));

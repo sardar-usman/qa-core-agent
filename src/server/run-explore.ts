@@ -15,6 +15,7 @@ import {
 } from '../agent/explore-request.js';
 import { slimFrameworkDir } from '../agent/framework-dir.js';
 import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
+import { appendRunEvent } from './events.js';
 
 /**
  * The explore run the gateway and the MCP server share: prepare (resume
@@ -206,7 +207,9 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
         ...(prepared.resume ? { resume: prepared.resume } : {}),
         ...(input.model ? { model: input.model } : {}),
       }),
-      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      // Every event is also appended to <runDir>/events.jsonl, the stored
+      // timeline the Run Detail page renders.
+      onEvent: (e: AgentEvent) => { appendRunEvent(outDir, e); input.onEvent?.(e); },
     });
 
     const reportPath = rel(root, path.join(outDir, 'run-report.json'));
@@ -368,7 +371,7 @@ export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string
   const held = new Map<string, string>();
   if (sameDir) {
     // Keep the run's own files intact through the re-emission.
-    for (const name of ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json']) {
+    for (const name of ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json', 'events.jsonl']) {
       const p = path.join(dir, name);
       if (fs.existsSync(p)) held.set(name, fs.readFileSync(p, 'utf8'));
     }

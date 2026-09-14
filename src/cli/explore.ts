@@ -17,6 +17,7 @@ import {
 } from '../agent/explore-request.js';
 import { slimFrameworkDir } from '../agent/framework-dir.js';
 import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
+import { appendRunEvent } from '../server/events.js';
 
 /**
  * CLI:  npm run explore -- <url> [--lang ts|js] [--name <basename>] [--out <dir>]
@@ -244,6 +245,8 @@ async function main(): Promise<void> {
       ...(fromPlan ? { fromPlan } : {}),
     }),
     onEvent: (e) => {
+      // The stored timeline for the Run Detail page, next to the report.
+      appendRunEvent(outDir, e);
       switch (e.type) {
         case 'plan_started':
           console.log(`\n[1/${totalStages}] Planner …`); break;
