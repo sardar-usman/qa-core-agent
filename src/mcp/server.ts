@@ -90,7 +90,7 @@ const server = new McpServer(
       'Use qa_heal when the user has an existing spec that broke after a UI change; it re-resolves selectors against the live page.',
       '',
       'Tool calls take 30-120 seconds, longer for multi-page runs. Tell the user so they understand the wait.',
-      'Output is written under <project>/output/<brand>-automation-framework/ with the zip alongside. The tool result includes the run summary and the reconciliation funnel.',
+      'Output is written under <project>/output/<project-slug>/<run-id>/ (run-report.json, the framework zip, checkpoint when stopped); <project-slug>/latest points at the newest completed run. The tool result includes the run summary and the reconciliation funnel.',
     ].join('\n'),
   },
 );
@@ -121,7 +121,7 @@ async function runRequest(request: ExploreRequest): Promise<{ content: Array<{ t
   requireApiKey();
   const notes: string[] = [];
   const outcome = await runExploreRequest({
-    request, projectRoot: PROJECT_ROOT,
+    request, projectRoot: PROJECT_ROOT, source: 'mcp',
     onNote: (n) => { notes.push(n); log(n); },
     onEvent: (e) => {
       if (e.type === 'plan_done') log(`${e.scenarios.length} scenarios planned`);

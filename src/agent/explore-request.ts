@@ -4,6 +4,7 @@ import type { Checkpoint } from './checkpoint.js';
 import type { RequirementsMap } from './requirements.js';
 import type { PlannedScenario } from './planner.js';
 import { parseCommaSeparated } from './parse-features.js';
+import { runDirFor } from './output-layout.js';
 
 /**
  * The ONE description of an explore run, shared by every surface.
@@ -334,17 +335,14 @@ export function buildExploreOptions(req: ExploreRequest, ctx: BuildExploreContex
 }
 
 /**
- * Where a fresh (non-resume, non-plan) run writes. POM runs use the stable
- * <brand>-automation-framework name (re-runs overwrite); inline runs keep a
- * timestamped name so history is never lost. Mirrors the CLI's historical
- * behavior so the gateway and MCP land runs where the dashboard scans.
+ * Where a fresh (non-resume, non-plan) run writes: output/<project-slug>/<run-id>/
+ * under the default root, one directory per run so a run never overwrites
+ * another (dashboard v2 plan, section 5). An explicit --out is the whole
+ * run directory and overrides the layout; no latest pointer is kept for it.
  */
-export function outDirForRequest(req: ExploreRequest, url: string, base: string, frameworkDirName: (u: string) => string, stamp: () => string): string {
-  const baseName = req.name ?? slugUrl(url);
-  const dirName = req.pom
-    ? (req.name ? `${baseName}-automation-framework` : frameworkDirName(url))
-    : `${stamp()}-${baseName}`;
-  return path.join(base, dirName);
+export function outDirForRequest(req: ExploreRequest, url: string, defaultRoot: string, runId: string): string {
+  if (req.outBase) return path.resolve(req.outBase);
+  return runDirFor(defaultRoot, url, runId);
 }
 
 export function slugUrl(s: string): string {

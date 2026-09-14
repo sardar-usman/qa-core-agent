@@ -33,7 +33,7 @@ QA-Core exposes three commands. Each one solves a different problem in test auto
 | `npm run generate` | A user story or Jira ticket | A Playwright spec built from acceptance criteria. You can run it to verify |
 | `npm run heal` | A spec that broke because the page changed | The same spec with its broken selectors re-resolved on the live page, written back in place |
 
-Generated files land under `output/<run-id>/`.
+Generated files land under `output/<project-slug>/<run-id>/`, one directory per run (see [Output layout](#output-layout)).
 
 ## Why this is different
 
@@ -359,7 +359,41 @@ npx playwright test output/<run-id>/<name>.spec.ts
 
 Playwright is configured with Chromium, Firefox, WebKit, and mobile projects. CI mode adds retries, trace on first retry, and an HTML report.
 
-## Web UI
+## Output layout
+
+Every run writes its own directory, so a run never overwrites another and the dashboard index can be rebuilt from the files alone:
+
+```text
+output/<project-slug>/<run-id>/       project slug = the URL host (www dropped), run id = UTC time + 6-char hash
+  run-report.json                     always
+  <brand>-automation-framework.zip    the framework (POM runs)
+  checkpoint.json                     only when the run stopped early (resume with --resume)
+  requirements-map.json, rule-coverage.json   SRS runs
+  run-meta.json                       which surface started the run and its flags
+output/<project-slug>/latest -> <run-id>     the newest completed run (a symlink, or latest.json)
+```
+
+`--out <dir>` still overrides the whole run directory. Runs from before this layout (`output/<brand>-automation-framework/` with a sibling zip) are moved once with:
+
+```bash
+npm run migrate-output -- --dry-run   # show the plan
+npm run migrate-output                # move each legacy folder into the layout, dated from its report
+```
+
+The migration is idempotent; the index reads legacy folders in place until you run it.
+
+## Dashboard
+
+`npm run gateway` starts one process that serves the dashboard at `http://127.0.0.1:18789/`, the REST API under `/api/`, the WebSocket at `/ws`, and the legacy chat UI at `/legacy`. The dashboard is a Vite + React app in `dashboard/`; the gateway builds it on first start when `dashboard/dist` is missing.
+
+```bash
+npm run dashboard:dev      # Vite dev server on :5173, proxied to the gateway
+npm run dashboard:build    # writes dashboard/dist, served by the gateway at /
+```
+
+Pages in this release: **Projects** (one card per host with last run, tests shipped, open findings, spend this month, coverage sparkline) and **Runs** (filter by project and status; status, shipped/planned, cost, flake rate, duration, source, date). Every number comes from `data/qa-core.sqlite`, an index the gateway rebuilds from `output/` on every start and refreshes after every run. Files are truth: delete the database and it is rebuilt exactly. `POST /api/reindex` (or the header button) rebuilds it on demand. With `QA_CORE_GATEWAY_TOKEN` set, every `/api` route needs `Authorization: Bearer <token>` (or `?token=`), and the app takes the token from `#token=<value>` in the page URL, in memory only.
+
+## Web UI (legacy)
 
 The chat-style UI at [`qa-core-ui.html`](./qa-core-ui.html) talks to a WebSocket gateway that bridges the OpenClaw web surface to the agent runtime.
 

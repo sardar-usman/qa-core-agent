@@ -4,7 +4,7 @@ import path from 'node:path';
 import { explore, type ReviewPaused } from '../agent/runtime.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
-import { zipFrameworkToFile } from '../agent/zip-framework.js';
+import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
 import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
@@ -16,6 +16,7 @@ import {
   type ExploreRequest,
 } from '../agent/explore-request.js';
 import { slimFrameworkDir } from '../agent/framework-dir.js';
+import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
 
 /**
  * CLI:  npm run explore -- <url> [--lang ts|js] [--name <basename>] [--out <dir>]
@@ -96,15 +97,18 @@ function readPlanFile(planPath: string): ParsedPlanFile {
   return { url, scenarios: approved };
 }
 
-function runId(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+/** The request flags worth keeping next to the report (never engine data). */
+function runFlags(req: ExploreRequest): Record<string, unknown> {
+  return {
+    lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
+    resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
+    stability: req.stability, stabilityIterations: req.stabilityIterations, env: req.env,
+  };
 }
 
 async function main(): Promise<void> {
   let args = parseArgs(process.argv);
-  const base = args.outBase ?? path.join(process.cwd(), 'output');
+  const base = path.join(process.cwd(), 'output');
 
   // Per-run setting overrides (--ceiling, --planner-model, --env ...) are
   // applied through the same env names the runtime reads.
@@ -176,14 +180,12 @@ async function main(): Promise<void> {
       console.log(`  Note: added https:// for you — using ${urlCheck.url}`);
     }
     url = urlCheck.url;
-    // v3.1 naming for the scaffold path: <brand>-automation-framework/. Stable
-    // across re-runs (overwrites previous). The --name flag (if provided) takes
-    // precedence so power users can override. Inline mode (--no-pom) keeps the
-    // old timestamped naming so power users don't accidentally lose history.
-    outDir = outDirForRequest(args, url, base, frameworkDirName, runId);
-    // Wipe the framework dir before re-running so stale POM files (e.g. a
-    // page object from a previous run with different features) don't linger.
-    if (args.pom && fs.existsSync(outDir)) {
+    // Per-run layout: output/<project-slug>/<run-id>/. A run never overwrites
+    // another; --out is an explicit whole-directory override. An explicit
+    // --out that already holds a framework is wiped so stale POM files from a
+    // previous emission do not linger.
+    outDir = outDirForRequest(args, url, base, newRunId());
+    if (args.outBase && args.pom && fs.existsSync(outDir)) {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
     console.log(`▸ Exploring ${url}`);
@@ -412,13 +414,15 @@ async function main(): Promise<void> {
     // so the on-disk footprint is the zip (the deliverable) plus a tiny
     // tombstone that keeps the dashboard's run-history scan working.
     try {
-      const zipPath = `${outDir}.zip`;
-      const { sizeBytes } = zipFrameworkToFile(outDir, zipPath);
-      frameworkZipPath = zipPath;
-      console.log(`  zip:          ${path.relative(process.cwd(), zipPath)} (${(sizeBytes / 1024).toFixed(1)} KB)`);
-      // Slim the dir — keep only run-report.json on disk.
+      // The zip lives INSIDE the run directory, next to run-report.json, so a
+      // run's files stay together. Zip first, slim, then write the zip.
+      const zipBuf = zipFrameworkToBuffer(outDir);
+      const zipPath = path.join(outDir, `${args.name ? `${args.name}-automation-framework` : frameworkDirName(url)}.zip`);
       slimFrameworkDir(outDir);
-      console.log(`  (framework files live in the zip; only run-report.json remains on disk)`);
+      fs.writeFileSync(zipPath, zipBuf);
+      frameworkZipPath = zipPath;
+      console.log(`  zip:          ${path.relative(process.cwd(), zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
+      console.log(`  (framework files live in the zip; the run directory keeps the report files and the zip)`);
     } catch (err) {
       console.log(`  zip:          skipped — ${(err as Error).message}`);
     }
@@ -432,6 +436,9 @@ async function main(): Promise<void> {
     try {
       fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(result, null, 2));
     } catch { /* best effort — the zip already shipped the redacted copy */ }
+    writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
+    const fin = finalizeRunDir(outDir);
+    if (fin.latest) console.log(`  latest:       ${path.relative(process.cwd(), path.join(path.dirname(outDir), 'latest'))} -> ${path.basename(outDir)}`);
   } else {
     const r = transcribe({ report: result, outDir, name: specName });
     primaryPath = r.specPath;
@@ -443,6 +450,8 @@ async function main(): Promise<void> {
     } else {
       deleteCheckpoint(outDir);
     }
+    writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
+    finalizeRunDir(outDir);
   }
   const totalUsd = result.cost.usd + (result.cost.plannerUsd ?? 0) + (result.cost.criticUsd ?? 0);
   console.log(`Cost: $${totalUsd.toFixed(4)} total ` +

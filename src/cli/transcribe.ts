@@ -2,7 +2,8 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scaffold, frameworkDirName } from '../agent/scaffold.js';
-import { zipFrameworkToFile } from '../agent/zip-framework.js';
+import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
+import { slimFrameworkDir } from '../agent/framework-dir.js';
 import type { RunReport } from '../agent/trace.js';
 import type { RequirementsMap } from '../agent/requirements.js';
 
@@ -16,9 +17,9 @@ import type { RequirementsMap } from '../agent/requirements.js';
  *
  * When a requirements-map.json sits next to the report (SRS runs), it is
  * loaded so dataset enrichment matches the original run. The output directory
- * defaults to the report's own directory; unlike /explore, nothing is wiped
- * or slimmed, so the emitted tree stays on disk for inspection alongside the
- * zip.
+ * defaults to the report's own run directory, which is slimmed back to its
+ * report files plus the fresh zip; with --out the full emitted tree stays on
+ * disk for inspection.
  */
 
 function main(): void {
@@ -81,10 +82,16 @@ function main(): void {
     console.log(`  data/   ${result.pomResult.dataFiles.map((f) => path.basename(f)).join(', ')}`);
   }
 
-  const zipPath = dir.endsWith('-automation-framework') ? `${dir}.zip` : path.join(path.dirname(dir), `${frameworkDirName(report.url)}.zip`);
-  const { sizeBytes } = zipFrameworkToFile(dir, zipPath);
-  console.log(`  zip:    ${path.relative(process.cwd(), zipPath)} (${(sizeBytes / 1024).toFixed(1)} KB)`);
-  console.log(`\nRun it: cd ${path.relative(process.cwd(), dir)} && npm install && npx playwright test`);
+  // The zip lives inside the run directory. When the emission landed in the
+  // report's own run directory, slim it back to the report files so the
+  // directory keeps its per-run shape; an explicit --out keeps the full tree.
+  const zipBuf = zipFrameworkToBuffer(dir);
+  const zipPath = path.join(dir, `${frameworkDirName(report.url)}.zip`);
+  if (dir === path.dirname(resolved)) slimFrameworkDir(dir);
+  fs.writeFileSync(zipPath, zipBuf);
+  console.log(`  zip:    ${path.relative(process.cwd(), zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
+  if (dir !== path.dirname(resolved)) console.log(`\nRun it: cd ${path.relative(process.cwd(), dir)} && npm install && npx playwright test`);
+  else console.log(`\nUnzip it anywhere, then: npm install && npx playwright test`);
 }
 
 main();

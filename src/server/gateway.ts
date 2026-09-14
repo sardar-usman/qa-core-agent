@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { execSync } from 'node:child_process';
+import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +15,10 @@ import { parseGatewayCommand } from './commands.js';
 import { listRunsFromDisk, loadReportForUi, reportForUi } from './runs.js';
 import { runExploreRequest, runTranscribeRequest, type FrameworkZip } from './run-explore.js';
 import { eventForUi } from './events.js';
+import { openDatabase, DEFAULT_DB_PATH } from './db/migrate.js';
+import { indexOutput, renderIndexResult } from './db/indexer.js';
+import { createApiHandler } from './api.js';
+import { createStaticHandler } from './static.js';
 
 /**
  * QA-Core gateway.
@@ -91,9 +96,38 @@ interface ConnectionState {
  */
 let activeExplores = 0;
 
-const wss = new WebSocketServer({ host: HOST, port: PORT });
+/**
+ * The index (dashboard v2 plan, section 5): files are truth, the database
+ * is rebuilt from output/ on every start and refreshed after every run.
+ */
+const DB_PATH = process.env.QA_CORE_DB_PATH ?? path.join(ROOT, DEFAULT_DB_PATH);
+const db = openDatabase(DB_PATH);
+function reindex(): ReturnType<typeof indexOutput> {
+  const result = indexOutput(db, ROOT);
+  console.log(`  ${renderIndexResult(result)}`);
+  return result;
+}
+reindex();
 
-wss.on('error', (err: NodeJS.ErrnoException) => {
+// One HTTP server: REST API under /api, the built dashboard at /, the legacy
+// single-file UI at /legacy, and the WebSocket upgrade on any path (/ws for
+// the dashboard, / for the legacy UI).
+const api = createApiHandler({ db, root: ROOT, token: TOKEN, reindex, log: (line) => console.log(`  ${line}`) });
+const statik = createStaticHandler({ distDir: process.env.QA_CORE_DASHBOARD_DIST ?? path.join(ROOT, 'dashboard', 'dist'), legacyFile: process.env.QA_CORE_LEGACY_UI ?? path.join(ROOT, 'qa-core-ui.html') });
+const server = http.createServer(async (req, res) => {
+  try {
+    if (await api(req, res)) return;
+    if (statik(req, res)) return;
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('not found');
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end((err as Error).message);
+  }
+});
+const wss = new WebSocketServer({ server });
+
+server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`✗ Port ${PORT} is already in use.`);
     console.error(`  Another gateway may already be running, or set QA_CORE_GATEWAY_PORT to a different port.`);
@@ -155,6 +189,8 @@ wss.on('connection', (ws, req) => {
     state.busy = true;
     try {
       await dispatch(content, msg, ws);
+      // Run completion: refresh the index and the legacy history list.
+      try { reindex(); } catch (err) { console.error('  index refresh failed:', (err as Error).message); }
       try { send(ws, { type: 'runs', runs: listRunsFromDisk(ROOT) }); } catch { /* best-effort */ }
     } catch (err) {
       send(ws, { text: `✗ ${(err as Error).message}` });
@@ -165,10 +201,13 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-console.log(`QA-Core gateway listening on ws://${HOST}:${PORT}`);
-console.log(TOKEN ? '  (token required via ?token=…)' : '  (no token, local use only)');
-console.log('');
-console.log('Open qa-core-ui.html in your browser, click Connect.');
+server.listen(PORT, HOST, () => {
+  console.log(`QA-Core gateway listening on http://${HOST}:${PORT}`);
+  console.log(`  dashboard  http://${HOST}:${PORT}/        (legacy UI at /legacy)`);
+  console.log(`  api        http://${HOST}:${PORT}/api/    websocket ws://${HOST}:${PORT}/ws`);
+  console.log(TOKEN ? '  (token required: Authorization: Bearer <token> or ?token=)' : '  (no token, local use only)');
+  console.log(`  index      ${path.relative(ROOT, DB_PATH)}`);
+});
 
 /* ─────────────────── Dispatch ─────────────────── */
 
@@ -243,7 +282,7 @@ async function handleExplore(request: ExploreRequest, model: string | undefined,
       settings: readRunSettings({ ...process.env, ...request.env }),
     });
     const outcome = await runExploreRequest({
-      request, projectRoot: ROOT,
+      request, projectRoot: ROOT, source: 'dashboard',
       ...(model ? { model } : {}),
       onNote: (text) => send(ws, { text }),
       onEvent: (e) => {
@@ -572,7 +611,9 @@ function runPlaywrightInline(specPath: string, baseUrl: string): { total: number
 function shutdown(): void {
   console.log('\nShutting down…');
   for (const client of wss.clients) client.close(1001, 'gateway shutting down');
-  wss.close(() => process.exit(0));
+  try { db.close(); } catch { /* already closed */ }
+  wss.close(() => server.close(() => process.exit(0)));
+  setTimeout(() => process.exit(0), 1500).unref();
 }
 
 process.on('SIGINT', shutdown);

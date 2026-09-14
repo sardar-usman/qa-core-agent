@@ -3,10 +3,12 @@ import path from 'node:path';
 
 /**
  * Files that survive slimming a framework directory after its zip is
- * written: the run report the dashboard scans, the SRS artefacts, and a
- * checkpoint when the run stopped early. Everything else lives in the zip.
+ * written: the run report the dashboard scans, the SRS artefacts, a
+ * checkpoint when the run stopped early, and the surface's run-meta. The zip
+ * itself is written INTO the run directory after slimming. Everything else
+ * lives in the zip.
  */
-export const SLIM_KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json'];
+export const SLIM_KEEP = ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json'];
 
 /**
  * Replace the on-disk framework directory with a stub holding only the
