@@ -21,9 +21,10 @@ const STAGES: Array<{ key: StageKey; num: number; name: string; sub: string }> =
   { key: 'summary', num: 6, name: 'Summary', sub: 'what shipped, what it cost' },
 ];
 
-const STATUS_LABEL: Record<StageStatus, string> = { done: 'done', warning: 'warning', attention: 'to review', 'not-applicable': 'not run' };
+const STATUS_LABEL: Record<StageStatus, string> = { done: 'done', warning: 'warning', attention: 'to review', 'not-applicable': 'not run', pending: 'pending', running: 'running' };
 // attention is product behavior to review: the finding token, never the warning token.
-const STATUS_CLASS: Record<StageStatus, string> = { done: 'text-pass', warning: 'text-rework', attention: 'text-finding', 'not-applicable': 'text-fg-2' };
+// pending and running exist only while a run is live (built from events, never from the report).
+const STATUS_CLASS: Record<StageStatus, string> = { done: 'text-pass', warning: 'text-rework', attention: 'text-finding', 'not-applicable': 'text-fg-2', pending: 'text-fg-2', running: 'text-accent' };
 const VERDICT_VARIANT = { pass: 'pass', rework: 'rework', reject: 'reject' } as const;
 const CATEGORY_VARIANT: Record<string, 'pass' | 'reject' | 'rework' | 'neutral'> = { happy: 'pass', negative: 'reject', edge: 'rework' };
 
@@ -33,16 +34,22 @@ function scrollToStage(key: StageKey): void {
 
 export type UnmatchedVerdict = { scenario: string; verdict: string; reasons: string[] };
 
-export function StageView({ stages, findings, unmatched }: { stages: RunDetailStages; findings: RunDetailFinding[]; unmatched: UnmatchedVerdict[] }) {
+/**
+ * `live` marks a run in progress: the stages come from the event stream, and
+ * the Summary shows what will appear when the report lands instead of an
+ * empty funnel. Once run_report arrives the page renders the report through
+ * the same component with live off, identical to a history view.
+ */
+export function StageView({ stages, findings, unmatched, live = false }: { stages: RunDetailStages; findings: RunDetailFinding[]; unmatched: UnmatchedVerdict[]; live?: boolean }) {
   return (
-    <div className="flex flex-col gap-4" data-testid="stage-view">
+    <div className="flex flex-col gap-4" data-testid="stage-view" data-live={live ? 'true' : 'false'}>
       <nav className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6" aria-label="Pipeline stages" data-testid="stage-rail">
         {STAGES.map((s) => {
           const st = stages[s.key];
           return (
             <button key={s.key} type="button" onClick={() => scrollToStage(s.key)} className="flex flex-col items-start gap-1 rounded-lg border border-line bg-bg-1 px-3 py-2 text-left hover:border-line-strong" data-testid="rail-item" data-stage={s.key} data-status={st.status} title={`Jump to ${s.name}`}>
-              <span className="flex w-full items-center gap-2 text-s"><span className="mono text-fg-2">{s.num}</span><span className="font-semibold text-fg">{s.name}</span><span className={`ml-auto ${STATUS_CLASS[st.status]}`} data-testid="rail-status">{STATUS_LABEL[st.status]}</span></span>
-              <span className="mono truncate text-s text-fg-2" data-testid="rail-stat" title={st.stat}>{st.stat}</span>
+              <span className="flex w-full items-center gap-2 text-s"><span className="mono text-fg-2">{s.num}</span><span className="font-semibold text-fg">{s.name}</span><span className={`ml-auto ${STATUS_CLASS[st.status]} ${st.status === 'running' ? 'animate-pulse' : ''}`} data-testid="rail-status">{STATUS_LABEL[st.status]}</span></span>
+              <span className="mono whitespace-normal break-words text-s leading-snug text-fg-2" data-testid="rail-stat">{st.stat}</span>
             </button>
           );
         })}
@@ -53,7 +60,7 @@ export function StageView({ stages, findings, unmatched }: { stages: RunDetailSt
       <Panel k="explore" s={stages.explore.status}><Explore e={stages.explore} /></Panel>
       <Panel k="review" s={stages.review.status}><Review r={stages.review} unmatched={unmatched} /></Panel>
       <Panel k="verify" s={stages.verify.status}><Verify v={stages.verify} /></Panel>
-      <Panel k="summary" s={stages.summary.status}><Summary sm={stages.summary} findings={findings} /></Panel>
+      <Panel k="summary" s={stages.summary.status}><Summary sm={stages.summary} findings={findings} live={live} /></Panel>
     </div>
   );
 }
@@ -312,7 +319,18 @@ const FUNNEL_ROWS: Array<{ key: 'planned' | 'generated' | 'dropped' | 'incomplet
   { key: 'skipped', label: 'skipped', cls: 'bg-neutral' },
 ];
 
-function Summary({ sm, findings }: { sm: RunDetailStages['summary']; findings: RunDetailFinding[] }) {
+function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findings: RunDetailFinding[]; live: boolean }) {
+  if (live) {
+    return (
+      <div data-testid="summary-live">
+        <KV>
+          <K label="recorded so far" value={sm.shipped} />
+          <K label="cost so far" value={usd(sm.total_usd)} cost />
+        </KV>
+        <Empty>The funnel, cost split, coverage, findings and download appear when the run finishes and its report is written.</Empty>
+      </div>
+    );
+  }
   const f = sm.funnel;
   const shown = f ? FUNNEL_ROWS.filter((r) => r.key === 'planned' || f[r.key] > 0) : [];
   const zero = f ? FUNNEL_ROWS.filter((r) => r.key !== 'planned' && f[r.key] === 0) : [];
@@ -388,7 +406,7 @@ function Summary({ sm, findings }: { sm: RunDetailStages['summary']; findings: R
                   {fd.verdict ? <Badge variant={VERDICT_VARIANT[fd.verdict.verdict]} data-testid="finding-verdict" data-verdict={fd.verdict.verdict} title={fd.verdict.reasons.join(' · ')}>critic: {fd.verdict.verdict}</Badge> : null}
                 </div>
                 <div className="text-s text-fg-2"><span className="font-semibold text-fg">Expected</span> {fd.expected}</div>
-                <div className="text-s text-fg-2"><span className="font-semibold text-fg">What happened</span> the page stayed at <span className="mono">{fd.url}</span>{fd.messages.length ? `; it said "${fd.messages.join(' | ')}"` : ''}</div>
+                <div className="text-s text-fg-2"><span className="font-semibold text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; the page said "${fd.messages.join(' | ')}"` : ''}</div>
                 {fd.verdict?.reasons.length ? <div className="mt-1 text-s text-fg-2" data-testid="finding-verdict-reasons">{fd.verdict.reasons.join(' · ')}</div> : null}
               </li>
             ))}

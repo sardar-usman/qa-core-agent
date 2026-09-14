@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { api, ApiError, type RunDetail, type RunDetailScenario } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/EmptyState';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StageView, formatSize } from '@/components/StageView';
+import { connectGateway, followRun, useGateway, type LiveEvent, type LiveRun } from '@/lib/gateway';
+import { liveStagesFrom } from '@/lib/live-stages';
 import { fmtDate, usd } from '@/lib/utils';
 
 /**
@@ -21,19 +23,45 @@ import { fmtDate, usd } from '@/lib/utils';
  * per-scenario table from PR B; then artifacts and the stored events log.
  * Findings live in the Summary panel, unmatched verdicts and the Critic
  * summary in the Review panel.
+ *
+ * Live mode (PR C): while the gateway is running this run, the same stage view
+ * is fed from the event stream (lib/live-stages.ts) with pending and running
+ * statuses, the runtime's console lines go to a collapsible log, and the
+ * events section shows the stream as it arrives. When run_report lands the
+ * page fetches the detail payload and renders it exactly as a history view,
+ * so the live and historical renderings of a finished run are identical.
  */
 export function RunDetailPage() {
   const { id = '' } = useParams();
+  const gw = useGateway();
+  const live = gw.live && gw.live.runId === id ? gw.live : null;
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  // History fetch: on load, and again when a live run for this id finishes.
+  const liveFinished = live?.status === 'finished';
+  const liveRunning = !!live && live.status === 'running';
   useEffect(() => {
-    let live = true;
+    if (liveRunning) return;
+    let alive = true;
     setDetail(null); setError(null);
     api.runDetail(id)
-      .then((d) => { if (live) setDetail(d); })
-      .catch((e: unknown) => { if (live) setError({ status: e instanceof ApiError ? e.status : 0, message: (e as Error).message }); });
-    return () => { live = false; };
-  }, [id]);
+      .then((d) => { if (alive) setDetail(d); })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        const status = e instanceof ApiError ? e.status : 0;
+        // A run that just finished may be a beat ahead of the index; retry a few times before showing the 404.
+        if (liveFinished && status === 404 && attempt < 5) { setTimeout(() => { if (alive) setAttempt((a) => a + 1); }, 600); return; }
+        setError({ status, message: (e as Error).message });
+      });
+    return () => { alive = false; };
+  }, [id, liveRunning, liveFinished, attempt]);
+
+  // Not started here but the gateway says this id is running (a reload mid-run): follow it from its folder.
+  useEffect(() => { if (!live && gw.activeRun?.run_id === id) followRun(id); }, [id, live, gw.activeRun]);
+
+  if (live && live.status === 'running') return <LiveView run={live} socket={gw.socket} />;
 
   if (error) {
     return (
@@ -41,11 +69,14 @@ export function RunDetailPage() {
         <BackLink />
         <EmptyState title={error.status === 404 ? 'Run not found' : error.status === 401 ? 'Unauthorized' : 'Could not load this run'}>
           <span className="mono" data-testid="detail-error">{error.message}</span>
+          {live?.outcome && Array.isArray(live.outcome.diagnosis) ? <div className="mt-2 text-s text-fg-2" data-testid="live-diagnosis">{(live.outcome.diagnosis as string[]).join(' ')}</div> : null}
+          {live?.status === 'failed' && live.error ? <div className="mt-2 text-s text-reject" data-testid="live-failed">{live.error}</div> : null}
         </EmptyState>
+        {live ? <RunLog log={live.log} /> : null}
       </div>
     );
   }
-  if (!detail) return <div className="text-s text-fg-3">Loading…</div>;
+  if (!detail) return <div className="text-s text-fg-2">{liveFinished ? 'Run finished, loading its report…' : 'Loading…'}</div>;
 
   const h = detail.header;
   return (
@@ -84,7 +115,7 @@ export function RunDetailPage() {
           <StageView stages={detail.stages} findings={detail.findings} unmatched={detail.unmatched_verdicts} />
 
           <section className="flex flex-col gap-2" data-testid="scenarios-section">
-            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3">{detail.scenarios.length} planned or recorded · {detail.counts.shipped ?? 0} shipped as stored · one row per scenario across every stage</span></h2>
+            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3" data-testid="scenarios-subtitle">{detail.scenarios.length} recorded</span></h2>
             {detail.scenarios.length === 0 ? <EmptyState title="No scenarios recorded">The report holds no plan, verdicts or emitted scenarios for this run.</EmptyState> : (
               <Table data-testid="scenarios-table">
                 <TableHeader>
@@ -113,7 +144,7 @@ export function RunDetailPage() {
             {detail.artifacts.map((a) => (
               <li key={a.name}>
                 <Button variant="outline" size="sm" asChild>
-                  <a href={api.withToken(a.href)} data-testid="artifact-link" data-kind={a.kind}>{a.name} <span className="ml-1 font-normal opacity-70">{formatSize(a.size)}</span></a>
+                  <a href={api.withToken(a.href)} data-testid="artifact-link" data-kind={a.kind}>{a.kind === 'srs' ? 'SRS: ' : ''}{a.name} <span className="ml-1 font-normal opacity-70">{formatSize(a.size)}</span></a>
                 </Button>
               </li>
             ))}
@@ -121,22 +152,76 @@ export function RunDetailPage() {
         )}
       </section>
 
-      <details className="rounded-lg border border-line bg-bg-1" data-testid="events-section">
-        <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Events <span className="text-s font-normal text-fg-3" data-testid="events-status">{detail.events_status === 'absent' ? 'no events log' : detail.events_status === 'empty' ? 'none recorded' : `${detail.events!.length} recorded, oldest first`}</span></summary>
-        {detail.events_status === 'absent' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events log; this run predates event capture</div>
-          : detail.events_status === 'empty' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events recorded</div> : (
-          <ol className="max-h-[420px] overflow-auto px-4 pb-4 font-mono text-s text-fg-2">
-            {detail.events!.map((e, i) => (
-              <li key={i} className="flex gap-3 border-t border-line/50 py-1" data-testid="event-row">
-                <span className="shrink-0 text-fg-3">{new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                <span className="shrink-0 text-accent">{e.type}</span>
-                <span className="truncate">{describeEvent(e)}</span>
-              </li>
-            ))}
-          </ol>
-        )}
-      </details>
+      <EventsSection status={detail.events_status} events={detail.events} />
+      {live ? <RunLog log={live.log} /> : null}
     </div>
+  );
+}
+
+/* ─────────────────── live mode ─────────────────── */
+
+function LiveView({ run, socket }: { run: LiveRun; socket: string }) {
+  const stages = liveStagesFrom(run);
+  const url = typeof run.request.url === 'string' ? run.request.url : null;
+  const host = (() => { try { return url ? new URL(url).host : null; } catch { return null; } })();
+  return (
+    <div className="flex flex-col gap-6" data-testid="run-detail" data-legacy="false" data-live="true">
+      <BackLink />
+      <header className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-m font-semibold" data-testid="detail-host">{host ?? run.runId}</h1>
+          <span className="mono text-s text-fg-3" data-testid="detail-run-id">{run.runId}</span>
+          <StatusBadge status="running" />
+          <Badge variant="outline">{run.command}</Badge>
+          {run.runDir ? <span className="mono text-s text-fg-2" data-testid="live-run-dir">{run.runDir}</span> : null}
+        </div>
+        {socket !== 'connected' ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-transparent bg-rework-soft px-3 py-2 text-s text-rework" data-testid="socket-lost">
+            <span>Connection to the gateway was lost. The run continues on the gateway; on reconnect this page catches up from the run folder.</span>
+            <Button type="button" size="sm" variant="outline" onClick={() => connectGateway()} data-testid="reconnect"><RefreshCw className="h-3.5 w-3.5" /> Reconnect</Button>
+          </div>
+        ) : null}
+        {run.caughtUp ? <div className="text-s text-fg-2" data-testid="caught-up">Caught up from the run folder: {run.events.length} stored event{run.events.length === 1 ? '' : 's'}.</div> : null}
+      </header>
+
+      <StageView stages={stages} findings={[]} unmatched={[]} live />
+
+      <RunLog log={run.log} />
+      <EventsSection status={run.events.length ? 'present' : 'empty'} events={run.events} live />
+    </div>
+  );
+}
+
+function RunLog({ log }: { log: string[] }) {
+  return (
+    <details className="rounded-lg border border-line bg-bg-1" data-testid="run-log">
+      <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Log <span className="text-s font-normal text-fg-3">{log.length} line{log.length === 1 ? '' : 's'} from the runtime; shown as text only, never read as a number</span></summary>
+      {log.length === 0 ? <div className="px-4 pb-4 text-s text-fg-3">No console lines yet.</div> : (
+        <pre className="mono max-h-[360px] overflow-auto whitespace-pre-wrap px-4 pb-4 text-s text-fg-2" data-testid="run-log-lines">{log.join('\n')}</pre>
+      )}
+    </details>
+  );
+}
+
+/* ─────────────────── shared pieces ─────────────────── */
+
+function EventsSection({ status, events, live = false }: { status: 'present' | 'empty' | 'absent'; events: Array<LiveEvent | { t: string; type: string; [k: string]: unknown }> | null; live?: boolean }) {
+  return (
+    <details className="rounded-lg border border-line bg-bg-1" data-testid="events-section" open={live || undefined}>
+      <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Events <span className="text-s font-normal text-fg-3" data-testid="events-status">{status === 'absent' ? 'no events log' : status === 'empty' ? (live ? 'waiting for the first event' : 'none recorded') : `${events!.length} ${live ? 'so far' : 'recorded'}, oldest first`}</span></summary>
+      {status === 'absent' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events log; this run predates event capture</div>
+        : status === 'empty' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">{live ? 'No events yet' : 'No events recorded'}</div> : (
+        <ol className="max-h-[420px] overflow-auto px-4 pb-4 font-mono text-s text-fg-2">
+          {events!.map((e, i) => (
+            <li key={i} className="flex gap-3 border-t border-line/50 py-1" data-testid="event-row">
+              <span className="shrink-0 text-fg-3">{new Date(e.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+              <span className="shrink-0 text-accent">{e.type}</span>
+              <span className="truncate">{describeEvent(e)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </details>
   );
 }
 
@@ -177,7 +262,7 @@ function ScenarioRow({ s }: { s: RunDetailScenario }) {
         {s.verdict ? <Badge variant={VERDICT_VARIANT[s.verdict]} data-testid="verdict" data-verdict={s.verdict}>{s.verdict}</Badge> : <span className="text-fg-3">–</span>}
         {s.reasons.length ? <div className="mt-1 max-w-xs text-s text-fg-3">{s.reasons.join(' · ')}</div> : null}
       </TableCell>
-      <TableCell><span className={s.repair === 'repaired' ? 'text-pass' : s.repair === 'failed' ? 'text-reject' : 'text-fg-3'} data-testid="repair" data-repair={s.repair}>{repairLabel}</span>{s.repair !== 'none' && s.repair_second ? <div className="text-s text-fg-3">rework → {s.repair_second}</div> : null}</TableCell>
+      <TableCell><span className={s.repair === 'repaired' ? 'text-pass' : s.repair === 'failed' ? 'text-reject' : 'text-fg-3'} data-testid="repair" data-repair={s.repair}>{repairLabel}</span>{s.repair !== 'none' && s.repair_second ? <div className="text-s text-fg-3">rework to {s.repair_second}</div> : null}</TableCell>
       <TableCell>{s.replay ? <span className={s.replay === 'pass' ? 'text-pass' : 'text-reject'} data-testid="replay" data-replay={s.replay}>{s.replay}</span> : <span className="text-fg-3">–</span>}{s.replay_error ? <div className="max-w-xs truncate text-s text-fg-3" title={s.replay_error}>{s.replay_error}</div> : null}</TableCell>
       <TableCell>{s.stability ? <span className="mono" data-testid="stability">{s.stability.passes}/{s.stability.iterations}{s.stability.pattern ? <span className="ml-1 text-fg-3">{s.stability.pattern}</span> : null}{s.stability.recovered ? <span className="ml-1 text-pass">recovered</span> : null}</span> : <span className="text-fg-3">–</span>}</TableCell>
       <TableCell><span className={s.shipped ? 'text-pass' : 'text-fg-3'} data-testid="shipped" data-shipped={s.shipped ? 'yes' : 'no'}>{s.shipped ? 'yes' : 'no'}</span></TableCell>
@@ -206,4 +291,3 @@ function describeEvent(e: { type: string; [k: string]: unknown }): string {
 function shortJson(v: unknown): string {
   try { const s = JSON.stringify(v); return s.length > 120 ? s.slice(0, 117) + '…' : s; } catch { return ''; }
 }
-
