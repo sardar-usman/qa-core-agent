@@ -56,8 +56,8 @@ Schedule: two focused days, then the audit.
   table, findings, artifacts, events status (absent vs empty), tolerant
   verdict matching via assignVerdicts, four-term cost total (usd + planner
   + critic + stabilizer), schema v4 (environment nullable, no default).
-- PR B2 stage view: IN PROGRESS. Branch dashboard/pr-b2-stage-view. Six
-  panels from run-report only; live events land in PR C.
+- PR B2 stage view (PR #12): MERGED Sept 14. Six panels from run-report
+  only; live events land in PR C.
 - PR C terminal + live run view (PR #13): MERGED Sept 14. Single-terminal
   composer through explore-request.ts, SRS attach into the run folder,
   live stage view converging on the history view via run-report. First
