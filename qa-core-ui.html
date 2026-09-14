@@ -6,7 +6,7 @@
 <title>QA-Core. Autonomous QA Agent</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@200;300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
     /* Surfaces. warmer, more refined */
@@ -55,8 +55,8 @@
     --cyan-glow: rgba(125, 211, 232, 0.18);
 
     /* Fonts. one family throughout */
-    --sans: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    --display: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, sans-serif;
+    --display: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, sans-serif;
     --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
     /* Motion */
@@ -2783,6 +2783,58 @@
   .srs-attach .run-action { flex: 0 0 auto; }
   .srs-attach .srs-name { font-family: var(--mono); font-size: 10.5px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* ===== Redesign: type scale, semantic colors ===== */
+  :root {
+    --fs-s: 12px;   /* small: meta, tags, captions */
+    --fs-m: 13.5px; /* body */
+    --fs-l: 24px;   /* hero numbers */
+    --w-r: 400;
+    --w-b: 600;
+    --pass: var(--emerald);
+    --pass-soft: var(--emerald-soft);
+    --rework: var(--amber);
+    --rework-soft: var(--amber-soft);
+    --reject: var(--rose);
+    --reject-soft: var(--rose-soft);
+    --finding: #c3b1ff;
+    --finding-soft: rgba(195, 177, 255, 0.10);
+    --finding-line: rgba(195, 177, 255, 0.28);
+    --neutral: var(--text-2);
+    --neutral-soft: rgba(255, 255, 255, 0.06);
+    --cost: #7dd3e8;
+    --cost-soft: rgba(125, 211, 232, 0.10);
+  }
+  :root[data-theme="light"] {
+    --finding: #5b3fc9;
+    --finding-soft: rgba(91, 63, 201, 0.08);
+    --finding-line: rgba(91, 63, 201, 0.26);
+    --neutral-soft: rgba(15, 15, 30, 0.06);
+    --cost: #0f6478;
+    --cost-soft: rgba(15, 100, 120, 0.08);
+  }
+  .money, .mono { font-family: var(--mono); }
+  .c-pass { color: var(--pass); }
+  .c-rework { color: var(--rework); }
+  .c-reject { color: var(--reject); }
+  .c-finding { color: var(--finding); }
+
+  /* Labels: sentence case, no tracking. Overrides the older uppercase style. */
+  .dash-card-label, .panel-title, .stats-block-label, .settings-section, .results-header h3,
+  .rv-sub-label, .popover-title, .model-group-label, .cmd-hint, .dash-intro-eyebrow, .stat-label,
+  .code-lang, .file-row .file-meta, .status-pill .label-tiny, .logo-tag, .run-card-badge, .run-status,
+  .week-stat .l, .rv-log > summary, .rv-stage-state, .metric-label {
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .dash-card-label, .panel-title, .stats-block-label, .settings-section, .results-header h3, .rv-sub-label, .popover-title {
+    font-size: var(--fs-s);
+    font-weight: var(--w-b);
+    color: var(--text-2);
+  }
+  .status-pill { font-family: var(--sans); font-size: var(--fs-s); }
+  .status-pill .label-tiny { font-size: var(--fs-s); }
+  .status-pill.session .money { color: var(--cost); font-weight: var(--w-b); }
+
   /* ===== Live run view (one per run, in the message stream) ===== */
   .run-view {
     background: var(--bg-1);
@@ -2790,213 +2842,278 @@
     border-radius: 14px;
     margin: 6px 0 14px;
     overflow: hidden;
-    /* A flex child with overflow hidden may shrink to nothing when the chat
-       column overflows; the run view must keep its full height. */
     flex: 0 0 auto;
+    font-size: var(--fs-m);
   }
   .rv-head {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
     padding: 12px 16px; border-bottom: 1px solid var(--line);
     background: var(--bg-2);
   }
-  .rv-title { font-size: 13px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .rv-title .rv-url { font-family: var(--mono); font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+  .rv-title { font-size: var(--fs-m); font-weight: var(--w-b); color: var(--text); display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+  .rv-title .rv-cmd { font-family: var(--mono); font-weight: var(--w-r); color: var(--text-2); }
+  .rv-title .rv-url { font-family: var(--mono); font-weight: var(--w-r); font-size: var(--fs-s); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
   .rv-badge {
-    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
-    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-2); background: var(--bg-3);
+    font-size: var(--fs-s); font-weight: var(--w-b);
+    padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-2); background: var(--bg-3);
   }
   .rv-badge.running { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
-  .rv-badge.done { color: var(--emerald); border-color: rgba(93, 213, 164, 0.3); background: var(--emerald-soft); }
-  .rv-badge.stopped { color: var(--amber); border-color: rgba(244, 197, 96, 0.3); background: var(--amber-soft); }
-  .rv-badge.failed, .rv-badge.empty { color: var(--rose); border-color: rgba(239, 124, 141, 0.3); background: var(--rose-soft); }
+  .rv-badge.done { color: var(--pass); border-color: transparent; background: var(--pass-soft); }
+  .rv-badge.stopped { color: var(--rework); border-color: transparent; background: var(--rework-soft); }
+  .rv-badge.failed, .rv-badge.empty { color: var(--reject); border-color: transparent; background: var(--reject-soft); }
   .rv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
   .rv-chip {
-    font-family: var(--mono); font-size: 10.5px; color: var(--text-2);
-    background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px;
+    font-size: var(--fs-s); color: var(--text-2);
+    background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
   }
-  .rv-chip b { color: var(--text); font-weight: 500; }
+  .rv-chip b { color: var(--text); font-weight: var(--w-b); }
   .rv-chip.override { border-color: var(--accent-line); color: var(--accent); }
 
-  .rv-stages { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
-  .rv-stage { background: var(--bg-1); padding: 12px 16px 14px; min-height: 96px; }
-  .rv-stage.wide { grid-column: 1 / -1; }
-  .rv-stage-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  /* Stage rail */
+  .rv-rail { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--bg-1); }
+  .rv-step {
+    flex: 1 1 150px; min-width: 150px;
+    display: flex; align-items: flex-start; gap: 9px; text-align: left;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px;
+    cursor: pointer; color: var(--text); font-family: var(--sans); transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+  }
+  .rv-step:hover { border-color: var(--line-strong); background: var(--bg-3); }
+  .rv-step-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex: 0 0 auto; background: var(--text-3); }
+  .rv-step.running .rv-step-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: rvpulse 1.2s ease-in-out infinite; }
+  .rv-step.done .rv-step-dot { background: var(--pass); }
+  .rv-step.warning .rv-step-dot { background: var(--rework); }
+  .rv-step.running { border-color: var(--accent-line); }
+  .rv-step-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .rv-step-name { font-size: var(--fs-m); font-weight: var(--w-b); line-height: 1.2; }
+  .rv-step-stat { font-size: var(--fs-s); color: var(--text-2); line-height: 1.3; }
+  .rv-step.pending .rv-step-name { color: var(--text-2); }
+  @keyframes rvpulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+  /* Panels stack full width */
+  .rv-stages { display: flex; flex-direction: column; }
+  .rv-stage { background: var(--bg-1); padding: 14px 16px 16px; border-top: 1px solid var(--line); }
+  .rv-stage:first-child { border-top: none; }
+  .rv-stage-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
   .rv-num {
-    width: 18px; height: 18px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
-    font-family: var(--mono); font-size: 10px; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--line);
+    width: 20px; height: 20px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: var(--fs-s); font-weight: var(--w-b); background: var(--bg-3); color: var(--text-2); border: 1px solid var(--line);
   }
   .rv-stage.active .rv-num { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
-  .rv-stage.done .rv-num { background: var(--emerald-soft); color: var(--emerald); border-color: rgba(93, 213, 164, 0.3); }
-  .rv-stage.error .rv-num { background: var(--rose-soft); color: var(--rose); border-color: rgba(239, 124, 141, 0.3); }
-  .rv-stage-name { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
-  .rv-stage-sub { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
-  .rv-stage-state { margin-left: auto; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+  .rv-stage.done .rv-num { background: var(--pass-soft); color: var(--pass); border-color: transparent; }
+  .rv-stage.error .rv-num { background: var(--reject-soft); color: var(--reject); border-color: transparent; }
+  .rv-stage-name { font-size: var(--fs-m); font-weight: var(--w-b); color: var(--text); }
+  .rv-stage-sub { font-size: var(--fs-s); color: var(--text-3); }
+  .rv-stage-state { margin-left: auto; font-size: var(--fs-s); color: var(--text-3); }
   .rv-stage.active .rv-stage-state { color: var(--accent); }
   .rv-stage.active .rv-stage-state::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: rvpulse 1.2s ease-in-out infinite; }
-  @keyframes rvpulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
-  .rv-stage.done .rv-stage-state { color: var(--emerald); }
-  .rv-stage.error .rv-stage-state { color: var(--rose); }
-  .rv-stage.skipped .rv-stage-state { color: var(--text-3); }
-  .rv-body { font-size: 12px; color: var(--text-2); line-height: 1.55; }
-  .rv-empty { color: var(--text-3); font-style: italic; }
-  .rv-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 6px; }
-  .rv-kv span { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
-  .rv-kv span b { color: var(--text); font-weight: 500; }
-  .rv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-  .rv-list li { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; min-width: 0; }
+  .rv-stage.done .rv-stage-state { color: var(--pass); }
+  .rv-stage.error .rv-stage-state { color: var(--reject); }
+  .rv-body { font-size: var(--fs-m); color: var(--text-2); line-height: 1.55; }
+  .rv-body code { font-family: var(--mono); font-size: var(--fs-s); background: var(--bg-3); padding: 1px 5px; border-radius: 4px; color: var(--text); }
+  .rv-empty { color: var(--text-3); padding: 6px 0; }
+  .rv-prose { color: var(--text-2); line-height: 1.55; margin: 0; }
+  .rv-kv { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 8px; }
+  .rv-kv span { font-size: var(--fs-m); color: var(--text-2); }
+  .rv-kv span b { color: var(--text); font-weight: var(--w-b); }
+  .rv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .rv-list li { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-m); min-width: 0; }
   .rv-list li .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rv-list li .why { color: var(--text-3); font-size: 11px; }
-  .rv-list li .mono { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+  .rv-list li .why { color: var(--text-3); font-size: var(--fs-s); }
+  .rv-list li .mono { font-size: var(--fs-s); color: var(--text-3); white-space: nowrap; }
   .rv-tag {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px;
-    background: var(--bg-3); border: 1px solid var(--line); color: var(--text-2); white-space: nowrap;
+    font-size: var(--fs-s); padding: 1px 7px; border-radius: 5px; white-space: nowrap;
+    background: var(--bg-3); border: 1px solid var(--line); color: var(--text-2);
   }
-  .rv-tag.happy { color: var(--emerald); background: var(--emerald-soft); border-color: transparent; }
-  .rv-tag.negative { color: var(--rose); background: var(--rose-soft); border-color: transparent; }
-  .rv-tag.edge { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
-  .rv-tag.rule { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .rv-tag.happy { color: var(--pass); background: var(--pass-soft); border-color: transparent; }
+  .rv-tag.negative { color: var(--reject); background: var(--reject-soft); border-color: transparent; }
+  .rv-tag.edge { color: var(--rework); background: var(--rework-soft); border-color: transparent; }
+  .rv-tag.rule { color: var(--accent); background: var(--accent-soft); border-color: transparent; font-family: var(--mono); }
   .rv-tag.feature { color: var(--cyan); background: var(--cyan-soft); border-color: transparent; }
-  .rv-warn { color: var(--amber); }
-  .rv-bad { color: var(--rose); }
-  .rv-ok { color: var(--emerald); }
-  .rv-more { color: var(--text-3); font-size: 10.5px; font-family: var(--mono); margin-top: 4px; }
+  .rv-tag.finding { color: var(--finding); background: var(--finding-soft); border-color: transparent; }
+  .rv-tag.neutral { color: var(--neutral); background: var(--neutral-soft); border-color: transparent; }
+  .rv-warn { color: var(--rework); }
+  .rv-bad { color: var(--reject); }
+  .rv-ok { color: var(--pass); }
+  .rv-more { color: var(--text-3); font-size: var(--fs-s); margin-top: 4px; }
 
   .rv-meter { height: 6px; border-radius: 999px; background: var(--bg-3); overflow: hidden; margin: 6px 0 4px; border: 1px solid var(--line); }
-  .rv-meter > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.3s var(--ease); }
-  .rv-meter.warn > i { background: var(--amber); }
-  .rv-meter.over > i { background: var(--rose); }
-  .rv-meter-label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+  .rv-meter > i { display: block; height: 100%; background: var(--cost); border-radius: 999px; transition: width 0.3s var(--ease); }
+  .rv-meter.warn > i { background: var(--rework); }
+  .rv-meter.over > i { background: var(--reject); }
+  .rv-meter-label { display: flex; justify-content: space-between; font-size: var(--fs-s); color: var(--text-3); flex-wrap: wrap; gap: 4px 12px; }
 
-  .rv-calls { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-height: 118px; overflow: auto; margin-top: 6px; }
+  .rv-calls { font-family: var(--mono); font-size: var(--fs-s); color: var(--text-3); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-height: 118px; overflow: auto; margin-top: 8px; }
   .rv-calls div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rv-calls .fn { color: var(--accent); }
-  .rv-calls .err { color: var(--rose); }
+  .rv-calls .err { color: var(--reject); }
 
-  .rv-verdict { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: start; padding: 5px 0; border-top: 1px solid var(--line-soft); }
-  .rv-verdict:first-child { border-top: none; padding-top: 0; }
-  .rv-verdict .v { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; font-weight: 600; min-width: 58px; text-align: center; }
-  .rv-verdict .v.pass { background: var(--emerald-soft); color: var(--emerald); }
-  .rv-verdict .v.rework { background: var(--amber-soft); color: var(--amber); }
-  .rv-verdict .v.reject { background: var(--rose-soft); color: var(--rose); }
-  .rv-verdict .vs { min-width: 0; }
-  .rv-verdict .vs .name { color: var(--text); font-size: 11.5px; font-weight: 500; }
-  .rv-verdict .vs .why { color: var(--text-3); font-size: 11px; line-height: 1.45; }
-  .rv-journey { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; padding: 4px 0; flex-wrap: wrap; }
-  .rv-journey .name { color: var(--text); font-family: var(--sans); font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+  /* Verdict cards */
+  .vc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+  .rv-verdict.vc { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .rv-verdict.vc.pass { border-left: 3px solid var(--pass); }
+  .rv-verdict.vc.rework { border-left: 3px solid var(--rework); }
+  .rv-verdict.vc.reject { border-left: 3px solid var(--reject); }
+  .rv-verdict.vc .vc-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .rv-verdict .v { font-size: var(--fs-s); font-weight: var(--w-b); padding: 2px 8px; border-radius: 5px; flex: 0 0 auto; }
+  .rv-verdict .v.pass { background: var(--pass-soft); color: var(--pass); }
+  .rv-verdict .v.rework { background: var(--rework-soft); color: var(--rework); }
+  .rv-verdict .v.reject { background: var(--reject-soft); color: var(--reject); }
+  .rv-verdict.vc .vc-head .name { color: var(--text); font-size: var(--fs-m); font-weight: var(--w-b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vc-reasons { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: var(--fs-s); line-height: 1.5; }
+  .vc-why { margin-top: 6px; font-size: var(--fs-s); color: var(--text-2); line-height: 1.5; }
+  .vc-why b { color: var(--text); font-weight: var(--w-b); }
+  .rv-journey { display: flex; align-items: center; gap: 6px; font-size: var(--fs-s); padding: 5px 0; flex-wrap: wrap; border-top: 1px solid var(--line-soft); }
+  .rv-journey .name { color: var(--text); font-size: var(--fs-m); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
   .rv-journey .arrow { color: var(--text-3); }
-  .rv-journey .v { padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-  .rv-journey .v.pass { background: var(--emerald-soft); color: var(--emerald); }
-  .rv-journey .v.rework { background: var(--amber-soft); color: var(--amber); }
-  .rv-journey .v.reject, .rv-journey .v.none { background: var(--rose-soft); color: var(--rose); }
+  .rv-journey .v { padding: 1px 7px; border-radius: 4px; font-weight: var(--w-b); }
+  .rv-journey .v.pass { background: var(--pass-soft); color: var(--pass); }
+  .rv-journey .v.rework { background: var(--rework-soft); color: var(--rework); }
+  .rv-journey .v.reject, .rv-journey .v.none { background: var(--reject-soft); color: var(--reject); }
   .rv-journey .outcome { margin-left: auto; color: var(--text-3); }
-  .rv-journey .outcome.kept { color: var(--emerald); }
-  .rv-journey .outcome.dropped { color: var(--rose); }
+  .rv-journey .outcome.kept { color: var(--pass); }
+  .rv-journey .outcome.dropped { color: var(--reject); }
   .rv-banner {
-    display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; margin: 4px 0 8px;
-    background: var(--amber-soft); border: 1px solid rgba(244, 197, 96, 0.25); color: var(--amber); font-size: 11.5px;
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; margin: 4px 0 10px; flex-wrap: wrap;
+    background: var(--rework-soft); border: 1px solid transparent; color: var(--rework); font-size: var(--fs-m);
   }
   .rv-banner.info { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
-  .rv-banner.bad { background: var(--rose-soft); border-color: rgba(239, 124, 141, 0.3); color: var(--rose); }
-  .rv-banner b { font-weight: 600; }
+  .rv-banner.bad { background: var(--reject-soft); color: var(--reject); }
+  .rv-banner b { font-weight: var(--w-b); }
 
-  .rv-runs { display: flex; flex-direction: column; gap: 3px; }
-  .rv-run { display: flex; align-items: center; gap: 8px; font-size: 11.5px; min-width: 0; }
+  .rv-runs { display: flex; flex-direction: column; gap: 4px; }
+  .rv-run { display: flex; align-items: center; gap: 8px; font-size: var(--fs-m); min-width: 0; }
   .rv-run .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .rv-dots { display: inline-flex; gap: 3px; }
   .rv-dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line); display: inline-block; }
-  .rv-dots i.p { background: var(--emerald); border-color: transparent; }
-  .rv-dots i.f { background: var(--rose); border-color: transparent; }
-  .rv-run .pattern { font-family: var(--mono); font-size: 10px; color: var(--text-3); }
-  .rv-run .pattern.flaky { color: var(--amber); }
-  .rv-run .pattern.broken { color: var(--rose); }
-  .rv-run .pattern.recovered { color: var(--emerald); }
+  .rv-dots i.p { background: var(--pass); border-color: transparent; }
+  .rv-dots i.f { background: var(--reject); border-color: transparent; }
+  .rv-run .pattern { font-family: var(--mono); font-size: var(--fs-s); color: var(--text-3); }
+  .rv-run .pattern.flaky { color: var(--rework); }
+  .rv-run .pattern.broken { color: var(--reject); }
+  .rv-run .pattern.recovered { color: var(--pass); }
 
-  /* Summary: funnel + coverage + cost split + findings + download */
-  .rv-summary-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; }
-  @media (max-width: 1250px) { .rv-summary-grid { grid-template-columns: 1fr; } }
-  .rv-sub-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); font-weight: 500; margin: 6px 0 8px; display: flex; align-items: center; gap: 8px; }
-  .rv-sub-label .mono { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-2); }
-  .funnel { display: flex; flex-direction: column; gap: 5px; }
+  /* Summary: hero, funnel, cost, coverage, findings */
+  .rv-hero { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .hero-stat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .hero-stat.attention { border-color: var(--finding-line); background: var(--finding-soft); }
+  .hero-n { font-size: var(--fs-l); font-weight: var(--w-b); color: var(--text); line-height: 1.1; }
+  .hero-n.money { color: var(--cost); }
+  .hero-stat.attention .hero-n { color: var(--finding); }
+  .hero-l { font-size: var(--fs-s); color: var(--text-2); margin-top: 4px; }
+  .hero-sub { display: block; color: var(--text-3); }
+  .rv-sub-label { margin: 8px 0 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .rv-sub-label .mono { color: var(--text-3); font-weight: var(--w-r); font-size: var(--fs-s); }
+  .funnel { display: flex; flex-direction: column; gap: 6px; }
   .funnel-row { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; }
-  .funnel-row .fl { font-size: 11.5px; color: var(--text-2); text-align: right; }
-  .funnel-row .fl.head { color: var(--text); font-weight: 600; }
-  .funnel-row .fbar { height: 18px; border-radius: 5px; background: var(--bg-3); border: 1px solid var(--line); overflow: hidden; position: relative; }
+  .funnel-row .fl { font-size: var(--fs-m); color: var(--text-2); text-align: right; }
+  .funnel-row .fl.head { color: var(--text); font-weight: var(--w-b); }
+  .funnel-row .fbar { height: 18px; border-radius: 5px; background: var(--bg-3); border: 1px solid var(--line); overflow: hidden; }
   .funnel-row .fbar > i { display: block; height: 100%; border-radius: 4px; min-width: 2px; transition: width 0.4s var(--ease); }
-  .funnel-row .fbar > i.zero { min-width: 0; width: 0 !important; }
-  .funnel-row .fn { font-family: var(--mono); font-size: 12px; color: var(--text); font-weight: 500; text-align: right; }
+  .funnel-row .fn { font-family: var(--mono); font-size: var(--fs-m); color: var(--text); font-weight: var(--w-b); text-align: right; }
   .funnel-row.planned .fbar > i { background: var(--accent); }
-  .funnel-row.generated .fbar > i { background: var(--emerald); }
-  .funnel-row.dropped .fbar > i { background: var(--rose); opacity: 0.85; }
-  .funnel-row.incomplete .fbar > i { background: var(--amber); }
-  .funnel-row.findings .fbar > i { background: var(--rose); }
-  .funnel-row.skipped .fbar > i { background: var(--text-3); }
-  .funnel-row .fdetail { grid-column: 2 / -1; font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-top: -2px; }
-  .funnel-eq { font-family: var(--mono); font-size: 11px; color: var(--text-2); margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .funnel-eq .balanced { color: var(--emerald); }
-  .funnel-eq .unbalanced { color: var(--rose); }
+  .funnel-row.generated .fbar > i { background: var(--pass); }
+  .funnel-row.dropped .fbar > i { background: var(--reject); }
+  .funnel-row.incomplete .fbar > i { background: var(--neutral); opacity: 0.7; }
+  .funnel-row.findings .fbar > i { background: var(--finding); }
+  .funnel-row.skipped .fbar > i { background: var(--neutral); opacity: 0.5; }
+  .funnel-row .fdetail { grid-column: 2 / -1; font-size: var(--fs-s); color: var(--text-3); margin-top: -2px; }
+  .funnel-zero { font-size: var(--fs-s); color: var(--text-3); padding: 2px 0 0 106px; }
+  .funnel-eq { font-size: var(--fs-s); color: var(--text-2); margin-top: 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .funnel-eq .balanced { color: var(--pass); }
+  .funnel-eq .unbalanced { color: var(--reject); }
 
-  .cost-split { display: flex; flex-direction: column; gap: 5px; }
+  .cost-split { display: flex; flex-direction: column; gap: 6px; }
+  .cost-total { font-size: var(--fs-m); color: var(--text-2); }
+  .cost-total .money { color: var(--cost); font-weight: var(--w-b); font-size: var(--fs-m); }
   .cost-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; border: 1px solid var(--line); background: var(--bg-3); }
-  .cost-bar i { display: block; height: 100%; }
-  .cost-bar i.planner { background: var(--cyan); }
-  .cost-bar i.explorer { background: var(--accent); }
-  .cost-bar i.critic { background: var(--emerald); }
-  .cost-bar i.repair { background: var(--amber); }
-  .cost-bar i.stabilizer { background: var(--rose); }
-  .cost-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); }
-  .cost-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
-  .cost-legend .planner::before { background: var(--cyan); }
-  .cost-legend .explorer::before { background: var(--accent); }
-  .cost-legend .critic::before { background: var(--emerald); }
-  .cost-legend .repair::before { background: var(--amber); }
-  .cost-legend .stabilizer::before { background: var(--rose); }
-  .cost-total { font-family: var(--mono); font-size: 13px; color: var(--text); font-weight: 500; }
+  .cost-bar i { display: block; height: 100%; background: var(--cost); }
+  .cost-bar i.planner { opacity: 0.45; }
+  .cost-bar i.explorer { opacity: 1; }
+  .cost-bar i.critic { opacity: 0.7; }
+  .cost-bar i.repair { opacity: 0.85; }
+  .cost-bar i.stabilizer { opacity: 0.55; }
+  .cost-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--fs-s); color: var(--text-2); }
+  .cost-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; background: var(--cost); }
+  .cost-legend .planner::before { opacity: 0.45; }
+  .cost-legend .critic::before { opacity: 0.7; }
+  .cost-legend .repair::before { opacity: 0.85; }
+  .cost-legend .stabilizer::before { opacity: 0.55; }
+  .cost-legend .money::before { content: none; }
 
-  .finding { padding: 7px 10px; border-radius: 8px; background: var(--rose-soft); border: 1px solid rgba(239, 124, 141, 0.22); margin-bottom: 6px; font-size: 11.5px; }
-  .finding .name { color: var(--text); font-weight: 500; }
-  .finding .detail { color: var(--text-2); font-size: 11px; line-height: 1.45; margin-top: 2px; }
-  .finding .mono { font-family: var(--mono); font-size: 10px; color: var(--text-3); }
-  .coverage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-  .coverage-list li { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; }
-  .coverage-list li .rid { font-family: var(--mono); font-size: 10.5px; color: var(--accent); min-width: 32px; }
-  .coverage-list li .why { color: var(--text-3); font-size: 10.5px; font-family: var(--mono); margin-left: auto; white-space: nowrap; }
-  .rv-download { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; font-family: var(--sans); }
-  .rv-download:hover { background: var(--accent-line); }
+  .finding-block { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--finding-soft); border: 1px solid var(--finding-line); }
+  .finding-block h4 { margin: 0 0 4px; font-size: var(--fs-m); font-weight: var(--w-b); color: var(--finding); display: flex; gap: 8px; align-items: center; }
+  .finding-intro { margin: 0 0 8px; font-size: var(--fs-s); color: var(--text-2); }
+  .finding { padding: 8px 10px; border-radius: 8px; background: var(--bg-1); border: 1px solid var(--line); margin-bottom: 6px; font-size: var(--fs-m); }
+  .finding .name { color: var(--finding); font-weight: var(--w-b); }
+  .finding .detail { color: var(--text-2); font-size: var(--fs-s); line-height: 1.5; margin-top: 2px; }
+  .finding .detail .k { color: var(--text); font-weight: var(--w-b); margin-right: 4px; }
+  .coverage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .coverage-list li { display: flex; gap: 8px; align-items: baseline; font-size: var(--fs-m); min-width: 0; }
+  .coverage-list li .rid { font-family: var(--mono); font-size: var(--fs-s); color: var(--accent); min-width: 32px; }
+  .coverage-list li .name { color: var(--text-2); min-width: 0; }
+  .coverage-list li .why { color: var(--text-3); font-size: var(--fs-s); margin-left: auto; white-space: nowrap; }
+  .rv-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; align-items: flex-start; }
+  .rv-download { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 9px; background: var(--accent); border: 1px solid var(--accent); color: var(--bg-0); font-size: var(--fs-m); font-weight: var(--w-b); cursor: pointer; font-family: var(--sans); flex-wrap: wrap; }
+  .rv-download:hover { filter: brightness(1.08); }
+  .rv-download .dl-meta { font-weight: var(--w-r); opacity: 0.85; font-size: var(--fs-s); }
+  .rv-hint { font-family: var(--mono); font-size: var(--fs-s); color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; word-break: break-all; }
   .rv-log { border-top: 1px solid var(--line); background: var(--bg-2); }
-  .rv-log > summary { cursor: pointer; list-style: none; padding: 8px 16px; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); display: flex; align-items: center; gap: 10px; }
+  .rv-log > summary { cursor: pointer; list-style: none; padding: 9px 16px; font-size: var(--fs-s); font-weight: var(--w-b); color: var(--text-2); display: flex; align-items: center; gap: 10px; }
   .rv-log > summary::-webkit-details-marker { display: none; }
   .rv-log > summary::before { content: '▸'; color: var(--text-3); transition: transform 0.15s var(--ease); }
   .rv-log[open] > summary::before { transform: rotate(90deg); }
-  .rv-log > summary .mono { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-2); }
-  .rv-log-hint { margin-left: auto; letter-spacing: 0; text-transform: none; font-size: 10.5px; color: var(--text-3); }
-  .rv-log-lines { max-height: 220px; overflow: auto; padding: 4px 16px 10px; font-family: var(--mono); font-size: 10.5px; color: var(--text-2); line-height: 1.55; }
+  .rv-log > summary .mono { font-weight: var(--w-r); color: var(--text-3); }
+  .rv-log-hint { margin-left: auto; font-weight: var(--w-r); color: var(--text-3); }
+  .rv-log-lines { max-height: 220px; overflow: auto; padding: 4px 16px 10px; font-family: var(--mono); font-size: var(--fs-s); color: var(--text-2); line-height: 1.55; }
   .rv-log-lines > div { white-space: pre-wrap; word-break: break-word; padding: 1px 0; border-top: 1px solid var(--line-soft); }
   .rv-log-lines .at { color: var(--text-3); margin-right: 8px; }
-  .rv-hint { font-family: var(--mono); font-size: 10.5px; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-top: 8px; word-break: break-all; }
 
-  /* Run history additions */
-  .run-status {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
-    border: 1px solid var(--line); color: var(--text-3); background: var(--bg-3); margin-left: 6px; vertical-align: 1px;
-  }
-  .run-status.completed { color: var(--emerald); background: var(--emerald-soft); border-color: transparent; }
-  .run-status.stopped { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
-  .run-status.empty { color: var(--rose); background: var(--rose-soft); border-color: transparent; }
+  /* Chat completion message */
+  .msg.completion .msg-bubble { display: flex; flex-direction: column; gap: 8px; }
+  .completion-line { font-size: var(--fs-m); }
+  .completion-zip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border-radius: 8px; background: var(--bg-3); border: 1px solid var(--line); }
+  .completion-zip .zip-name { font-family: var(--mono); font-size: var(--fs-s); color: var(--text); }
+  .completion-zip .zip-meta { font-size: var(--fs-s); color: var(--text-3); }
+  .completion-zip .run-action { flex: 0 0 auto; margin-left: auto; }
+
+  /* Activity list */
+  .run-card { border-left: 3px solid var(--text-3); }
+  .run-card.s-completed { border-left-color: var(--pass); }
+  .run-card.s-stopped { border-left-color: var(--rework); }
+  .run-card.s-empty { border-left-color: var(--reject); }
+  .run-card.active-run { border-left-color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+  .run-card-title { font-size: var(--fs-m); font-weight: var(--w-b); }
+  .run-card-meta { font-family: var(--sans); font-size: var(--fs-s); color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  .run-card-meta .money { color: var(--cost); }
+  .run-card-badge { font-family: var(--sans); font-size: var(--fs-s); }
+  .run-status { font-size: var(--fs-s); padding: 1px 7px; border-radius: 999px; margin-left: 0; }
+  .run-status.completed { color: var(--pass); background: var(--pass-soft); border-color: transparent; }
+  .run-status.stopped { color: var(--rework); background: var(--rework-soft); border-color: transparent; }
+  .run-status.empty { color: var(--reject); background: var(--reject-soft); border-color: transparent; }
+  .run-status.running { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .run-status.running::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; animation: rvpulse 1.2s ease-in-out infinite; vertical-align: 1px; }
   .run-action.primary { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
-  .run-mini-funnel { display: flex; gap: 6px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-bottom: 8px; }
-  .run-mini-funnel b { color: var(--text-2); font-weight: 500; }
+  .run-mini-funnel { display: flex; gap: 6px 10px; flex-wrap: wrap; font-size: var(--fs-s); color: var(--text-3); margin-bottom: 8px; }
+  .run-mini-funnel b { color: var(--text-2); font-weight: var(--w-b); }
   .run-resume-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-  .run-resume-row input { width: 74px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-family: var(--mono); font-size: 10.5px; color: var(--text); outline: none; }
+  .run-resume-row input { width: 92px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-family: var(--mono); font-size: var(--fs-s); color: var(--text); outline: none; }
   .run-resume-row input:focus { border-color: var(--accent-line); }
-  .run-resume-row .hint { font-size: 10px; color: var(--text-3); }
+  .run-resume-row .hint { font-size: var(--fs-s); color: var(--text-3); }
+  .verdict-line .v.pass   { background: var(--pass-soft); color: var(--pass); }
+  .verdict-line .v.rework { background: var(--rework-soft); color: var(--rework); }
+  .verdict-line .v.reject { background: var(--reject-soft); color: var(--reject); }
 
-  .cmd-card.resume .cmd-badge { background: var(--amber-soft); color: var(--amber); }
+  .cmd-card.resume .cmd-badge { background: var(--rework-soft); color: var(--rework); }
   .cmd-card.transcribe .cmd-badge { background: var(--cyan-soft); color: var(--cyan); }
 
   /* Responsive */
   @media (max-width: 1100px) {
-    main { grid-template-columns: 260px 1fr 280px; }
-    .rv-stages { grid-template-columns: 1fr; }
+    main { grid-template-columns: 240px 1fr 260px; }
+    .rv-hero { grid-template-columns: 1fr; }
+    .rv-title .rv-url { max-width: 220px; }
+    .vc-grid { grid-template-columns: 1fr; }
+    .funnel-row { grid-template-columns: 80px 1fr 40px; }
+    .funnel-zero { padding-left: 90px; }
   }
   @media (max-width: 880px) {
     main { grid-template-columns: 1fr; height: auto; }
@@ -3168,13 +3285,9 @@
             <span class="label-tiny">gateway</span>
             <span id="pillGatewayText">offline</span>
           </span>
-          <span class="status-pill ok" id="pillPlaywright" title="Playwright browser availability">
-            <span class="label-tiny">playwright</span>
-            <span>ready</span>
-          </span>
-          <span class="status-pill" id="pillCost" title="Cost spent in the current session">
-            <span class="label-tiny">cost</span>
-            <span id="pillCostText">$0.0000</span>
+          <span class="status-pill session" id="pillCost" title="Cost of the runs finished in this browser session">
+            <span class="label-tiny">Session</span>
+            <span class="money" id="pillCostText">$0.00</span>
           </span>
         </div>
 
@@ -3582,59 +3695,76 @@ function connectGateway() {
   const url = document.getElementById('gatewayUrl').value.trim();
   if (!url) { showToast('Enter gateway URL', 'error'); return; }
 
-  if (ws) { ws.close(); }
+  if (ws) { try { ws.close(); } catch {} }
 
   try {
     const tokenParam = gatewayToken ? `?token=${gatewayToken}` : '';
-    ws = new WebSocket(url + tokenParam);
-
-    ws.onopen = () => {
-      connected = true;
-      setStatus(true);
-      showToast('Connected to OpenClaw gateway', 'success');
-      pushLog('info', 'WebSocket open: ' + url);
-      // Pull on-disk runs so the dashboard reflects CLI / eval invocations too.
-      try { ws.send(JSON.stringify({ type: 'list_runs' })); pushLog('send', 'list_runs'); } catch { /* best-effort */ }
-    };
-
-    ws.onmessage = (e) => {
-      let data;
-      try { data = JSON.parse(e.data); } catch {
-        pushLog('recv', String(e.data).slice(0, 200));
-        appendAgentMessage(e.data);
-        return;
-      }
-      handleGatewayPayload(data);
-    };
-
-    ws.onerror = () => {
-      showToast('Connection failed. Check gateway URL and token.', 'error');
-      pushLog('error', 'WebSocket error');
-      setStatus(false);
-    };
-
-    ws.onclose = () => {
-      connected = false;
-      setStatus(false);
-      pushLog('warn', 'WebSocket closed');
-    };
+    bindGatewaySocket(new WebSocket(url + tokenParam), url);
   } catch(err) {
     showToast('Invalid WebSocket URL', 'error');
   }
 }
 
-function setStatus(on) {
+/**
+ * Attach the handlers to a socket and make it the live one. Every handler
+ * checks that its socket is still `ws`: closing an old socket during a
+ * reconnect used to fire its onclose AFTER the new socket opened, which put
+ * the header on "offline" while the new connection was live. The chip is
+ * always derived from the live socket's readyState.
+ */
+function bindGatewaySocket(sock, url) {
+  ws = sock;
+  sock.onopen = () => {
+    if (sock !== ws) return;
+    connected = true;
+    syncGatewayChip();
+    showToast('Connected to QA-Core gateway', 'success');
+    pushLog('info', 'WebSocket open: ' + (url || ''));
+    try { sock.send(JSON.stringify({ type: 'list_runs' })); pushLog('send', 'list_runs'); } catch { /* best-effort */ }
+  };
+  sock.onmessage = (e) => {
+    if (sock !== ws) return;
+    let data;
+    try { data = JSON.parse(e.data); } catch {
+      pushLog('recv', String(e.data).slice(0, 200));
+      appendAgentMessage(e.data);
+      return;
+    }
+    handleGatewayPayload(data);
+  };
+  sock.onerror = () => {
+    if (sock !== ws) return;
+    showToast('Connection failed. Check gateway URL and token.', 'error');
+    pushLog('error', 'WebSocket error');
+    syncGatewayChip();
+  };
+  sock.onclose = () => {
+    if (sock !== ws) return;
+    connected = false;
+    syncGatewayChip();
+    pushLog('warn', 'WebSocket closed');
+  };
+  syncGatewayChip();
+}
+
+/** The header reflects the live socket's state, nothing else. */
+function syncGatewayChip() {
+  const OPEN = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
+  const CONNECTING = typeof WebSocket !== 'undefined' ? WebSocket.CONNECTING : 0;
+  const state = ws && ws.readyState === OPEN ? 'connected' : ws && ws.readyState === CONNECTING ? 'connecting' : 'offline';
+  connected = state === 'connected';
   const dot = document.getElementById('statusDot');
   const txt = document.getElementById('statusText');
-  if (on) {
-    dot.classList.add('live');
-    txt.textContent = 'connected';
-    if (typeof setGatewayPill === 'function') setGatewayPill('ok', 'connected');
-  } else {
-    dot.classList.remove('live');
-    txt.textContent = 'disconnected';
-    if (typeof setGatewayPill === 'function') setGatewayPill('warn', 'offline');
-  }
+  if (dot) dot.classList.toggle('live', state === 'connected');
+  if (txt) txt.textContent = state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : 'disconnected';
+  setGatewayPill(state === 'connected' ? 'ok' : state === 'connecting' ? 'warn' : 'err', state);
+  return state;
+}
+
+function setStatus(on) {
+  // Kept for callers; the chip follows the socket, not this flag.
+  if (!on && ws && ws.readyState === WebSocket.OPEN) return;
+  syncGatewayChip();
 }
 
 /**
@@ -3663,8 +3793,10 @@ function handleAgentMessage(data) {
   // v3: gateway sends a structured framework_zip message after /explore.
   // Render it as a download card, not as JSON-stringified text.
   if (data && data.type === 'framework_zip' && typeof data.base64 === 'string') {
-    renderFrameworkZipMessage(data);
-    attachZipToRun(data);
+    // With a live run view the Summary owns the single download button and
+    // the completion message names the zip; without one (an older gateway,
+    // or a zip with no run) the chat card carries the button.
+    if (!attachZipToRun(data)) renderFrameworkZipMessage(data);
     return;
   }
   // Phase 5: structured run messages feed the live pipeline view.
@@ -3681,9 +3813,11 @@ function handleAgentMessage(data) {
     showToast('Gateway connected. Ready to receive commands.', 'success');
     return;
   }
-  // While a run is live, the console-style lines belong to the run view's
-  // collapsible log, not to the chat: the panels are the primary view.
-  if (typeof text === 'string' && currentRun && currentRun.badge === 'running') {
+  // While a run is live, and until the next command is sent, the gateway's
+  // console-style lines belong to the run view's collapsible log, not to the
+  // chat: the panels are the primary view and the Summary is the one place
+  // the full result renders.
+  if (typeof text === 'string' && currentRun && !currentRun.fromHistory && (currentRun.badge === 'running' || currentRun.finished)) {
     appendRunLog(currentRun, text);
     return;
   }
@@ -3873,6 +4007,8 @@ function sendMessage() {
 
   appendUserMessage(text);
   input.value = '';
+  // A new command detaches the previous run view; its run_started makes a new one.
+  if (currentRun && currentRun.finished) currentRun = null;
 
   if (!connected) {
     setTimeout(() => {
@@ -4740,16 +4876,19 @@ function renderRunHistory() {
   const list = document.getElementById('runHistory');
   if (!list) return;
   const runs = loadRuns();
-  if (runs.length === 0) {
+  const active = currentRun && currentRun.badge === 'running' && !currentRun.fromHistory ? currentRun : null;
+  if (runs.length === 0 && !active) {
     list.innerHTML = `<div class="dash-empty" style="padding:32px 12px">No runs yet. Your history will appear here.</div>`;
     return;
   }
-  list.innerHTML = runs.map(r => runCardHtml(r)).join('');
+  // The live run is pinned at the top with a pulse; history follows.
+  list.innerHTML = (active ? activeRunCardHtml(active) : '') + runs.map(r => runCardHtml(r)).join('');
 
-  // Wire interactions
-  [...list.querySelectorAll('.run-card-head')].forEach((head) => {
+  [...list.querySelectorAll('.run-card:not(.active-run) .run-card-head')].forEach((head) => {
     head.addEventListener('click', () => head.parentElement.classList.toggle('open'));
   });
+  const activeHead = list.querySelector('.run-card.active-run .run-card-head');
+  if (activeHead) activeHead.addEventListener('click', () => { if (active.el) active.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   [...list.querySelectorAll('[data-action]')].forEach((btn) => {
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -4786,10 +4925,10 @@ function resumeCommandFor(checkpointPath, ceiling) {
   return '/resume ' + checkpointPath + c;
 }
 
-/** Status badge + resume / regenerate actions for a run record from disk. */
+/** Status badge for a run record from disk. */
 function runStatusHtml(r) {
   if (!r.status) return '';
-  const label = r.status === 'stopped' ? 'stopped · checkpoint' : r.status;
+  const label = r.status === 'stopped' ? 'stopped, checkpoint kept' : r.status;
   return `<span class="run-status ${escAttr(r.status)}" title="${escAttr(r.stoppedReason || '')}">${escHtml(label)}</span>`;
 }
 function runMiniFunnelHtml(r) {
@@ -4804,25 +4943,53 @@ function runResumeRowHtml(r) {
   return `<div class="run-resume-row"><button class="run-action primary" data-action="resume" title="${escAttr(r.checkpointPath)}">resume</button><input type="number" data-ceiling min="0.5" step="0.5" placeholder="ceiling $" title="Optional higher cost ceiling (USD) for the continuation" /><span class="hint">USD, optional</span></div>`;
 }
 
+/** Shipped / planned for a card: planned from reconciliation when present. */
+function shippedPlanned(r) {
+  const rec = r.reconciliation;
+  const shipped = r.scenarios || 0;
+  const planned = rec && rec.planned != null ? rec.planned : null;
+  return planned != null ? `${shipped}/${planned} shipped` : `${shipped} shipped`;
+}
+function dateLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/** The live run, pinned at the top of the activity list. */
+function activeRunCardHtml(rv) {
+  const req = rv.request || {};
+  const host = hostFromUrl(req.url || '') || req.url || 'run';
+  const planned = rv.plan.scenarios.length;
+  const soFar = (rv.plan.usd || 0) + (rv.explorer.usd || 0) + (rv.critic.usd || 0);
+  return `<div class="run-card active-run" data-id="active">
+    <div class="run-card-head">
+      <div class="run-card-badge explore">explore</div>
+      <div style="min-width:0">
+        <div class="run-card-title" title="${escAttr(req.url || '')}">${escHtml(runTitle(host, req.url, req.features))}</div>
+        <div class="run-card-meta"><span class="run-status running">running</span><span>${rv.explorer.completed}/${planned || '?'} explored</span><span class="money">$${soFar.toFixed(4)}</span><span>${dateLabel(rv.startedAt)}</span></div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function runCardHtml(r) {
   const verdicts = (r.verdicts && r.verdicts.length)
     ? `<div class="run-card-verdicts">${r.verdicts.slice(0, 6).map(v => {
-        // Real Critic verdicts carry a reasons array; demo data carries a reason string.
         const why = v.reason || (Array.isArray(v.reasons) ? v.reasons.join('; ') : '');
         return `
         <div class="verdict-line"><span class="v ${escAttr(v.verdict)}">${escHtml(v.verdict)}</span><span>${escHtml(v.scenario || '')}${why ? '. ' + escHtml(why) : ''}</span></div>
       `;}).join('')}</div>`
     : '';
-  // Reality-check + stability + diagnostics lines (only when present).
   const stabilityLine = r.stability
     ? `<div class="run-card-metric">
          <span class="metric-label">Stability</span>
          <span class="stat-stable">${r.stability.passed || 0} stable</span>
-         ${r.stability.recovered ? `<span class="stat-stable" title="Recovered by the Stabilizer (Stage 5b) — flake fix succeeded">↻ ${r.stability.recovered} recovered</span>` : ''}
+         ${r.stability.recovered ? `<span class="stat-stable" title="Recovered by the Stabilizer (Stage 5b)">↻ ${r.stability.recovered} recovered</span>` : ''}
          <span class="stat-flaky">${r.stability.flaky || 0} flaky</span>
          <span class="stat-broken">${r.stability.broken || 0} broken</span>
          <span class="metric-pill">flake_rate ${((r.stability.flakeRate || 0) * 100).toFixed(1)}%</span>
-         ${r.stability.stabilizerCostUsd ? `<span class="metric-pill" title="LLM cost spent on Stabilizer proposals">stabilizer $${r.stability.stabilizerCostUsd.toFixed(4)}</span>` : ''}
        </div>`
     : '';
   const replayLine = r.replay
@@ -4832,24 +4999,17 @@ function runCardHtml(r) {
          ${r.replay.failed ? `<span class="stat-broken">${r.replay.failed} dropped</span>` : ''}
        </div>`
     : '';
-  const diagLine = r.diagnostics && (r.diagnostics.consoleErrors || r.diagnostics.networkErrors)
-    ? `<div class="run-card-metric">
-         <span class="metric-label">Diagnostics</span>
-         <span class="${r.diagnostics.consoleErrors ? 'stat-broken' : ''}">${r.diagnostics.consoleErrors || 0} console err</span>
-         <span class="${r.diagnostics.networkErrors ? 'stat-broken' : ''}">${r.diagnostics.networkErrors || 0} net 4xx/5xx</span>
-       </div>`
-    : '';
-  const status = r.passRate == null ? '' : r.passRate + '% pass';
   const summaryPreview = r.summary
     ? `<div class="run-card-summary-preview" title="${escAttr(r.summary)}">${escHtml(r.summary)}</div>`
     : '';
-  return `<div class="run-card" data-id="${r.id}">
+  const status = r.passRate == null ? '' : r.passRate + '% pass';
+  return `<div class="run-card s-${escAttr(r.status || 'none')}" data-id="${r.id}">
     <div class="run-card-head">
       <div class="run-card-badge ${escAttr(r.type)}">${escHtml(r.type)}</div>
       <div style="min-width:0">
         <div class="run-card-title" title="${escAttr(r.host || r.target || '')}">${escHtml(runTitle(r.host, r.target, r.features))}</div>
         ${summaryPreview}
-        <div class="run-card-meta">${r.scenarios || 0} scenarios · $${(r.costUsd || 0).toFixed(4)} · ${timeAgo(r.timestamp)}${runStatusHtml(r)}</div>
+        <div class="run-card-meta">${runStatusHtml(r)}<span>${escHtml(shippedPlanned(r))}</span><span class="money">$${(r.costUsd || 0).toFixed(4)}</span><span title="${escAttr(new Date(r.timestamp).toLocaleString())}">${dateLabel(r.timestamp)}</span></div>
       </div>
       <div class="run-card-status">${status}</div>
     </div>
@@ -4857,11 +5017,10 @@ function runCardHtml(r) {
       ${runMiniFunnelHtml(r)}
       ${replayLine}
       ${stabilityLine}
-      ${diagLine}
       ${verdicts}
       ${journeysHtml(r.repair)}
-      ${r.summary ? `<div style="font-size:11.5px;color:var(--text-2);line-height:1.5;margin-bottom:8px">${escHtml(r.summary)}</div>` : ''}
-      ${r.stoppedReason ? `<div style="font-size:11px;color:var(--amber);margin-bottom:6px">stopped: ${escHtml(r.stoppedReason)}</div>` : ''}
+      ${r.summary ? `<div style="font-size:var(--fs-s);color:var(--text-2);line-height:1.5;margin-bottom:8px">${escHtml(r.summary)}</div>` : ''}
+      ${r.stoppedReason ? `<div style="font-size:var(--fs-s);color:var(--rework);margin-bottom:6px">stopped: ${escHtml(r.stoppedReason)}</div>` : ''}
       <div class="run-card-actions">
         ${r.spec ? '<button class="run-action" data-action="copy">copy spec</button>' : ''}
         ${r.spec ? '<button class="run-action" data-action="download">download</button>' : ''}
@@ -5070,7 +5229,9 @@ function setGatewayPill(state, text) {
 
 function updateCostPill(usd) {
   const t = document.getElementById('pillCostText');
-  if (t) t.textContent = '$' + Number(usd || 0).toFixed(4);
+  if (t) t.textContent = '$' + Number(usd || 0).toFixed(2);
+  const pill = document.getElementById('pillCost');
+  if (pill) pill.title = 'Cost of the runs finished in this browser session: $' + Number(usd || 0).toFixed(4);
 }
 
 let sessionCostUsd = 0;
@@ -5110,9 +5271,8 @@ function ingestDiskRuns(diskRuns) {
   existing.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   try { localStorage.setItem(RUNS_KEY, JSON.stringify(existing.slice(0, RUNS_MAX))); } catch {}
 
-  // Recompute total cost from the merged set so the header pill reflects it.
-  sessionCostUsd = existing.reduce((s, r) => s + (r.costUsd || 0), 0);
-  updateCostPill(sessionCostUsd);
+  // The header chip is this session's spend (runs finished here), not the
+  // lifetime total on disk; the dashboard's Total card carries that.
 
   renderDashboard();
   renderRunHistory();
@@ -5329,13 +5489,14 @@ function sendCommand(text) {
 /* ---------- Live run view ---------- */
 
 let currentRun = null;
+// Stage keys stay stable (data-stage attributes); the labels are the rail's.
 const RV_STAGES = [
-  { key: 'discovery', num: 1, name: 'Discovery', sub: 'ladder · robots-aware' },
-  { key: 'plan', num: 2, name: 'Plan', sub: 'Planner · Haiku' },
-  { key: 'explorer', num: 3, name: 'Explorer', sub: 'Opus · tool-use' },
-  { key: 'critic', num: 4, name: 'Critic and repair', sub: 'Sonnet · one repair pass' },
-  { key: 'replay', num: 5, name: 'Replay and stability', sub: 'Playwright · zero LLM' },
-  { key: 'summary', num: 6, name: 'Summary', sub: 'reconciliation · coverage · cost', wide: true },
+  { key: 'discovery', num: 1, name: 'Discovery', sub: 'pages to cover' },
+  { key: 'plan', num: 2, name: 'Plan', sub: 'scenarios to test' },
+  { key: 'explorer', num: 3, name: 'Explore', sub: 'live browser, recorded steps' },
+  { key: 'critic', num: 4, name: 'Review', sub: 'verdicts and one repair pass' },
+  { key: 'replay', num: 5, name: 'Verify', sub: 'replay, then 3 more runs' },
+  { key: 'summary', num: 6, name: 'Summary', sub: 'what shipped and what it cost' },
 ];
 
 function newRunState(msg) {
@@ -5345,7 +5506,7 @@ function newRunState(msg) {
   const discoveryOn = !!(req.discover || (req.urls && req.urls.length) || req.srs);
   stages.discovery = req.resume ? 'skipped' : discoveryOn ? 'active' : 'skipped';
   return {
-    id: 'rv_' + Date.now().toString(36),
+    id: 'rv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     command: msg.command || 'explore',
     request: req,
     settings: msg.settings || gatewaySettings,
@@ -5366,6 +5527,8 @@ function newRunState(msg) {
     zip: null,
     log: [],
     logOpen: false,
+    completionEl: null,
+    startedAt: Date.now(),
     el: null,
     raf: 0,
   };
@@ -5378,8 +5541,18 @@ function appendRunLog(rv, text) {
   scheduleRender(rv);
 }
 
+function takeOverCentre() {
+  const dash = document.getElementById('dashboard');
+  if (dash) dash.remove();
+  const welcome = document.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  const msgs = document.getElementById('messages');
+  msgs.classList.remove('has-welcome');
+  return msgs;
+}
+
 /**
- * Open a past run from history: the same six panels, rendered from the
+ * Open a past run from history: the same panels, rendered from the
  * run-report the gateway loaded off disk. Nothing is live here, so every
  * stage reads the report and the badge reflects the recorded outcome.
  */
@@ -5402,12 +5575,7 @@ function openRunFromReport(msg) {
   if (!report.review) rv.stages.critic = 'skipped';
   if (!(report.replay && !report.replay.skipped) && !(report.stability && !report.stability.skipped)) rv.stages.replay = 'skipped';
   if (rv.badge === 'empty') rv.stages.summary = 'error';
-  const dash = document.getElementById('dashboard');
-  if (dash) dash.remove();
-  const welcome = document.querySelector('.welcome');
-  if (welcome) welcome.remove();
-  const msgs = document.getElementById('messages');
-  msgs.classList.remove('has-welcome');
+  const msgs = takeOverCentre();
   const el = document.createElement('div');
   el.className = 'run-view from-history';
   el.dataset.run = rv.id;
@@ -5429,13 +5597,7 @@ function startRunView(msg) {
   const rv = newRunState(msg);
   currentRun = rv;
   removeThinking();
-  // A run started from the gateway takes over the centre panel, as a typed command does.
-  const dash = document.getElementById('dashboard');
-  if (dash) dash.remove();
-  const welcome = document.querySelector('.welcome');
-  if (welcome) welcome.remove();
-  const msgs = document.getElementById('messages');
-  msgs.classList.remove('has-welcome');
+  const msgs = takeOverCentre();
   const el = document.createElement('div');
   el.className = 'run-view';
   el.dataset.run = rv.id;
@@ -5445,6 +5607,7 @@ function startRunView(msg) {
   msgs.scrollTop = msgs.scrollHeight;
   resetPipeline();
   setPipelineOverall('running');
+  renderRunHistory();
   return rv;
 }
 
@@ -5577,6 +5740,12 @@ function lastStabilizerName(rv) {
   return best ? best.name : null;
 }
 
+/** Total run cost, from the report's own fields. */
+function reportTotalCost(rep) {
+  const c = (rep && rep.cost) || {};
+  return (c.plannerUsd || 0) + (c.usd || 0) + (c.criticUsd || 0) + ((rep && rep.stability && rep.stability.stabilizerCostUsd) || 0);
+}
+
 function finishRunView(msg) {
   const rv = currentRun;
   if (!rv) return;
@@ -5585,6 +5754,7 @@ function finishRunView(msg) {
   const kind = rv.outcome && rv.outcome.kind;
   const stopped = rv.report && rv.report.stopped;
   rv.badge = kind === 'empty' ? 'empty' : stopped ? 'stopped' : 'done';
+  rv.finished = true;
   for (const s of RV_STAGES) {
     if (rv.stages[s.key] === 'active') rv.stages[s.key] = 'done';
     if (rv.stages[s.key] === 'idle') rv.stages[s.key] = 'skipped';
@@ -5594,25 +5764,68 @@ function finishRunView(msg) {
   renderRunView(rv, true);
   setPipelineOverall(rv.badge);
   if (rv.report && rv.report.stability && !rv.report.stability.skipped) renderStabilityStats(rv.report.stability);
-  const msgs = document.getElementById('messages');
-  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  if (rv.report) addSessionCost(reportTotalCost(rv.report));
+  renderCompletion(rv);
+  renderRunHistory();
 }
 
 function failRunView(error) {
   const rv = currentRun;
   if (!rv) return;
   rv.badge = 'failed';
+  rv.finished = true;
   rv.error = error;
   for (const s of RV_STAGES) if (rv.stages[s.key] === 'active') rv.stages[s.key] = 'error';
   renderRunView(rv, true);
   setPipelineOverall('error');
+  renderRunHistory();
+}
+
+/**
+ * The one compact completion message in the chat: a single line and, once
+ * the zip arrives, its name and size. The download button itself lives in
+ * the run view's Summary, once; this message only points there.
+ */
+function renderCompletion(rv) {
+  const msgs = document.getElementById('messages');
+  if (!msgs) return;
+  if (!rv.completionEl) {
+    const el = document.createElement('div');
+    el.className = 'msg agent completion';
+    el.innerHTML = `<div class="msg-avatar">${AGENT_AVATAR_SVG}</div><div class="msg-body"><div class="msg-bubble"></div><div class="msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div></div>`;
+    msgs.appendChild(el);
+    rv.completionEl = el;
+  }
+  const rep = rv.report || {};
+  const shipped = (rep.scenarios || []).length;
+  const cost = reportTotalCost(rep);
+  let line;
+  if (rv.badge === 'empty') line = `No framework was written: 0 scenarios survived the pipeline. The Summary above says which stage emptied the funnel.`;
+  else if (rv.badge === 'stopped') line = `Stopped early after ${shipped} test${shipped === 1 ? '' : 's'} shipped (<span class="money">$${cost.toFixed(4)}</span>). The Summary above has the funnel and the resume button.`;
+  else if (rv.badge === 'failed') line = `The run failed: ${escHtml(rv.error || 'unknown error')}.`;
+  else line = `Done. ${shipped} test${shipped === 1 ? '' : 's'} shipped for <span class="money">$${cost.toFixed(4)}</span>. Full result in the Summary above.`;
+  const zip = rv.zip
+    ? `<div class="completion-zip"><span class="zip-name">${escHtml(rv.zip.filename || 'framework.zip')}</span><span class="zip-meta">${rv.zip.fileCount != null ? rv.zip.fileCount + ' files · ' : ''}${sizeLabel(rv.zip.sizeBytes)}</span><button type="button" class="run-action" data-jump="summary">open summary</button></div>`
+    : '';
+  const bubble = rv.completionEl.querySelector('.msg-bubble');
+  bubble.innerHTML = `<div class="completion-line">${line}</div>${zip}`;
+  const jump = bubble.querySelector('[data-jump]');
+  if (jump) jump.addEventListener('click', () => { const s = rv.el && rv.el.querySelector('[data-stage="summary"]'); if (s) s.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function sizeLabel(bytes) {
+  const kb = (bytes || 0) / 1024;
+  return kb >= 1024 ? (kb / 1024).toFixed(2) + ' MB' : kb.toFixed(1) + ' KB';
 }
 
 function attachZipToRun(data) {
   const rv = currentRun;
-  if (!rv) return;
+  if (!rv || rv.fromHistory) return false;
   rv.zip = data;
   scheduleRender(rv);
+  if (rv.finished) renderCompletion(rv);
+  return true;
 }
 
 /* ---------- Run view renderers ---------- */
@@ -5622,26 +5835,36 @@ function renderRunView(rv, full) {
   const req = rv.request || {};
   const title = rv.command === 'resume' ? 'resume' : 'explore';
   const url = req.url || (rv.report && rv.report.url) || (req.resume ? req.resume : '');
-  const chips = runHeaderChips(rv);
   const head = `
     <div class="rv-head">
-      <div class="rv-title">/${escHtml(title)} <span class="rv-url" title="${escAttr(url)}">${escHtml(url)}</span>
+      <div class="rv-title"><span class="rv-cmd">/${escHtml(title)}</span> <span class="rv-url" title="${escAttr(url)}">${escHtml(url)}</span>
         <span class="rv-badge ${escAttr(rv.badge)}">${escHtml(rv.badge)}</span>${rv.fromHistory ? '<span class="rv-badge">from history</span>' : ''}</div>
-      <div class="rv-chips">${chips}</div>
+      <div class="rv-chips">${runHeaderChips(rv)}</div>
     </div>`;
+  const rail = `<nav class="rv-rail" aria-label="Pipeline stages">${RV_STAGES.map((s) => {
+    const state = railState(rv, s.key);
+    return `<button type="button" class="rv-step ${state}" data-rail="${s.key}" title="Jump to ${escAttr(s.name)}">
+      <span class="rv-step-dot"></span>
+      <span class="rv-step-body"><span class="rv-step-name">${s.name}</span><span class="rv-step-stat">${railStat(rv, s.key)}</span></span>
+    </button>`;
+  }).join('')}</nav>`;
   const stages = RV_STAGES.map((s) => {
     const state = rv.stages[s.key];
-    return `<section class="rv-stage ${s.wide ? 'wide' : ''} ${escAttr(state)}" data-stage="${s.key}">
+    return `<section class="rv-stage ${escAttr(state)}" data-stage="${s.key}">
       <div class="rv-stage-head"><span class="rv-num">${s.num}</span><span class="rv-stage-name">${s.name}</span><span class="rv-stage-sub">${s.sub}</span><span class="rv-stage-state">${escHtml(stageLabel(state))}</span></div>
       <div class="rv-body" id="${rv.id}-${s.key}">${renderStageBody(rv, s.key)}</div>
     </section>`;
   }).join('');
   const logHtml = rv.fromHistory ? '' : `
     <details class="rv-log" ${rv.logOpen ? 'open' : ''}>
-      <summary>console log <span class="mono">${rv.log.length} line${rv.log.length === 1 ? '' : 's'}</span><span class="rv-log-hint">${rv.badge === 'running' ? 'the panels above are the live view; these are the runtime\'s own lines' : ''}</span></summary>
-      <div class="rv-log-lines">${rv.log.map((l) => `<div><span class="at">${escHtml(l.at)}</span>${formatMsg(l.text)}</div>`).join('') || '<div class="rv-empty">no lines yet</div>'}</div>
+      <summary>Console log <span class="mono">${rv.log.length} line${rv.log.length === 1 ? '' : 's'}</span><span class="rv-log-hint">${rv.badge === 'running' ? 'the panels above are the live view; these are the runtime\'s own lines' : ''}</span></summary>
+      <div class="rv-log-lines">${rv.log.map((l) => `<div><span class="at">${escHtml(l.at)}</span>${formatMsg(l.text)}</div>`).join('') || '<div class="rv-empty">No lines yet.</div>'}</div>
     </details>`;
-  rv.el.innerHTML = head + `<div class="rv-stages">${stages}</div>` + logHtml;
+  rv.el.innerHTML = head + rail + `<div class="rv-stages">${stages}</div>` + logHtml;
+  [...rv.el.querySelectorAll('.rv-step')].forEach((b) => b.addEventListener('click', () => {
+    const target = rv.el.querySelector(`[data-stage="${b.dataset.rail}"]`);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
   const details = rv.el.querySelector('.rv-log');
   if (details) {
     details.addEventListener('toggle', () => { rv.logOpen = details.open; });
@@ -5654,7 +5877,101 @@ function renderRunView(rv, full) {
 }
 
 function stageLabel(state) {
-  return state === 'active' ? 'running' : state;
+  return state === 'active' ? 'running' : state === 'idle' ? 'pending' : state;
+}
+
+/** Rail status: pending / running / done / warning, from the panel data. */
+function railState(rv, key) {
+  const st = rv.stages[key];
+  if (st === 'active') return 'running';
+  if (st === 'idle') return 'pending';
+  if (st === 'error') return 'warning';
+  const rep = rv.report;
+  if (key === 'discovery') {
+    const w = rep && rep.discovery ? (rep.discovery.warnings || []).length : rv.discovery.lines.length;
+    return w > 0 ? 'warning' : 'done';
+  }
+  if (key === 'explorer') {
+    const inc = rep && Array.isArray(rep.incomplete) ? rep.incomplete.length : rv.explorer.incomplete.length;
+    return rv.explorer.stop || inc > 0 || rv.explorer.broken.length ? 'warning' : 'done';
+  }
+  if (key === 'critic') {
+    const c = verdictCounts(finalVerdicts(rv));
+    return c.rework + c.reject > 0 ? 'warning' : 'done';
+  }
+  if (key === 'replay') {
+    const failed = rep && rep.replay && !rep.replay.skipped ? rep.replay.failed : (rv.replay.failed || 0);
+    const flaked = rep && rep.stability && !rep.stability.skipped ? rep.stability.flaked : (rv.stability.done ? rv.stability.done.flaked : 0);
+    return failed > 0 || flaked > 0 ? 'warning' : 'done';
+  }
+  if (key === 'summary') {
+    if (!rep) return st === 'skipped' ? 'pending' : 'done';
+    const rec = rep.reconciliation;
+    return rep.stopped || (rec && rec.balanced === false) || (rep.findings || []).length > 0 ? 'warning' : 'done';
+  }
+  return 'done';
+}
+
+function finalVerdicts(rv) {
+  const rep = rv.report;
+  if (rep && rep.review) return rep.review.verdicts || [];
+  if (rv.critic.secondVerdicts) {
+    // Live: the repaired verdicts replace their first-pass rework entries.
+    const byName = new Map(rv.critic.verdicts.map((v) => [v.scenario, v]));
+    for (const v of rv.critic.secondVerdicts) byName.set(v.scenario, v);
+    return [...byName.values()];
+  }
+  return rv.critic.verdicts;
+}
+function verdictCounts(verdicts) {
+  const c = { pass: 0, rework: 0, reject: 0 };
+  for (const v of verdicts) if (c[v.verdict] !== undefined) c[v.verdict]++;
+  return c;
+}
+
+/** The one-line stat under each rail step. Numbers come from the report when it exists, else from events. */
+function railStat(rv, key) {
+  const rep = rv.report;
+  const money = (v) => `<span class="money">$${Number(v || 0).toFixed(2)}</span>`;
+  switch (key) {
+    case 'discovery': {
+      if (rep && rep.discovery) return `${rep.discovery.pages.length} page${rep.discovery.pages.length === 1 ? '' : 's'} found`;
+      if (rv.discovery.resumed) return 'restored from checkpoint';
+      if (rv.discovery.pages != null) return `${rv.discovery.pages} page${rv.discovery.pages === 1 ? '' : 's'} found`;
+      return rv.discovery.single ? 'single page' : 'searching';
+    }
+    case 'plan': {
+      const n = rep && rep.plan ? rep.plan.length : rv.plan.scenarios.length;
+      return n ? `${n} planned` : 'waiting';
+    }
+    case 'explorer': {
+      const planned = rep && rep.plan ? rep.plan.length : rv.plan.scenarios.length;
+      let explored;
+      if (rep) {
+        const rec = rep.reconciliation;
+        explored = rec ? (Number(rec.generated) || 0) + (rec.dropped || []).length + (rec.findings || []).length : (rep.scenarios || []).length;
+      } else explored = rv.explorer.completed;
+      const usd = rep ? (rep.cost && rep.cost.usd) || 0 : rv.explorer.usd;
+      return `${explored}/${planned || '?'} explored · ${money(usd)}`;
+    }
+    case 'critic': {
+      const c = verdictCounts(finalVerdicts(rv));
+      if (!rep && rv.stages.critic === 'idle') return 'waiting';
+      return `<span class="c-pass">${c.pass} pass</span> / <span class="c-rework">${c.rework} rework</span> / <span class="c-reject">${c.reject} reject</span>`;
+    }
+    case 'replay': {
+      const stab = rep && rep.stability && !rep.stability.skipped ? rep.stability : rv.stability.done;
+      if (stab) return `${stab.stable != null ? stab.stable : stab.passed} stable / ${stab.flaked} flaky`;
+      const r = rep && rep.replay && !rep.replay.skipped ? rep.replay : rv.replay;
+      if (r.passed != null) return `${r.passed} passed replay / ${r.failed} dropped`;
+      return rv.stages.replay === 'idle' ? 'waiting' : 'replaying';
+    }
+    case 'summary': {
+      if (rep) return `${(rep.scenarios || []).length} shipped`;
+      return 'pending';
+    }
+  }
+  return '';
 }
 
 function runHeaderChips(rv) {
@@ -5675,7 +5992,7 @@ function runHeaderChips(rv) {
     const overridden = env[s.name] !== undefined;
     const value = overridden ? env[s.name] : s.value;
     const display = /MODEL/.test(s.name) ? String(value).replace('claude-', '') : /CEILING/.test(s.name) ? '$' + value : value;
-    chips.push(`<span class="rv-chip ${overridden ? 'override' : ''}" title="${escAttr(s.name)}${overridden ? ' (overridden for this run)' : s.fromEnv ? ' (from env)' : ' (default)'}">${escHtml(short)} <b>${escHtml(display)}</b></span>`);
+    chips.push(`<span class="rv-chip ${overridden ? 'override' : ''}" title="${escAttr(s.name)}${overridden ? ' (overridden for this run)' : s.fromEnv ? ' (from env)' : ' (default)'}">${escHtml(short)} <b class="${/CEILING/.test(s.name) ? 'money' : ''}">${escHtml(display)}</b></span>`);
   }
   return chips.join('');
 }
@@ -5709,10 +6026,10 @@ function renderDiscovery(rv) {
       <ul class="rv-list">${pages.slice(0, 8).map((p) => `<li><span class="name mono" title="${escAttr(p.url)}">${escHtml(p.url)}</span>${p.feature ? `<span class="rv-tag feature">${escHtml(p.feature)}</span>` : ''}${p.volatile ? '<span class="rv-tag">volatile</span>' : ''}</li>`).join('')}</ul>${listMore(pages, 8)}
       ${(rep.warnings || []).length ? `<ul class="rv-list" style="margin-top:6px">${rep.warnings.slice(0, 6).map((w) => `<li><span class="rv-warn">⚠</span><span class="why">${escHtml(w)}</span></li>`).join('')}</ul>${listMore(rep.warnings, 6)}` : ''}`;
   }
-  if (d.resumed) return '<div class="rv-empty">Restored from the checkpoint (discovery and plan are not repeated).</div>';
-  if (d.single && !d.method && d.lines.length === 0) return '<div class="rv-empty">Single page. Discovery activates with --discover, --urls, or --srs.</div>';
+  if (d.resumed) return '<div class="rv-empty">Restored from the checkpoint. Discovery and planning are not repeated on a resume.</div>';
+  if (d.single && !d.method && d.lines.length === 0) return '<div class="rv-empty">Single page mode. Add <code>--discover</code>, <code>--urls</code>, or <code>--srs</code> to cover more of the site.</div>';
   return `
-    ${d.method ? `<div class="rv-kv"><span>rung <b>${escHtml(d.method)}</b></span><span>pages <b>${d.pages}</b></span></div>` : '<div class="rv-kv"><span>walking the ladder…</span></div>'}
+    ${d.method ? `<div class="rv-kv"><span>rung <b>${escHtml(d.method)}</b></span><span>pages <b>${d.pages}</b></span></div>` : '<div class="rv-kv"><span>Walking the discovery ladder…</span></div>'}
     ${d.narrowed ? `<div class="rv-kv"><span>filter <b>${d.narrowed.from} → ${d.narrowed.to}</b> (${escHtml(d.narrowed.how)})</span></div>` : ''}
     ${d.lines.length ? `<ul class="rv-list">${d.lines.slice(-6).map((w) => `<li><span class="rv-warn">⚠</span><span class="why">${escHtml(w)}</span></li>`).join('')}</ul>` : ''}`;
 }
@@ -5732,7 +6049,7 @@ function renderPlan(rv) {
   if (!scenarios.length && !p.pages.length) return rv.stages.plan === 'skipped' ? '<div class="rv-empty">Plan restored from the checkpoint.</div>' : '<div class="rv-empty">Waiting for the Planner…</div>';
   const pages = p.pages.length ? `<ul class="rv-list">${p.pages.map((pg) => `<li><span class="mono">[${pg.i}/${pg.n}]</span><span class="name mono" title="${escAttr(pg.url)}">${escHtml(pg.url)}</span><span class="mono">${pg.count} scenario(s) · $${pg.usd.toFixed(4)}</span></li>`).join('')}</ul>` : '';
   return `
-    <div class="rv-kv"><span>scenarios <b>${scenarios.length}</b></span>${usd != null ? `<span>planner <b>$${Number(usd).toFixed(4)}</b></span>` : ''}${p.capHit ? '<span class="rv-warn">global cap reached</span>' : ''}</div>
+    <div class="rv-kv"><span>scenarios <b>${scenarios.length}</b></span>${usd != null ? `<span>planner <b class="money">$${Number(usd).toFixed(4)}</b></span>` : ''}${p.capHit ? '<span class="rv-warn">global cap reached</span>' : ''}</div>
     ${pages}
     <ul class="rv-list" style="margin-top:${pages ? '6px' : '0'}">${scenarios.slice(0, 12).map((s) => `<li>${scenarioTags(s)}<span class="name" title="${escAttr(s.name)}">${escHtml(s.name)}</span></li>`).join('')}</ul>${listMore(scenarios, 12)}
     ${p.notes.length ? `<ul class="rv-list" style="margin-top:6px">${p.notes.slice(0, 4).map((n) => `<li><span class="why">${escHtml(n)}</span></li>`).join('')}</ul>${listMore(p.notes, 4)}` : ''}`;
@@ -5752,7 +6069,6 @@ function renderExplorer(rv) {
   const gates = rep && rep.gate ? rep.gate.injections : ex.gates;
   const broken = rep && rep.gate ? rep.gate.broken : ex.broken;
   const heals = rep && Array.isArray(rep.heals) ? rep.heals : ex.heals;
-  const explored = rep ? rep.scenarios.length + (rep.reconciliation ? (rep.reconciliation.dropped || []).filter((d) => d.stage !== 'planner').length : 0) : ex.completed;
   if (!rep && rv.stages.explorer === 'idle') return '<div class="rv-empty">Waiting for the plan…</div>';
   return `
     <div class="rv-kv">
@@ -5762,29 +6078,36 @@ function renderExplorer(rv) {
       ${heals.length ? `<span>recovered selectors <b>${heals.length}</b></span>` : ''}
     </div>
     <div class="rv-meter ${meterCls}"><i style="width:${pct.toFixed(1)}%"></i></div>
-    <div class="rv-meter-label"><span>explorer $${Number(usd).toFixed(4)}</span><span>${sub ? `sub-ceiling $${sub.toFixed(2)}${ex.reserve ? ` (+$${ex.reserve.toFixed(2)} repair reserve)` : ''}` : 'ceiling pending'}</span></div>
+    <div class="rv-meter-label"><span>explorer <span class="money">$${Number(usd).toFixed(4)}</span></span><span>${sub ? `sub-ceiling <span class="money">$${sub.toFixed(2)}</span>${ex.reserve ? ` (+<span class="money">$${ex.reserve.toFixed(2)}</span> repair reserve)` : ''}` : 'ceiling pending'}</span></div>
     ${ex.stop ? `<div class="rv-banner"><b>stopped</b> ${escHtml(ex.stop)}</div>` : ''}
     ${gates.length ? `<div class="rv-kv" style="margin-top:6px"><span>gate injections <b>${gates.length}</b></span>${broken.length ? `<span class="rv-bad">gate broken <b>${broken.length}</b></span>` : ''}</div>` : ''}
-    ${skipped.length ? `<ul class="rv-list">${skipped.slice(0, 5).map((s) => `<li><span class="rv-tag">skipped</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>${listMore(skipped, 5)}` : ''}
-    ${incomplete.length ? `<ul class="rv-list">${incomplete.slice(0, 5).map((s) => `<li><span class="rv-tag edge">incomplete</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>` : ''}
-    ${!rep && ex.findings.length ? `<ul class="rv-list">${ex.findings.slice(0, 4).map((f) => `<li><span class="rv-tag negative">finding</span><span class="name">${escHtml(f.name)}</span></li>`).join('')}</ul>` : ''}
-    ${!rep && ex.calls.length ? `<div class="rv-calls">${ex.calls.slice(-14).map((c) => `<div>${c.ok === false ? '<span class="err">✗</span>' : '→'} <span class="fn">${escHtml(c.name)}</span>(${escHtml(shortJson(c.input))})${c.ok === false && c.error ? ` <span class="err">${escHtml(String(c.error).slice(0, 80))}</span>` : ''}</div>`).join('')}</div>` : ''}
-    ${explored !== null && rep ? '' : ''}`;
+    ${skipped.length ? `<ul class="rv-list">${skipped.slice(0, 5).map((s) => `<li><span class="rv-tag neutral">skipped</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>${listMore(skipped, 5)}` : ''}
+    ${incomplete.length ? `<ul class="rv-list">${incomplete.slice(0, 5).map((s) => `<li><span class="rv-tag neutral">incomplete</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.reason)}</span></li>`).join('')}</ul>` : ''}
+    ${!rep && ex.findings.length ? `<ul class="rv-list">${ex.findings.slice(0, 4).map((f) => `<li><span class="rv-tag finding">finding</span><span class="name">${escHtml(f.name)}</span></li>`).join('')}</ul>` : ''}
+    ${!rep && ex.calls.length ? `<div class="rv-calls">${ex.calls.slice(-14).map((c) => `<div>${c.ok === false ? '<span class="err">✗</span>' : '→'} <span class="fn">${escHtml(c.name)}</span>(${escHtml(shortJson(c.input))})${c.ok === false && c.error ? ` <span class="err">${escHtml(String(c.error).slice(0, 80))}</span>` : ''}</div>`).join('')}</div>` : ''}`;
 }
 
 function shortJson(v) {
   try { const s = JSON.stringify(v); return s.length > 90 ? s.slice(0, 87) + '…' : s; } catch { return ''; }
 }
 
-function verdictRows(verdicts, max) {
-  return verdicts.slice(0, max).map((v) => `
-    <div class="rv-verdict"><span class="v ${escAttr(v.verdict)}">${escHtml(v.verdict)}</span>
-      <div class="vs"><div class="name">${escHtml(v.scenario)}</div>${(v.reasons || []).length ? `<div class="why">${escHtml(v.reasons.join(' · '))}</div>` : ''}</div></div>`).join('') + listMore(verdicts, max);
+/** Verdict cards: badge + name as the title, reasons as bullets, a why-it-matters line for rework/reject. */
+function verdictCards(verdicts, max) {
+  return verdicts.slice(0, max).map((v) => {
+    const fixes = Array.isArray(v.required_fixes) ? v.required_fixes.filter(Boolean) : [];
+    const why = v.verdict !== 'pass' && fixes.length ? `<div class="vc-why"><b>Why it matters:</b> ${escHtml(fixes.join(' '))}</div>` : '';
+    return `
+    <article class="rv-verdict vc ${escAttr(v.verdict)}">
+      <div class="vc-head"><span class="v ${escAttr(v.verdict)}">${escHtml(v.verdict)}</span><span class="name">${escHtml(v.scenario)}</span></div>
+      ${(v.reasons || []).length ? `<ul class="vc-reasons">${v.reasons.map((r) => `<li>${escHtml(r)}</li>`).join('')}</ul>` : ''}
+      ${why}
+    </article>`;
+  }).join('') + listMore(verdicts, max);
 }
 
 function journeysHtml(journeys) {
   if (!journeys || !journeys.length) return '';
-  return `<div class="rv-sub-label">verdict journeys</div>` + journeys.map((j) => `
+  return `<div class="rv-sub-label">Verdict journeys</div>` + journeys.map((j) => `
     <div class="rv-journey"><span class="name" title="${escAttr(j.scenario)}">${escHtml(j.scenario)}</span>
       <span class="v rework">rework</span> <span class="arrow">→</span>
       <span class="v ${j.second ? escAttr(j.second) : 'none'}">${escHtml(j.second || 'not re-recorded')}</span>
@@ -5795,21 +6118,22 @@ function renderCritic(rv) {
   const c = rv.critic;
   const rep = rv.report;
   const review = rep && rep.review;
-  if (!review && c.verdicts.length === 0) return rv.stages.critic === 'active' ? '<div class="rv-empty">Reviewing recorded traces…</div>' : '<div class="rv-empty">Waiting for the Explorer…</div>';
-  const finalVerdicts = review ? review.verdicts : c.verdicts;
-  const counts = { pass: 0, rework: 0, reject: 0 };
-  for (const v of finalVerdicts) if (counts[v.verdict] !== undefined) counts[v.verdict]++;
+  if (!review && c.verdicts.length === 0) return rv.stages.critic === 'active' ? '<div class="rv-empty">Reviewing recorded traces…</div>' : rv.stages.critic === 'skipped' ? '<div class="rv-empty">The Critic did not run on this run.</div>' : '<div class="rv-empty">Waiting for the Explorer…</div>';
+  const verdicts = finalVerdicts(rv);
+  const counts = verdictCounts(verdicts);
   const usd = rep ? ((rep.cost && rep.cost.criticUsd) || 0) : c.usd;
   const journeys = review && review.repair ? review.repair : c.journeys;
   let banner = '';
-  if (c.repair && c.repair.ran) banner = `<div class="rv-banner info"><b>repair pass</b> ${c.repair.count} scenario(s) re-explored · budget $${c.repair.budget.toFixed(2)}${rep && rep.cost && rep.cost.repairUsd != null ? ` · spent $${rep.cost.repairUsd.toFixed(4)}` : ''}</div>`;
+  if (c.repair && c.repair.ran) banner = `<div class="rv-banner info"><b>repair pass</b> ${c.repair.count} scenario(s) re-explored · budget <span class="money">$${c.repair.budget.toFixed(2)}</span>${rep && rep.cost && rep.cost.repairUsd != null ? ` · spent <span class="money">$${rep.cost.repairUsd.toFixed(4)}</span>` : ''}</div>`;
   else if (c.repair && !c.repair.ran) banner = `<div class="rv-banner"><b>repair pass skipped</b> ${escHtml(c.repair.reason)}</div>`;
-  const label = review ? 'final verdicts' : c.repair ? 'first verdicts' : 'verdicts';
+  else if (review || c.verdicts.length) banner = counts.rework + counts.reject === 0
+    ? '<div class="rv-empty">Nothing gated: every scenario passed review, so no repair pass was needed.</div>'
+    : (rv.badge === 'running' ? '' : '<div class="rv-empty">No repair pass ran.</div>');
   return `
-    <div class="rv-kv"><span class="rv-ok">pass <b>${counts.pass}</b></span><span class="rv-warn">rework <b>${counts.rework}</b></span><span class="rv-bad">reject <b>${counts.reject}</b></span><span>critic <b>$${Number(usd).toFixed(4)}</b></span></div>
+    <div class="rv-kv"><span class="c-pass">pass <b>${counts.pass}</b></span><span class="c-rework">rework <b>${counts.rework}</b></span><span class="c-reject">reject <b>${counts.reject}</b></span><span>critic <b class="money">$${Number(usd).toFixed(4)}</b></span></div>
     ${banner}
-    <div class="rv-sub-label">${label}</div>
-    ${verdictRows(finalVerdicts, 8)}
+    <div class="rv-sub-label">${review ? 'Final verdicts' : c.repair ? 'First verdicts' : 'Verdicts'}</div>
+    <div class="vc-grid">${verdictCards(verdicts, 8)}</div>
     ${journeysHtml(journeys)}
     ${c.notes.length ? `<ul class="rv-list" style="margin-top:6px">${c.notes.map((n) => `<li><span class="why">${escHtml(n)}</span></li>`).join('')}</ul>` : ''}`;
 }
@@ -5819,7 +6143,7 @@ function renderReplay(rv) {
   const st = rv.stability;
   const rep = rv.report;
   if (rv.stages.replay === 'idle') return '<div class="rv-empty">Waiting for the Critic…</div>';
-  if (rv.stages.replay === 'skipped') return '<div class="rv-empty">Replay and stability did not run.</div>';
+  if (rv.stages.replay === 'skipped') return '<div class="rv-empty">Replay and stability did not run on this run.</div>';
   const replayRep = rep && rep.replay && !rep.replay.skipped ? rep.replay : null;
   const results = replayRep ? replayRep.verdicts.map((v) => ({ name: v.name, passed: v.passed, step: v.failedStep, kind: v.stepKind, error: v.error })) : r.results;
   const passed = replayRep ? replayRep.passed : r.passed;
@@ -5846,42 +6170,45 @@ function renderReplay(rv) {
     }).join('');
   }
   const stabilizer = Object.values(st.stabilizer);
-  const stabilizerHtml = stabilizer.length ? `<div class="rv-sub-label">stabilizer attempts</div><ul class="rv-list">${stabilizer.map((s) => `<li><span class="rv-tag ${s.result === 'recovered' ? 'happy' : s.result === 'gave up' ? 'negative' : 'edge'}">${escHtml(s.result || 'trying')}</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.attempts.filter((a) => a.kind).map((a) => `#${a.n} ${a.kind}`).join(' → '))}</span></li>`).join('')}</ul>` : '';
+  const stabilizerHtml = stabilizer.length ? `<div class="rv-sub-label">Stabilizer attempts</div><ul class="rv-list">${stabilizer.map((s) => `<li><span class="rv-tag ${s.result === 'recovered' ? 'happy' : s.result === 'gave up' ? 'negative' : 'edge'}">${escHtml(s.result || 'trying')}</span><span class="name">${escHtml(s.name)}</span><span class="why">${escHtml(s.attempts.filter((a) => a.kind).map((a) => `#${a.n} ${a.kind}`).join(' → '))}</span></li>`).join('')}</ul>` : '';
   const stabDone = stabRep || st.done;
   return `
-    <div class="rv-sub-label">reality check <span class="mono">${r.total != null || replayRep ? `${results.length}/${replayRep ? replayRep.passed + replayRep.failed : r.total} replayed` : ''}${passed != null ? ` · ${passed} passed · ${failed} dropped` : ''}</span></div>
+    <div class="rv-sub-label">Reality check <span class="mono">${r.total != null || replayRep ? `${results.length}/${replayRep ? replayRep.passed + replayRep.failed : r.total} replayed` : ''}${passed != null ? ` · ${passed} passed · ${failed} dropped` : ''}</span></div>
     <div class="rv-runs">${results.slice(0, 10).map((x) => `<div class="rv-run"><span class="rv-dots">${x.passed ? '<i class="p"></i>' : '<i class="f"></i>'}</span><span class="name" title="${escAttr(x.name)}">${escHtml(x.name)}</span>${!x.passed ? `<span class="pattern broken">step ${(x.step ?? 0) + 1} ${escHtml(x.kind || '')}</span>` : ''}</div>`).join('')}</div>${listMore(results, 10)}
-    ${iterations ? `<div class="rv-sub-label" style="margin-top:10px">stability <span class="mono">${iterations}× re-run${stabDone ? ` · ${stabDone.stable != null ? stabDone.stable : stabDone.passed} stable · ${stabDone.flaked} flaked${(stabDone.recovered || 0) > 0 ? ` · ${stabDone.recovered} recovered` : ''} · flake_rate ${((stabDone.flakeRate || 0) * 100).toFixed(1)}%` : ''}</span></div><div class="rv-runs">${stabilityRows}</div>` : ''}
+    ${iterations ? `<div class="rv-sub-label" style="margin-top:10px">Stability <span class="mono">${iterations}× re-run${stabDone ? ` · ${stabDone.stable != null ? stabDone.stable : stabDone.passed} stable · ${stabDone.flaked} flaked${(stabDone.recovered || 0) > 0 ? ` · ${stabDone.recovered} recovered` : ''} · flake_rate ${((stabDone.flakeRate || 0) * 100).toFixed(1)}%` : ''}</span></div><div class="rv-runs">${stabilityRows}</div>` : ''}
     ${stabilizerHtml}`;
 }
 
+/** The reconciliation funnel: rows with bars for non-zero counts; zero counts collapse into one muted line. */
 function funnelHtml(rec) {
   if (!rec) return '<div class="rv-empty">No reconciliation on this report.</div>';
-  const planned = Math.max(1, rec.planned || 0);
-  const w = (n) => ((n / planned) * 100).toFixed(1) + '%';
-  const droppedByStage = {};
-  for (const d of rec.dropped || []) droppedByStage[d.stage] = (droppedByStage[d.stage] || 0) + 1;
-  const dropDetail = Object.entries(droppedByStage).map(([s, n]) => `${s} ${n}`).join(' · ');
-  // Reconciliation arrays are named lists; the funnel shows their lengths,
-  // exactly what renderReconciliation prints on the CLI.
   const n = (v) => (Array.isArray(v) ? v.length : Number(v) || 0);
   const counts = { planned: n(rec.planned), generated: n(rec.generated), dropped: n(rec.dropped), incomplete: n(rec.incomplete), findings: n(rec.findings), skipped: n(rec.skipped) };
+  const planned = Math.max(1, counts.planned);
+  const w = (v) => ((v / planned) * 100).toFixed(1) + '%';
+  const droppedByStage = {};
+  for (const d of rec.dropped || []) droppedByStage[d.stage] = (droppedByStage[d.stage] || 0) + 1;
+  const dropDetail = Object.entries(droppedByStage).map(([s, c]) => `${s} ${c}`).join(' · ');
   const rows = [
     { key: 'planned', label: 'planned', n: counts.planned, head: true },
-    { key: 'generated', label: 'generated', n: counts.generated },
+    { key: 'generated', label: 'shipped', n: counts.generated },
     { key: 'dropped', label: 'dropped', n: counts.dropped, detail: dropDetail },
     { key: 'incomplete', label: 'incomplete', n: counts.incomplete },
     { key: 'findings', label: 'findings', n: counts.findings },
     { key: 'skipped', label: 'skipped', n: counts.skipped },
   ];
+  const shown = rows.filter((r) => r.head || r.n > 0);
+  const zero = rows.filter((r) => !r.head && r.n === 0);
   const sum = counts.generated + counts.dropped + counts.incomplete + counts.findings + counts.skipped;
-  return `<div class="funnel">${rows.map((r) => `
-    <div class="funnel-row ${r.key}"><span class="fl ${r.head ? 'head' : ''}">${r.label}</span><div class="fbar"><i class="${r.n ? '' : 'zero'}" style="width:${w(r.n)}"></i></div><span class="fn">${r.n}</span>${r.detail ? `<div class="fdetail">${escHtml(r.detail)}</div>` : ''}</div>`).join('')}</div>
-    <div class="funnel-eq"><span>${counts.planned} = ${counts.generated} + ${counts.dropped} + ${counts.incomplete} + ${counts.findings} + ${counts.skipped}</span>
+  return `<div class="funnel">${shown.map((r) => `
+    <div class="funnel-row ${r.key}"><span class="fl ${r.head ? 'head' : ''}">${r.label}</span><div class="fbar"><i style="width:${w(r.n)}"></i></div><span class="fn">${r.n}</span>${r.detail ? `<div class="fdetail">${escHtml(r.detail)}</div>` : ''}</div>`).join('')}
+    ${zero.length ? `<div class="funnel-zero">${zero.map((r) => `${r.label} ${r.n}`).join(' · ')}</div>` : ''}</div>
+    <div class="funnel-eq"><span class="mono">${counts.planned} = ${counts.generated} + ${counts.dropped} + ${counts.incomplete} + ${counts.findings} + ${counts.skipped}</span>
       <span class="${rec.balanced ? 'balanced' : 'unbalanced'}">${rec.balanced ? '✓ balanced' : `⚠ off by ${Math.abs(counts.planned - sum)}`}</span>${rec.added ? `<span>+${rec.added} unplanned</span>` : ''}</div>
     ${rec.note ? `<div class="rv-more">${escHtml(rec.note)}</div>` : ''}`;
 }
 
+/** Cost split in one accent: segments differ by opacity, the legend carries the numbers. */
 function costSplitHtml(rep) {
   const cost = rep.cost || {};
   const planner = cost.plannerUsd || 0;
@@ -5893,27 +6220,31 @@ function costSplitHtml(rep) {
   const seg = (cls, v) => total > 0 && v > 0 ? `<i class="${cls}" style="width:${((v / total) * 100).toFixed(2)}%" title="${cls} $${v.toFixed(4)}"></i>` : '';
   return `
     <div class="cost-split">
-      <div class="cost-total">$${total.toFixed(4)} <span style="font-size:10.5px;color:var(--text-3);font-weight:400">total</span></div>
+      <div class="cost-total"><span class="money">$${total.toFixed(4)}</span> total</div>
       <div class="cost-bar">${seg('planner', planner)}${seg('explorer', explorer)}${seg('critic', critic)}${seg('repair', repair)}${seg('stabilizer', stabilizer)}</div>
-      <div class="cost-legend"><span class="planner">planner $${planner.toFixed(4)}</span><span class="explorer">explorer $${explorer.toFixed(4)}</span><span class="critic">critic $${critic.toFixed(4)}</span><span class="repair">repair $${repair.toFixed(4)}</span>${stabilizer ? `<span class="stabilizer">stabilizer $${stabilizer.toFixed(4)}</span>` : ''}</div>
+      <div class="cost-legend"><span class="planner">planner <span class="money">$${planner.toFixed(4)}</span></span><span class="explorer">explorer <span class="money">$${explorer.toFixed(4)}</span></span><span class="critic">critic <span class="money">$${critic.toFixed(4)}</span></span><span class="repair">repair <span class="money">$${repair.toFixed(4)}</span></span>${stabilizer ? `<span class="stabilizer">stabilizer <span class="money">$${stabilizer.toFixed(4)}</span></span>` : ''}</div>
     </div>`;
 }
 
 function coverageHtml(rc) {
-  if (!rc) return '';
+  if (!rc) return '<div class="rv-sub-label">Requirements coverage</div><div class="rv-empty">Add an SRS with <code>--srs</code> to get requirements coverage.</div>';
   const covered = rc.covered || [];
   const uncovered = rc.uncovered || [];
   const total = covered.length + uncovered.length;
   return `
-    <div class="rv-sub-label">rule coverage <span class="mono">${covered.length} of ${total} covered</span></div>
-    ${covered.length ? `<ul class="coverage-list">${covered.slice(0, 6).map((c) => `<li><span class="rid">${escHtml(c.ruleId)}</span><span class="rv-ok">covered</span><span class="why">${escHtml((c.scenarios || []).slice(0, 2).join(', '))}</span></li>`).join('')}</ul>${listMore(covered, 6)}` : ''}
-    ${uncovered.length ? `<div class="rv-sub-label" style="margin-top:8px">considered, not automated <span class="mono">${uncovered.length}</span></div><ul class="coverage-list">${uncovered.slice(0, 8).map((u) => `<li><span class="rid">${escHtml(u.ruleId)}</span><span class="name" style="color:var(--text-2)">${escHtml(u.text)}</span><span class="why">${escHtml(u.reason)}</span></li>`).join('')}</ul>${listMore(uncovered, 8)}` : ''}`;
+    <div class="rv-sub-label">Requirements coverage <span class="mono">${covered.length} of ${total} covered</span></div>
+    ${covered.length ? `<ul class="coverage-list">${covered.slice(0, 6).map((c) => `<li><span class="rid">${escHtml(c.ruleId)}</span><span class="c-pass">covered</span><span class="why">${escHtml((c.scenarios || []).slice(0, 2).join(', '))}</span></li>`).join('')}</ul>${listMore(covered, 6)}` : ''}
+    ${uncovered.length ? `<div class="rv-sub-label" style="margin-top:8px">Considered, not automated <span class="mono">${uncovered.length}</span></div><ul class="coverage-list">${uncovered.slice(0, 8).map((u) => `<li><span class="rid">${escHtml(u.ruleId)}</span><span class="name">${escHtml(u.text)}</span><span class="why">${escHtml(u.reason)}</span></li>`).join('')}</ul>${listMore(uncovered, 8)}` : ''}`;
 }
 
+/** Findings are product behavior to review, never test failures: violet, plain language. */
 function findingsHtml(findings) {
   if (!findings || !findings.length) return '';
-  return `<div class="rv-sub-label">findings <span class="mono">${findings.length} · product behavior to review, not test failures</span></div>` +
-    findings.map((f) => `<div class="finding"><div class="name">${escHtml(f.scenario)}</div><div class="detail">expected ${escHtml(f.expected)}; page stayed at <span class="mono">${escHtml(f.url)}</span>${(f.messages || []).length ? `. Page said: ${escHtml(f.messages.join(' | '))}` : ''}</div></div>`).join('');
+  return `<section class="finding-block">
+    <h4>Product behavior to review <span class="mono">${findings.length}</span></h4>
+    <p class="finding-intro">The page did something other than what the scenario expected. These are not test failures; someone should look at them.</p>
+    ${findings.map((f) => `<div class="finding"><div class="name">${escHtml(f.scenario)}</div><div class="detail"><span class="k">Expected</span> ${escHtml(f.expected)}</div><div class="detail"><span class="k">What happened</span> the page stayed at <span class="mono">${escHtml(f.url)}</span>${(f.messages || []).length ? `; it said "${escHtml(f.messages.join(' | '))}"` : ''}</div></div>`).join('')}
+  </section>`;
 }
 
 function renderSummary(rv) {
@@ -5921,41 +6252,46 @@ function renderSummary(rv) {
   if (!rep) {
     const ex = rv.explorer;
     const soFar = (rv.plan.usd || 0) + (ex.usd || 0) + (rv.critic.usd || 0);
-    return `<div class="rv-kv"><span>cost so far <b>$${soFar.toFixed(4)}</b></span>${rv.stopped ? `<span class="rv-warn">${escHtml(rv.stopped)}</span>` : ''}</div><div class="rv-empty">Funnel, coverage and cost split appear when the run finishes.</div>`;
+    return `<div class="rv-kv"><span>cost so far <b class="money">$${soFar.toFixed(4)}</b></span>${rv.stopped ? `<span class="rv-warn">${escHtml(rv.stopped)}</span>` : ''}</div><div class="rv-empty">The funnel, coverage and cost split appear when the run finishes.</div>`;
   }
   const outcome = rv.outcome || {};
+  const shipped = (rep.scenarios || []).length;
+  const total = reportTotalCost(rep);
+  const findings = rep.findings || [];
+  const uncovered = rep.ruleCoverage ? (rep.ruleCoverage.uncovered || []).length : 0;
+  const attention = findings.length + uncovered;
+  const hero = `
+    <div class="rv-hero">
+      <div class="hero-stat"><div class="hero-n">${shipped}</div><div class="hero-l">tests shipped</div></div>
+      <div class="hero-stat"><div class="hero-n money">$${total.toFixed(2)}</div><div class="hero-l">total cost</div></div>
+      <div class="hero-stat ${attention ? 'attention' : ''}"><div class="hero-n">${attention}</div><div class="hero-l">need${attention === 1 ? 's' : ''} attention<span class="hero-sub">${findings.length} finding${findings.length === 1 ? '' : 's'} · ${uncovered} uncovered rule${uncovered === 1 ? '' : 's'}</span></div></div>
+    </div>`;
   const diag = outcome.kind === 'empty' && outcome.diagnosis ? `<div class="rv-banner bad"><b>no framework</b> ${escHtml(outcome.diagnosis.join(' '))}</div>` : '';
   const stopped = rep.stopped ? `<div class="rv-banner"><b>stopped early</b> ${escHtml(rep.stopped.reason)}</div>` : '';
   const dl = rv.zip
-    ? `<button class="rv-download" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download ${escHtml(rv.zip.filename)} <span style="opacity:.7">${rv.zip.scenarios} scenarios · ${rv.zip.fileCount} files</span></button>`
-    : (outcome.kind === 'framework' ? '<div class="rv-more">zip on its way…</div>' : '');
+    ? `<button class="rv-download" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download ${escHtml(rv.zip.filename)} <span class="dl-meta">${rv.zip.scenarios} scenarios · ${rv.zip.fileCount} files · ${sizeLabel(rv.zip.sizeBytes)}</span></button>`
+    : (outcome.kind === 'framework' && !rv.fromHistory ? '<div class="rv-more">Zip on its way…</div>' : rv.fromHistory && shipped ? `<div class="rv-more">Framework zip: ${escHtml(outcome.reportPath ? String(outcome.reportPath).replace(/\/run-report\.json$/, '.zip') : '')}. Use regenerate on the history card for a fresh copy.</div>` : '');
   const resume = outcome.checkpointPath
     ? `<div class="rv-hint">Checkpoint kept at ${escHtml(outcome.checkpointPath)}</div><button class="run-action primary" type="button" style="margin-top:6px;max-width:220px" data-send="/resume ${escAttr(outcome.checkpointPath)}">Resume this run</button>`
     : '';
   return `
-    <div class="rv-summary-grid">
-      <div>
-        <div class="rv-sub-label">reconciliation funnel</div>
-        ${funnelHtml(rep.reconciliation)}
-        ${diag}${stopped}
-        ${findingsHtml(rep.findings)}
-      </div>
-      <div>
-        <div class="rv-sub-label">cost split</div>
-        ${costSplitHtml(rep)}
-        <div style="margin-top:12px">${coverageHtml(rep.ruleCoverage)}</div>
-        ${rep.review && rep.review.summary ? `<div class="rv-sub-label" style="margin-top:10px">critic summary</div><div style="font-size:11.5px;color:var(--text-2);line-height:1.5">${escHtml(rep.review.summary)}</div>` : ''}
-        ${dl}
-        ${resume}
-      </div>
-    </div>`;
+    ${hero}
+    ${diag}${stopped}
+    <div class="rv-sub-label">Reconciliation funnel</div>
+    ${funnelHtml(rep.reconciliation)}
+    <div class="rv-sub-label" style="margin-top:14px">Cost split</div>
+    ${costSplitHtml(rep)}
+    <div style="margin-top:14px">${coverageHtml(rep.ruleCoverage)}</div>
+    ${findingsHtml(findings)}
+    ${rep.review && rep.review.summary ? `<div class="rv-sub-label" style="margin-top:14px">Critic summary</div><p class="rv-prose">${escHtml(rep.review.summary)}</p>` : ''}
+    <div class="rv-actions">${dl}${resume}</div>`;
 }
 
 /* ---------- Initial render ---------- */
 
 renderDashboard();
 renderRunHistory();
-setGatewayPill('warn', 'offline');
+syncGatewayChip();
 renderSettingsRows();
 
 

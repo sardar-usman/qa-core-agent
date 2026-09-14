@@ -380,16 +380,16 @@ Every option the CLI accepts works in the chat the same way, and the gateway bui
 
 ### The run view
 
-When a run starts, the centre panel shows one card per pipeline stage, updated live from the gateway's event stream:
+When a run starts, the centre panel shows a stage rail (Discovery, Plan, Explore, Review, Verify, Summary, each with a status and a one-line stat; click one to jump to its panel) and one full-width panel per stage, updated live from the gateway's event stream. Screenshots: [dark](./docs/ui/run-view-dark.png), [light](./docs/ui/run-view-light.png).
 
 1. **Discovery**: the rung that produced the page set, pages found, the relevance-filter result, robots and rung warnings.
 2. **Plan**: per-page planner lines with cost, then every scenario with its feature, category and rule-id tags.
 3. **Explorer**: live tool calls, step count against the step budget, a cost meter against the explorer sub-ceiling, gate injections, skips with reasons, incomplete scenarios.
 4. **Critic and repair**: verdicts with reasons, a repair-pass banner (count and budget), and verdict journeys (`rework -> pass` kept, `rework -> reject` dropped).
 5. **Replay and stability**: pass or fail per scenario, the per-iteration pattern (`PPP`, `PFP`), stabilizer attempts and recoveries.
-6. **Summary**: the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped), rule coverage with the considered-not-automated list and reasons, the cost split (planner, explorer, critic, repair, stabilizer), findings called out as product behavior to review, and the zip download.
+6. **Summary**: three numbers first (tests shipped, total cost, items needing attention), then the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped; zero rows collapse into one line), the cost split, rule coverage with the considered-not-automated list and reasons, findings called out in violet as product behavior to review, and the one download button.
 
-Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently. While a run is live the panels are the primary view: the runtime's console-style lines are demoted to a collapsible log at the bottom of the run view, and the chat gets only the final summary and the download card. The **view** button on any history card opens the same six panels for a past run from its run-report.
+Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently. While a run is live the panels are the primary view: the runtime's console-style lines are demoted to a collapsible log at the bottom of the run view, and the chat gets exactly one compact completion line naming the zip. Colors are semantic in both themes: green pass, amber rework, red reject or dropped, violet findings, grey incomplete or skipped. The header's gateway chip follows the live socket, and the Session chip is the cost of the runs finished in this browser session. The **view** button on any history card opens the same six panels for a past run from its run-report.
 
 ### Run history, resume and regenerate
 

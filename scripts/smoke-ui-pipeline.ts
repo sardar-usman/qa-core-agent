@@ -284,6 +284,55 @@ window.__smoke = {
     const cards = Array.from(document.querySelectorAll('#runHistory .run-card')).filter((c) => c.dataset.id === run.id);
     return { count: cards.length, resume: !!(cards[0] && cards[0].querySelector('[data-action="resume"]')), regenerate: !!(cards[0] && cards[0].querySelector('[data-action="regenerate"]')) };
   },
+  rail() {
+    const rv = document.querySelector('.run-view');
+    const out = {};
+    rv.querySelectorAll('.rv-step').forEach((b) => { out[b.dataset.rail] = { state: (b.className.match(/rv-step (\S+)/) || [])[1] || '', stat: b.querySelector('.rv-step-stat').textContent.replace(/\s+/g, ' ').trim() }; });
+    return out;
+  },
+  funnelZero() {
+    const rv = document.querySelector('.run-view');
+    return { zeroLine: (rv.querySelector('.funnel-zero') || {}).textContent || '', skippedRow: !!rv.querySelector('.funnel-row.skipped'), rows: rv.querySelectorAll('.funnel-row').length };
+  },
+  findingColors() {
+    const root = getComputedStyle(document.documentElement);
+    const probe = document.createElement('span');
+    document.body.appendChild(probe);
+    const resolve = (v) => { probe.style.color = v; return getComputedStyle(probe).color; };
+    const reject = resolve(root.getPropertyValue('--reject').trim());
+    const finding = resolve(root.getPropertyValue('--finding').trim());
+    probe.remove();
+    const block = document.querySelector('.finding-block');
+    const heading = getComputedStyle(block.querySelector('h4')).color;
+    const name = getComputedStyle(block.querySelector('.finding .name')).color;
+    const border = getComputedStyle(block).borderTopColor;
+    return { reject, finding, heading, name, border, title: block.querySelector('h4').textContent.replace(/\s+/g, ' ').trim() };
+  },
+  chip() {
+    const text = () => document.getElementById('pillGatewayText').textContent;
+    const cls = () => document.getElementById('pillGateway').className;
+    const mk = (state) => ({ readyState: state, send() {}, close() { this.readyState = 3; if (this.onclose) this.onclose(); } });
+    const a = mk(0);
+    bindGatewaySocket(a, 'ws://fake');
+    const connecting = text();
+    a.readyState = 1; a.onopen();
+    const open = text(); const openCls = cls();
+    // A reconnect: the new socket opens, then the OLD socket's close fires late.
+    const b = mk(0);
+    bindGatewaySocket(b, 'ws://fake2');
+    b.readyState = 1; b.onopen();
+    a.readyState = 3; a.onclose();
+    const afterStaleClose = text();
+    b.readyState = 3; b.onclose();
+    const closed = text(); const closedCls = cls();
+    ws = null; syncGatewayChip();
+    return { connecting, open, openCls, afterStaleClose, closed, closedCls, headerText: document.getElementById('statusText').textContent };
+  },
+  session() { return { chip: document.getElementById('pillCostText').textContent, label: document.querySelector('#pillCost .label-tiny').textContent }; },
+  overflow() {
+    const msgs = document.getElementById('messages');
+    return { doc: document.documentElement.scrollWidth <= document.documentElement.clientWidth, msgs: msgs.scrollWidth <= msgs.clientWidth + 1, width: document.documentElement.clientWidth };
+  },
   contrast() {
     const lum = (rgb) => {
       const m = (rgb.match(/\d+(\.\d+)?/g) || ['0', '0', '0']).slice(0, 3).map((v) => { const c = Number(v) / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
@@ -300,7 +349,10 @@ window.__smoke = {
   },
   async stream(args) {
     // The real entry point for every gateway payload, with the console-style
-    // {text} lines interleaved exactly as the gateway sends them.
+    // {text} lines interleaved exactly as the gateway sends them. A new
+    // command detaches the previous run view first (sendMessage does this).
+    currentRun = null;
+    const completionsBefore = document.querySelectorAll('.msg.agent.completion').length;
     handleGatewayPayload({ type: 'settings', settings: args.started.settings });
     // A parse note arrives BEFORE run_started and is ordinary chat.
     const chatBefore = document.querySelectorAll('.msg.agent').length;
@@ -329,10 +381,14 @@ window.__smoke = {
     await this.frames();
     const bubblesAfter = document.querySelectorAll('.msg.agent').length - bubblesBefore;
     const runViews = document.querySelectorAll('.run-view').length;
+    const completions = Array.from(document.querySelectorAll('.msg.agent.completion')).slice(completionsBefore);
     return { preRunNote, bubblesDuring, bubblesAfter, logSummary, logLines, badge, explorer, runViews, logOpen: rv.querySelector('.rv-log').open,
-      doneBubble: Array.from(document.querySelectorAll('.msg.agent .msg-bubble')).some((b) => /Done\./.test(b.textContent)) };
+      completionCount: completions.length, completionText: completions.map((c) => c.textContent.replace(/\s+/g, ' ').trim()).join(' | '),
+      downloadButtons: document.querySelectorAll('.rv-download, .framework-zip-dl').length,
+      summaryDownloads: rv.querySelectorAll('[data-stage="summary"] .rv-download').length };
   },
   stale() {
+    currentRun = null;
     const before = document.querySelectorAll('.msg.agent').length;
     handleGatewayPayload({ text: '▸ Exploring https://old.example/' });
     const bubbles = Array.from(document.querySelectorAll('.msg.agent .msg-bubble')).slice(before).map((b) => b.textContent);
@@ -412,7 +468,10 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   check(`${theme}: funnel dropped equals reconciliation.dropped.length`, final.rows.dropped === String(rec.dropped.length));
   check(`${theme}: funnel incomplete equals reconciliation.incomplete.length`, final.rows.incomplete === String(rec.incomplete.length));
   check(`${theme}: funnel findings equals reconciliation.findings.length`, final.rows.findings === String(rec.findings.length));
-  check(`${theme}: funnel skipped equals reconciliation.skipped.length (0), not report.skipped (1)`, final.rows.skipped === '0', final.rows.skipped);
+  // @ts-expect-error __smoke is injected above
+  const fz = await page.evaluate(() => window.__smoke.funnelZero()) as { zeroLine: string; skippedRow: boolean; rows: number };
+  check(`${theme}: funnel skipped (0, from reconciliation, not report.skipped=1) collapses into the muted zero line`, !fz.skippedRow && /skipped 0/.test(fz.zeroLine) && final.rows.skipped === undefined, JSON.stringify(fz));
+  check(`${theme}: funnel keeps a bar for every non-zero row and none for zero rows`, fz.rows === 5 && !/dropped 0|incomplete 0|findings 0/.test(fz.zeroLine), JSON.stringify(fz));
   check(`${theme}: funnel identity line matches the CLI numbers`, /8 = 3 \+ 3 \+ 1 \+ 1 \+ 0/.test(final.eq) && /balanced/.test(final.eq), final.eq);
   check(`${theme}: funnel bar widths are proportional to planned`, parseFloat(final.widths.generated ?? '') === 37.5 && parseFloat(final.widths.planned ?? '') === 100 && parseFloat(final.widths.incomplete ?? '') === 12.5, JSON.stringify(final.widths));
   check(`${theme}: verdict journeys render from review.repair (3 rows)`, final.journeys.length === 3, JSON.stringify(final.journeys));
@@ -436,7 +495,7 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   const doneCard = history.cards.find((c) => c.id === 'disk_the-internet-herokuapp-automation-framework');
   const emptyCard = history.cards.find((c) => c.id === 'disk_empty-site-automation-framework');
   check(`${theme}: stopped run shows a Resume button and no Regenerate`, !!stoppedCard && stoppedCard.resume && !stoppedCard.regenerate, JSON.stringify(stoppedCard));
-  check(`${theme}: stopped run status badge names the checkpoint`, /stopped · checkpoint/.test(stoppedCard?.status ?? ''), stoppedCard?.status);
+  check(`${theme}: stopped run status badge names the checkpoint`, /stopped, checkpoint kept/.test(stoppedCard?.status ?? ''), stoppedCard?.status);
   check(`${theme}: completed run shows Regenerate and no Resume`, !!doneCard && doneCard.regenerate && !doneCard.resume, JSON.stringify(doneCard));
   check(`${theme}: empty run shows neither`, !!emptyCard && !emptyCard.resume && !emptyCard.regenerate, JSON.stringify(emptyCard));
   check(`${theme}: history card mini-funnel repeats the reconciliation counts`, /planned 8.*generated 3.*dropped 3.*incomplete 1.*findings 1.*skipped 0.*rules 3\/5/.test(stoppedCard?.funnel ?? ''), stoppedCard?.funnel);
@@ -457,13 +516,26 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   // ─── Live stream through the real payload entry point, text lines included ───
   await page.evaluate(() => { document.querySelectorAll('.run-view').forEach((el) => el.remove()); });
   // @ts-expect-error __smoke is injected above
-  const streamed = await page.evaluate((args) => window.__smoke.stream(args), { started: runStarted, evs: events, rr: runReport, zip: zipMsg }) as { preRunNote: number; bubblesDuring: number; bubblesAfter: number; logSummary: string; logLines: number; badge: string; explorer: string; runViews: number; logOpen: boolean; doneBubble: boolean };
+  const streamed = await page.evaluate((args) => window.__smoke.stream(args), { started: runStarted, evs: events, rr: runReport, zip: zipMsg }) as { preRunNote: number; bubblesDuring: number; bubblesAfter: number; logSummary: string; logLines: number; badge: string; explorer: string; runViews: number; logOpen: boolean; completionCount: number; completionText: string; downloadButtons: number; summaryDownloads: number };
   check(`${theme}: live stream: a note before run_started is ordinary chat`, streamed.preRunNote === 1, String(streamed.preRunNote));
   check(`${theme}: live stream: no chat bubbles are added while the run is live (console lines go to the run log)`, streamed.bubblesDuring === 0, String(streamed.bubblesDuring));
   check(`${theme}: live stream: the run view exists and reads running`, streamed.runViews === 1 && streamed.badge === 'running', streamed.badge);
-  check(`${theme}: live stream: the console log is collapsed and counts every text line`, !streamed.logOpen && /console log 19 lines/.test(streamed.logSummary) && streamed.logLines === 19, streamed.logSummary + ' / ' + streamed.logLines);
+  check(`${theme}: live stream: the console log is collapsed and counts every text line`, !streamed.logOpen && /console log 19 lines/i.test(streamed.logSummary) && streamed.logLines === 19, streamed.logSummary + ' / ' + streamed.logLines);
   check(`${theme}: live stream: panels update from events, not from the text lines`, /steps 4 \/ 118/.test(streamed.explorer) && /Cost ceiling reached/.test(streamed.explorer), streamed.explorer);
-  check(`${theme}: live stream: after run_report the Done summary is a chat bubble again`, streamed.bubblesAfter >= 1 && streamed.doneBubble, String(streamed.bubblesAfter));
+  check(`${theme}: live stream: exactly one compact completion message in the chat, naming the shipped count and the zip`, streamed.bubblesAfter === 1 && streamed.completionCount === 1 && /3 tests shipped/.test(streamed.completionText) && /saucedemo-automation-framework\.zip/.test(streamed.completionText), JSON.stringify({ b: streamed.bubblesAfter, c: streamed.completionCount, t: streamed.completionText }));
+  check(`${theme}: live stream: exactly one download button for the completed run, in the Summary`, streamed.downloadButtons === 1 && streamed.summaryDownloads === 1, JSON.stringify({ all: streamed.downloadButtons, summary: streamed.summaryDownloads }));
+  // @ts-expect-error __smoke is injected above
+  const rail = await page.evaluate(() => window.__smoke.rail()) as Record<string, { state: string; stat: string }>;
+  check(`${theme}: rail: discovery stat equals report.discovery.pages.length`, rail.discovery?.stat === '2 pages found', JSON.stringify(rail.discovery));
+  check(`${theme}: rail: plan stat equals report.plan.length`, rail.plan?.stat === '8 planned', JSON.stringify(rail.plan));
+  check(`${theme}: rail: explore stat is generated + dropped + findings over planned, with the explorer cost`, rail.explorer?.stat === '7/8 explored · $1.71', JSON.stringify(rail.explorer));
+  check(`${theme}: rail: review stat equals the final verdict counts`, rail.critic?.stat === '3 pass / 0 rework / 2 reject', JSON.stringify(rail.critic));
+  check(`${theme}: rail: verify stat equals stability passed / flaked`, rail.replay?.stat === '3 stable / 0 flaky', JSON.stringify(rail.replay));
+  check(`${theme}: rail: summary stat equals report.scenarios.length`, rail.summary?.stat === '3 shipped', JSON.stringify(rail.summary));
+  check(`${theme}: rail: warning where the report says so (discovery warnings, explorer stopped, review rejects, a replay drop, summary stopped) and done for the plan`, rail.discovery?.state === 'warning' && rail.explorer?.state === 'warning' && rail.critic?.state === 'warning' && rail.replay?.state === 'warning' && rail.summary?.state === 'warning' && rail.plan?.state === 'done', JSON.stringify(rail));
+  // @ts-expect-error __smoke is injected above
+  const fc = await page.evaluate(() => window.__smoke.findingColors()) as { reject: string; finding: string; heading: string; name: string; border: string; title: string };
+  check(`${theme}: finding block is headed "Product behavior to review" and never uses the error color`, /^Product behavior to review/.test(fc.title) && fc.heading === fc.finding && fc.name === fc.finding && fc.heading !== fc.reject && fc.border !== fc.reject, JSON.stringify(fc));
 
   // ─── An older gateway build (no run_started) is called out ───
   // @ts-expect-error __smoke is injected above
@@ -474,7 +546,7 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   // @ts-expect-error __smoke is injected above
   const hist = await page.evaluate((args) => window.__smoke.historyView(args), { report: fixtureReport, outcome: { kind: 'framework', reportPath: 'output/saucedemo-automation-framework/run-report.json', checkpointPath: 'output/saucedemo-automation-framework/checkpoint.json', resumeHint: null, summary: [], diagnosis: null } }) as { fromHistory: boolean; badge: string; rows: Record<string, string>; journeys: number; hasLog: boolean; states: Record<string, string>; plan: string; replay: string; resumeBtn: boolean };
   check(`${theme}: history view: a from-history run view opens with the stopped badge`, hist.fromHistory && hist.badge === 'stopped', JSON.stringify({ f: hist.fromHistory, b: hist.badge }));
-  check(`${theme}: history view: funnel counts equal the reconciliation arrays`, hist.rows.planned === '8' && hist.rows.generated === '3' && hist.rows.dropped === '3' && hist.rows.incomplete === '1' && hist.rows.findings === '1' && hist.rows.skipped === '0', JSON.stringify(hist.rows));
+  check(`${theme}: history view: funnel counts equal the reconciliation arrays`, hist.rows.planned === '8' && hist.rows.generated === '3' && hist.rows.dropped === '3' && hist.rows.incomplete === '1' && hist.rows.findings === '1' && hist.rows.skipped === undefined, JSON.stringify(hist.rows));
   check(`${theme}: history view: journeys, plan and replay panels render from the report`, hist.journeys === 3 && /scenarios 8/.test(hist.plan) && /PPP/.test(hist.replay), JSON.stringify({ j: hist.journeys, p: hist.plan.slice(0, 40), r: hist.replay.slice(0, 60) }));
   check(`${theme}: history view: every stage reads done and there is no console log`, Object.values(hist.states).every((c) => /done/.test(c)) && !hist.hasLog, JSON.stringify(hist.states));
   check(`${theme}: history view: resume offered because the report dir has a checkpoint`, hist.resumeBtn);
@@ -482,12 +554,29 @@ async function runIn(theme: 'dark' | 'light'): Promise<void> {
   check(`${theme}: every history card with a report offers a view action`, viewBtn === 3, String(viewBtn));
   const headerSub = await page.evaluate(() => (document.querySelector('.chat-header .sub') || {}).textContent || '');
   check(`${theme}: header reads "Powered by Claude." only`, headerSub.trim() === 'Powered by Claude.', headerSub);
+  // @ts-expect-error __smoke is injected above
+  const chip = await page.evaluate(() => window.__smoke.chip()) as { connecting: string; open: string; openCls: string; afterStaleClose: string; closed: string; closedCls: string; headerText: string };
+  check(`${theme}: gateway chip follows the socket: connecting, then connected on open`, chip.connecting === 'connecting' && chip.open === 'connected' && /\bok\b/.test(chip.openCls), JSON.stringify(chip));
+  check(`${theme}: gateway chip stays connected when a stale socket closes after a reconnect`, chip.afterStaleClose === 'connected', JSON.stringify(chip));
+  check(`${theme}: gateway chip reads offline after the live socket closes`, chip.closed === 'offline' && /\berr\b/.test(chip.closedCls) && chip.headerText === 'disconnected', JSON.stringify(chip));
+  // @ts-expect-error __smoke is injected above
+  const session = await page.evaluate(() => window.__smoke.session()) as { chip: string; label: string };
+  check(`${theme}: session cost chip is labelled Session and sums the finished runs' report costs`, session.label === 'Session' && session.chip === '$3.45', JSON.stringify(session));
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.waitForTimeout(150);
+  // @ts-expect-error __smoke is injected above
+  const ov = await page.evaluate(() => window.__smoke.overflow()) as { doc: boolean; msgs: boolean; width: number };
+  check(`${theme}: no horizontal scroll at 1024px wide`, ov.doc && ov.msgs, JSON.stringify(ov));
+  await page.setViewportSize({ width: 1480, height: 1100 });
 
   if (shotDir) {
     fs.mkdirSync(shotDir, { recursive: true });
     // @ts-expect-error __smoke is injected above
     await page.evaluate(() => window.__smoke.scrollTop());
     await page.screenshot({ path: path.join(shotDir, `run-view-${theme}.png`), fullPage: false });
+    // The centre column scrolls, so let the layout grow for a full capture of the run view.
+    await page.addStyleTag({ content: 'main{height:auto!important} body{overflow:auto!important} .center-panel{height:auto!important} .messages{overflow:visible!important}' });
+    await page.locator('.run-view').first().screenshot({ path: path.join(shotDir, `run-view-${theme}-full.png`) });
     await page.locator('.run-view .rv-log').first().evaluate((d) => { (d as HTMLDetailsElement).open = true; });
     await page.locator('.run-view .rv-log').first().screenshot({ path: path.join(shotDir, `run-log-${theme}.png`) });
     for (const stage of ['explorer', 'critic', 'replay', 'summary']) {
