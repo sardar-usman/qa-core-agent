@@ -126,7 +126,8 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: one card per project (${projects.length})`, cards.length === projects.length, JSON.stringify(cards.map((c) => c.id)));
   for (const p of projects) {
     const c = cards.find((x) => x.id === p.id);
-    const ok = !!c && c.shipped === String(p.shipped) && c.findings === String(p.open_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.status === (p.last_run as Record<string, unknown> | null)?.status;
+    const show = (v: unknown) => (v === null ? 'n/a' : String(v));
+    const ok = !!c && c.shipped === show(p.shipped) && c.findings === show(p.open_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.status === (p.last_run as Record<string, unknown> | null)?.status;
     check(`${theme}: card ${p.id} shows the API's shipped, open findings, spend this month, last run status`, ok, JSON.stringify({ c, p: { shipped: p.shipped, f: p.open_findings, s: p.spend_month, st: (p.last_run as Record<string, unknown> | null)?.status } }));
   }
   const sauce = cards.find((c) => c.id === 'saucedemo-com')!;
@@ -158,7 +159,7 @@ for (const theme of ['dark', 'light'] as const) {
   const legacyRow = rows.find((r) => r.status === 'legacy')!;
   check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, "N explored" instead of shipped/planned, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1 explored' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
   const demoqa = cards.find((c) => c.id === 'demoqa-com');
-  check(`${theme}: the demoqa card counts 0 tests shipped (legacy scenarios were explored, not shipped) with a muted "+1 legacy run" line`, demoqa?.status === 'legacy' && demoqa?.shipped === '0' && demoqa?.legacySub === '+1 legacy run', JSON.stringify(demoqa));
+  check(`${theme}: the legacy-only demoqa card shows n/a for tests shipped and open findings (unknown, never 0) with the pre-v2 sub-line`, demoqa?.status === 'legacy' && demoqa?.shipped === 'n/a' && demoqa?.findings === 'n/a' && demoqa?.legacySub === '1 pre-v2 run, 1 scenario explored', JSON.stringify(demoqa));
   check(`${theme}: cards with real runs carry no legacy line`, cards.filter((c) => c.id !== 'demoqa-com').every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
   check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
   await page.selectOption('[data-testid="filter-project"]', 'saucedemo-com');

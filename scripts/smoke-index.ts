@@ -116,7 +116,7 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (4: project environment nullable, no stored default)', schemaVersion(db) === 4);
+check('A. schema migrated to the current version (5: finding triage statuses and finding_runs)', schemaVersion(db) === 5);
 const r1 = indexOutput(db, root);
 check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
@@ -161,7 +161,8 @@ check('J. a legacy folder is indexed in place under its host project with source
 
 const findings = db.prepare('SELECT * FROM findings').all() as Array<Record<string, unknown>>;
 check('K. the finding seen in two runs (name differs by case and a full stop) is ONE row', findings.length === 1 && findings[0]?.id === findingKey('saucedemo-com', finding.scenario, finding.expected), JSON.stringify(findings));
-check('L. first_seen is the earlier run, last_seen and run_id the later', findings[0]?.first_seen_run_id === sauce1 && findings[0]?.last_seen_run_id === sauce2 && findings[0]?.run_id === sauce2 && findings[0]?.status === 'new');
+check('L. first_seen is the earlier run, last_seen and run_id the later', findings[0]?.first_seen_run_id === sauce1 && findings[0]?.last_seen_run_id === sauce2 && findings[0]?.run_id === sauce2 && findings[0]?.status === 'open');
+check('L2. finding_runs holds both runs the finding was seen in (one row, two run references)', JSON.stringify((db.prepare('SELECT run_id FROM finding_runs WHERE finding_id = ? ORDER BY run_id').all(findings[0]?.id as string) as Array<{ run_id: string }>).map((r) => r.run_id)) === JSON.stringify([sauce1, sauce2].sort()));
 const verdicts = db.prepare('SELECT * FROM verdicts ORDER BY run_id, scenario').all() as Array<Record<string, unknown>>;
 check('M. verdict rows: one per scenario per run, rejects carry their repair journey', r1.verdicts === verdicts.length && verdicts.filter((v) => v.verdict === 'reject').every((v) => typeof v.journey_json === 'string' && JSON.parse(String(v.journey_json)).outcome === 'dropped'));
 const cov = db.prepare('SELECT * FROM rule_coverage WHERE run_id = ? ORDER BY rule_id').all(sauce2) as Array<Record<string, unknown>>;
@@ -190,14 +191,14 @@ const reimport = importLegacyRecords(db, root);
 const shadowed = db.prepare('SELECT report_path, shipped, status FROM runs WHERE id = ?').get(july.id) as { report_path: string | null; shipped: number; status: string } | undefined;
 check('T8. a row that has a real report is never overwritten by a legacy record with the same id', !!shadowed && shadowed.report_path !== null && shadowed.shipped === 3 && shadowed.status === 'completed' && !reimport.ids.includes(String(july.id)), JSON.stringify({ shadowed, imported: reimport.ids.length }));
 // Restore the fixture state for the equality checks below.
-for (const t of ['verdicts', 'rule_coverage', 'findings', 'runs']) db.prepare(`DELETE FROM ${t}`).run();
+for (const t of ['verdicts', 'rule_coverage', 'finding_runs', 'findings', 'runs']) db.prepare(`DELETE FROM ${t}`).run();
 indexOutput(db, root);
 
 /* ─── acceptance: delete the database, re-index, identical rows ─── */
 
 function dump(d: ReturnType<typeof openDatabase>): string {
   const out: Record<string, unknown> = {};
-  for (const t of ['projects', 'runs', 'findings', 'rule_coverage', 'verdicts', 'terminals']) {
+  for (const t of ['projects', 'runs', 'findings', 'finding_runs', 'rule_coverage', 'verdicts', 'terminals']) {
     const rows = d.prepare(`SELECT * FROM ${t}`).all() as Array<Record<string, unknown>>;
     for (const r of rows) { delete r.created_at; delete r.updated_at; }
     out[t] = rows.map((r) => JSON.stringify(Object.fromEntries(Object.entries(r).sort()))).sort();
@@ -205,11 +206,11 @@ function dump(d: ReturnType<typeof openDatabase>): string {
   return JSON.stringify(out);
 }
 const dump1 = dump(db);
-db.prepare("UPDATE findings SET status = 'confirmed', notes = 'seen by hand'").run();
+db.prepare("UPDATE findings SET status = 'triaged', notes = 'seen by hand'").run();
 indexOutput(db, root);
 const kept = db.prepare('SELECT status, notes FROM findings').get() as { status: string; notes: string };
-check('O. re-indexing in place preserves finding status and notes', kept.status === 'confirmed' && kept.notes === 'seen by hand');
-db.prepare("UPDATE findings SET status = 'new', notes = NULL").run();
+check('O. re-indexing in place preserves finding status and notes', kept.status === 'triaged' && kept.notes === 'seen by hand');
+db.prepare("UPDATE findings SET status = 'open', notes = NULL").run();
 check('P. re-indexing in place changes no other row', dump(db) === dump1);
 db.close();
 fs.rmSync(dbPath, { force: true });
@@ -249,7 +250,7 @@ const v3Path = path.join(root, 'data', 'qa-core-v3.sqlite');
 let migrated: ReturnType<typeof openDatabase> | null = null;
 let migrateError: string | null = null;
 try { migrated = openDatabase(v3Path); } catch (e) { migrateError = String(e); }
-check('V2. migration reaches v4 on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 4, migrateError ?? '');
+check('V2. migration reaches the current version (5) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 5, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
 if (migrated) {
   const runsAfter = migrated.prepare("SELECT id, project_id, status FROM runs ORDER BY id").all() as Array<{ id: string; project_id: string; status: string }>;
   check('V3. every runs row survives with its project_id intact (one reported, one legacy)', runsAfter.length === 2 && runsAfter.every((r) => r.project_id === 'saucedemo-com') && runsAfter.some((r) => r.status === 'legacy') && runsAfter.some((r) => r.id === sauce1), JSON.stringify(runsAfter));
