@@ -5,6 +5,9 @@ import { ProjectsPage } from '@/pages/Projects';
 import { RunsPage } from '@/pages/Runs';
 import { RunDetailPage } from '@/pages/RunDetail';
 import { TerminalPage } from '@/pages/Terminal';
+import { ProjectPage } from '@/pages/Project';
+import { FindingsPage } from '@/pages/Findings';
+import { CoveragePage } from '@/pages/Coverage';
 import { connectGateway, useGateway } from '@/lib/gateway';
 
 export default function App() {
@@ -20,6 +23,9 @@ export default function App() {
         <main className="mx-auto max-w-6xl px-5 py-6">
           <Routes>
             <Route path="/" element={<ProjectsPage refreshKey={refreshKey} />} />
+            <Route path="/projects/:id" element={<ProjectPage refreshKey={refreshKey} />} />
+            <Route path="/findings" element={<FindingsPage refreshKey={refreshKey} />} />
+            <Route path="/coverage" element={<CoveragePage refreshKey={refreshKey} />} />
             <Route path="/runs" element={<RunsPage refreshKey={refreshKey} />} />
             <Route path="/runs/:id" element={<RunDetailPage />} />
             <Route path="/terminal" element={<TerminalPage />} />

@@ -9,6 +9,8 @@ import { Sparkline } from '@/components/Sparkline';
 import { StatusBadge } from '@/components/StatusBadge';
 import { fmtDate, money } from '@/lib/utils';
 
+const UNASSIGNED = 'unassigned';
+
 const ENV_VARIANT: Record<string, 'accent' | 'rework' | 'neutral'> = { staging: 'accent', production: 'rework', other: 'neutral' };
 
 export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
@@ -31,10 +33,22 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
       </EmptyState>
     );
   }
+  // Unassigned (pre-v2 records with no URL) sorts last and is muted; the API orders it last too.
+  const ordered = [...projects].sort((a, b) => Number(a.id === UNASSIGNED) - Number(b.id === UNASSIGNED));
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="project-grid">
-      {projects.map((p) => (
-        <Link key={p.id} to={`/runs?project_id=${encodeURIComponent(p.id)}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id}>
+      {ordered.map((p) => p.id === UNASSIGNED ? (
+        <Link key={p.id} to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id} data-unassigned="true">
+          <Card className="h-full border-dashed">
+            <CardHeader>
+              <CardTitle>Unassigned</CardTitle>
+              <CardDescription>pre-v2 records with no URL</CardDescription>
+            </CardHeader>
+            <CardContent className="text-s text-fg-2" data-testid="unassigned-note">{p.legacy_runs} pre-v2 record{p.legacy_runs === 1 ? '' : 's'} with no URL</CardContent>
+          </Card>
+        </Link>
+      ) : (
+        <Link key={p.id} to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id}>
           <Card className="h-full transition-colors hover:border-line-strong">
             <CardHeader>
               <div className="flex items-start justify-between gap-2">
@@ -48,8 +62,8 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
                 {p.last_run ? (<><span>Last run</span><StatusBadge status={p.last_run.status} /><span>{fmtDate(p.last_run.started_at)}</span></>) : <span>No runs yet</span>}
               </div>
               <dl className="grid grid-cols-3 gap-2">
-                <Stat label="tests shipped" value={String(p.shipped)} testid="shipped" sub={p.legacy_runs ? `+${p.legacy_runs} legacy run${p.legacy_runs === 1 ? '' : 's'}` : undefined} />
-                <Stat label="open findings" value={String(p.open_findings)} tone={p.open_findings ? 'finding' : undefined} testid="open-findings" />
+                <Stat label="tests shipped" value={p.shipped === null ? 'n/a' : String(p.shipped)} testid="shipped" sub={p.legacy_runs ? `${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
+                <Stat label="open findings" value={p.open_findings === null ? 'n/a' : String(p.open_findings)} tone={p.open_findings ? 'finding' : undefined} testid="open-findings" />
                 <Stat label="spend this month" value={money(p.spend_month)} tone="cost" mono testid="spend-month" />
               </dl>
               <div className="flex items-center justify-between text-s text-fg-3">
