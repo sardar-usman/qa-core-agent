@@ -17,6 +17,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export interface Migration {
   version: number;
   name: string;
+  /**
+   * A table rebuild (create new, copy, drop old, rename) on a table other
+   * rows reference. The runner turns foreign keys OFF before the transaction
+   * (the pragma is a no-op inside one), runs foreign_key_check after the
+   * copy and fails loudly on any row, commits, then turns foreign keys ON.
+   * Without this, dropping the old table fails with SQLITE_CONSTRAINT_FOREIGNKEY
+   * on any database that has referencing rows.
+   */
+  rebuild?: boolean;
   up: (db: Database.Database) => void;
 }
 
@@ -54,9 +63,15 @@ export const MIGRATIONS: Migration[] = [
   {
     // projects.environment becomes nullable and loses its 'other' default:
     // the indexer never knew an environment, so the stored 'other' was a
-    // label nobody set. Rows are kept; a stored 'other' becomes NULL.
+    // label nobody set. Rows are kept; a stored 'other' becomes NULL. This
+    // is a table rebuild: runs rows reference projects, so the runner wraps
+    // it with foreign keys off (see Migration.rebuild). The order is the one
+    // SQLite documents for a rebuild: create the new table under a temporary
+    // name, copy, drop the old table, rename. Renaming the old table first
+    // would rewrite the runs foreign key to point at the renamed table.
     version: 4,
     name: 'project environment nullable',
+    rebuild: true,
     up: (db) => {
       db.exec(`CREATE TABLE projects_v4 (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT,
@@ -65,7 +80,8 @@ export const MIGRATIONS: Migration[] = [
       )`);
       db.exec(`INSERT INTO projects_v4 SELECT id, name, base_url, CASE WHEN environment = 'other' THEN NULL ELSE environment END,
                srs_path, created_at, updated_at, default_ceiling_usd, default_features, notes FROM projects`);
-      db.exec('PRAGMA foreign_keys = OFF; DROP TABLE projects; ALTER TABLE projects_v4 RENAME TO projects; PRAGMA foreign_keys = ON;');
+      db.exec('DROP TABLE projects');
+      db.exec('ALTER TABLE projects_v4 RENAME TO projects');
     },
   },
 ];
@@ -87,10 +103,27 @@ export function migrate(db: Database.Database): number[] {
   const done: number[] = [];
   for (const m of MIGRATIONS.sort((a, b) => a.version - b.version)) {
     if (applied.has(m.version)) continue;
-    db.transaction(() => {
-      m.up(db);
-      db.prepare('INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)').run(m.version, m.name, new Date().toISOString());
-    })();
+    const record = (): void => { db.prepare('INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)').run(m.version, m.name, new Date().toISOString()); };
+    if (m.rebuild) {
+      // SQLite's table-rebuild procedure: foreign keys off OUTSIDE the
+      // transaction, rebuild inside it, verify with foreign_key_check before
+      // committing, foreign keys back on afterwards (also on failure).
+      db.pragma('foreign_keys = OFF');
+      try {
+        db.transaction(() => {
+          m.up(db);
+          const violations = db.pragma('foreign_key_check') as Array<Record<string, unknown>>;
+          if (violations.length > 0) {
+            throw new Error(`migration ${m.version} (${m.name}) left ${violations.length} foreign key violation(s): ${JSON.stringify(violations.slice(0, 5))}`);
+          }
+          record();
+        })();
+      } finally {
+        db.pragma('foreign_keys = ON');
+      }
+    } else {
+      db.transaction(() => { m.up(db); record(); })();
+    }
     done.push(m.version);
   }
   return done;
