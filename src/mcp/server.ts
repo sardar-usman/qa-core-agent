@@ -162,8 +162,8 @@ server.tool(
   'Regenerate the Playwright framework and zip from an existing run-report.json without exploring again. No browser, no model call: the same emission the explore pipeline runs after its last stage. Use it after emitter changes or to recover a deliverable. Same as the CLI: npm run transcribe -- <run-report.json> [--out <dir>].',
   transcribeArgs,
   async (args) => {
-    const outcome = runTranscribeRequest({ reportPath: args.reportPath, ...(args.outDir ? { outDir: args.outDir } : {}) }, PROJECT_ROOT);
-    const zipPath = path.join(path.dirname(path.relative(PROJECT_ROOT, outcome.outDir)), outcome.zip.filename);
+    const outcome = runTranscribeRequest({ reportPath: args.reportPath, ...(args.outDir ? { outDir: args.outDir } : {}) }, PROJECT_ROOT, 'mcp');
+    const zipPath = path.relative(PROJECT_ROOT, outcome.zipPath);
     const lines = [
       ...outcome.notes,
       `✓ ${outcome.zip.scenarios} scenarios, ${outcome.zip.fileCount} files`,

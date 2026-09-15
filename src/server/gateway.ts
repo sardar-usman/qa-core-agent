@@ -413,7 +413,7 @@ function sendZip(ws: WebSocket, zip: FrameworkZip, runReportPath: string): void 
 
 function handleTranscribe(reportPath: string, outDir: string | undefined, ws: WebSocket): void {
   send(ws, { text: `▸ Transcribing ${reportPath} (no exploration, no model call)` });
-  const outcome = runTranscribeRequest({ reportPath, ...(outDir ? { outDir } : {}) }, ROOT);
+  const outcome = runTranscribeRequest({ reportPath, ...(outDir ? { outDir } : {}) }, ROOT, 'dashboard');
   for (const n of outcome.notes) send(ws, { text: n });
   send(ws, { type: 'run_report', report: reportForUi(outcome.report), outcome: { kind: 'framework', reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true } });
   sendZip(ws, outcome.zip, reportPath);

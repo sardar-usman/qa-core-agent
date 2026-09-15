@@ -46,6 +46,18 @@ export function appendRunEvent(runDir: string, e: AgentEvent, now: Date = new Da
 
 export interface StoredEvent { t: string; type: string; [k: string]: unknown }
 
+/**
+ * Append a run-history note that is not an AgentEvent: today only
+ * `{ type: 'transcribe', source }` when a surface regenerates the framework.
+ * The only write a transcribe makes outside the zip.
+ */
+export function appendRunNote(runDir: string, note: { type: string; [k: string]: unknown }, now: Date = new Date()): void {
+  try {
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...note }) + '\n');
+  } catch { /* a failed log line never fails the regenerate */ }
+}
+
 /** Read the stored timeline, oldest first. Malformed lines are skipped, never thrown. */
 export function readRunEvents(runDir: string, limit = 5000): StoredEvent[] {
   const file = path.join(runDir, EVENTS_FILE);

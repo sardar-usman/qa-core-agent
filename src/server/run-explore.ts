@@ -15,7 +15,8 @@ import {
 } from '../agent/explore-request.js';
 import { slimFrameworkDir } from '../agent/framework-dir.js';
 import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
-import { appendRunEvent } from './events.js';
+import { appendRunEvent, appendRunNote } from './events.js';
+import os from 'node:os';
 
 /**
  * The explore run the gateway and the MCP server share: prepare (resume
@@ -331,9 +332,11 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       // the zip and restored after slimming.
       const heldSrs = prepared.srsFile && fs.existsSync(prepared.srsFile) ? fs.readFileSync(prepared.srsFile) : undefined;
       if (heldSrs !== undefined) fs.rmSync(prepared.srsFile!, { force: true });
-      // The zip lives inside the run directory: zip, slim, then write it.
-      const zipBuf = zipFrameworkToBuffer(outDir);
-      const filename = `${req.name ? `${req.name}-automation-framework` : frameworkDirName(url)}.zip`;
+      // The zip lives inside the run directory: zip (rooted at the framework
+      // name, not the run id), slim, then write it.
+      const zipRootName = req.name ? `${req.name}-automation-framework` : frameworkDirName(url);
+      const zipBuf = zipFrameworkToBuffer(outDir, zipRootName);
+      const filename = `${zipRootName}.zip`;
       slimFrameworkDir(outDir);
       fs.writeFileSync(path.join(outDir, filename), zipBuf);
       if (heldCheckpoint !== undefined) fs.writeFileSync(cpFile, heldCheckpoint);
@@ -405,25 +408,39 @@ export function summarize(report: RunReport): string[] {
 export interface TranscribeRequest {
   /** run-report.json path, relative to projectRoot or absolute. */
   reportPath: string;
-  /** Output directory override. Defaults to the report's directory. */
+  /** Output directory override: the full emitted tree and the zip land there. Defaults to replacing only the zip in the report's run directory. */
   outDir?: string;
 }
 
 export interface TranscribeOutcome {
   report: RunReport;
+  /** Where the zip was written: the run directory, or the explicit outDir. */
   outDir: string;
+  /** Absolute path of the zip written. */
+  zipPath: string;
   zip: FrameworkZip;
   notes: string[];
 }
 
 /**
  * Re-emit the framework from an existing run-report.json without exploring.
- * Same emission as `npm run transcribe`: scaffold + zip; a requirements map
- * next to the report is reused. The emitted tree is slimmed back to the
- * report files after zipping when it lands in an existing run directory, so
- * the dashboard's scan keeps working.
+ * The ONE transcribe every surface uses (CLI `npm run transcribe`, the
+ * gateway's /transcribe and the dashboard's Regenerate, MCP qa_transcribe).
+ *
+ * The framework is scaffolded into a temporary directory named
+ * <brand>-automation-framework, zipped with that name as the archive root,
+ * and the zip alone is written into the run directory atomically (temp name,
+ * then rename over the previous zip). The run directory's own files
+ * (run-report.json, events.jsonl, run-meta.json, requirements-map.json,
+ * rule-coverage.json, checkpoint.json, an SRS) are read, never written,
+ * never slimmed, and never enter the zip; the redacted run-report copy the
+ * scaffold ships under the framework root is the only report inside it. The
+ * single write outside the zip is a `transcribe` note in events.jsonl.
+ *
+ * With an explicit outDir the emitted tree and the zip land there instead
+ * (the CLI's --out for inspection); nothing in the run directory changes.
  */
-export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string): TranscribeOutcome {
+export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string, source: 'cli' | 'dashboard' | 'mcp' | 'telegram' = 'cli'): TranscribeOutcome {
   const resolved = path.resolve(projectRoot, req.reportPath);
   if (!fs.existsSync(resolved)) throw new Error(`Run report not found: ${req.reportPath}`);
   let report: RunReport;
@@ -437,36 +454,47 @@ export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string
   }
   report.language = report.language === 'js' ? 'js' : 'ts';
   const notes: string[] = [];
+  const runDir = path.dirname(resolved);
   let requirements: RequirementsMap | undefined;
-  const mapPath = path.join(path.dirname(resolved), 'requirements-map.json');
+  const mapPath = path.join(runDir, 'requirements-map.json');
   if (fs.existsSync(mapPath)) {
     try {
       requirements = JSON.parse(fs.readFileSync(mapPath, 'utf8')) as RequirementsMap;
       notes.push(`requirements: restored from ${rel(projectRoot, mapPath)}`);
     } catch { /* a broken map just means no enrichment */ }
   }
-  const dir = path.resolve(projectRoot, req.outDir ?? path.dirname(resolved));
-  const sameDir = dir === path.dirname(resolved);
-  const held = new Map<string, string>();
-  if (sameDir) {
-    // Keep the run's own files intact through the re-emission.
-    for (const name of ['run-report.json', 'requirements-map.json', 'rule-coverage.json', 'checkpoint.json', 'run-meta.json', 'events.jsonl']) {
-      const p = path.join(dir, name);
-      if (fs.existsSync(p)) held.set(name, fs.readFileSync(p, 'utf8'));
+
+  const rootName = frameworkDirName(report.url);
+  const filename = `${rootName}.zip`;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-transcribe-'));
+  try {
+    const frameworkDir = path.join(tmp, rootName);
+    const result = scaffold({ report, outDir: frameworkDir, siteName: hostnameOf(report.url), ...(requirements ? { requirements } : {}) });
+    const zipBuf = zipFrameworkToBuffer(frameworkDir, rootName);
+    const zip: FrameworkZip = { buffer: zipBuf, filename, sizeBytes: zipBuf.length, fileCount: result.fileCount, scenarios: result.pomResult.scenarios };
+
+    let outDir: string;
+    let zipPath: string;
+    if (req.outDir) {
+      // An explicit destination gets the full tree for inspection plus the zip; the run directory is untouched.
+      outDir = path.resolve(projectRoot, req.outDir);
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.cpSync(frameworkDir, outDir, { recursive: true });
+      zipPath = path.join(outDir, filename);
+      fs.writeFileSync(zipPath, zipBuf);
+    } else {
+      // Replace ONLY the zip in the run directory, atomically.
+      outDir = runDir;
+      zipPath = path.join(runDir, filename);
+      const tmpZip = path.join(runDir, `.${filename}.${process.pid}.tmp`);
+      fs.writeFileSync(tmpZip, zipBuf);
+      fs.renameSync(tmpZip, zipPath);
+      appendRunNote(runDir, { type: 'transcribe', source });
     }
+    notes.push(`Transcribed ${rel(projectRoot, resolved)}: ${report.scenarios.length} scenario(s) · ${report.language} · ${report.url}`);
+    notes.push(`zip: ${rel(projectRoot, zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB, root ${rootName}/)`);
+    return { report, outDir, zipPath, zip, notes };
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
   }
-  const result = scaffold({ report, outDir: dir, siteName: hostnameOf(report.url), ...(requirements ? { requirements } : {}) });
-  const zipBuf = zipFrameworkToBuffer(dir);
-  const filename = `${frameworkDirName(report.url)}.zip`;
-  if (sameDir) {
-    slimFrameworkDir(dir);
-    for (const [name, content] of held) fs.writeFileSync(path.join(dir, name), content);
-  }
-  fs.writeFileSync(path.join(dir, filename), zipBuf);
-  notes.push(`Transcribed ${rel(projectRoot, resolved)}: ${report.scenarios.length} scenario(s) · ${report.language} · ${report.url}`);
-  notes.push(`zip: ${rel(projectRoot, path.join(dir, filename))} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
-  return {
-    report, outDir: dir, notes,
-    zip: { buffer: zipBuf, filename, sizeBytes: zipBuf.length, fileCount: result.fileCount, scenarios: result.pomResult.scenarios },
-  };
 }

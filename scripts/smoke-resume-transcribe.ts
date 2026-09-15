@@ -24,6 +24,8 @@ import { parseGatewayCommand } from '../src/server/commands.js';
 import { loadReportForUi } from '../src/server/runs.js';
 import { newRunId } from '../src/agent/output-layout.js';
 import { resumeCommand, transcribeCommand } from '../dashboard/src/lib/command.js';
+import { spawnSync } from 'node:child_process';
+import { runTranscribeRequest } from '../src/server/run-explore.js';
 
 let pass = 0;
 let fail = 0;
@@ -42,6 +44,73 @@ check('A2. without a ceiling the resume request has no env override', r2.kind ==
 const t1 = parseGatewayCommand(transcribeCommand(rp), { lang: 'ts' });
 check('A3. transcribeCommand parses to a transcribe of that report', t1.kind === 'transcribe' && t1.reportPath === rp);
 check('A4. a path with a space is quoted so it stays one token', parseGatewayCommand(transcribeCommand('output/my run/run-report.json'), { lang: 'ts' }).kind === 'transcribe');
+
+/* ─── transcribe writes only the zip ─── */
+const FRAMEWORK_ROOT = 'saucedemo-automation-framework/';
+const zipEntries = (zipPath: string): string[] => {
+  const out = spawnSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' });
+  if (out.status !== 0) throw new Error(`unzip failed: ${out.stderr}`);
+  return out.stdout.split('\n').filter(Boolean).sort();
+};
+const snapshot = (dir: string): Record<string, string> => Object.fromEntries(fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile()).map((f) => [f, fs.readFileSync(path.join(dir, f)).toString('base64')]));
+/** Transcribe a copy of `srcDir` twice and assert only the zip and events.jsonl changed; returns the second entry list. */
+function transcribeOnlyTheZip(tag: string, srcDir: string, srsName: string): string[] {
+  const troot = fs.mkdtempSync(path.join(os.tmpdir(), `qa-core-transcribe-${tag}-`));
+  const runDir = path.join(troot, 'output', 'saucedemo-com', path.basename(srcDir));
+  fs.mkdirSync(path.dirname(runDir), { recursive: true });
+  fs.cpSync(srcDir, runDir, { recursive: true });
+  const before = snapshot(runDir);
+  const eventsBefore = fs.existsSync(path.join(runDir, 'events.jsonl')) ? fs.readFileSync(path.join(runDir, 'events.jsonl'), 'utf8') : '';
+  const reportRel = path.relative(troot, path.join(runDir, 'run-report.json'));
+  const first = runTranscribeRequest({ reportPath: reportRel }, troot, 'dashboard');
+  const after = snapshot(runDir);
+  const zips = Object.keys(after).filter((f) => f.endsWith('.zip'));
+  const unchanged = Object.keys(before).filter((f) => !f.endsWith('.zip') && f !== 'events.jsonl');
+  check(`${tag}: every file except the zip and events.jsonl is byte-identical afterwards (${unchanged.length} files), no file added or removed`, unchanged.every((f) => before[f] === after[f]) && Object.keys(after).filter((f) => !f.endsWith('.zip') && f !== 'events.jsonl').length === unchanged.length, JSON.stringify({ before: Object.keys(before), after: Object.keys(after) }));
+  check(`${tag}: the SRS file still exists and is unchanged`, fs.existsSync(path.join(runDir, srsName)) && before[srsName] === after[srsName]);
+  check(`${tag}: exactly one zip, named by the framework, written atomically (no temp file left)`, zips.length === 1 && zips[0] === 'saucedemo-automation-framework.zip' && !fs.readdirSync(runDir).some((f) => f.includes('.tmp')) && first.zipPath === path.join(runDir, 'saucedemo-automation-framework.zip'), JSON.stringify(zips));
+  const entries = zipEntries(first.zipPath);
+  check(`${tag}: every zip entry sits under ${FRAMEWORK_ROOT}, never the run id`, entries.length > 5 && entries.every((e) => e.startsWith(FRAMEWORK_ROOT)) && !entries.some((e) => e.startsWith(path.basename(srcDir))), JSON.stringify(entries));
+  check(`${tag}: the zip holds no top-level run-report.json, no events.jsonl, no run-meta.json, no checkpoint, no SRS, no .zip; the redacted report sits under the framework root only`, !entries.includes('run-report.json') && entries.includes(`${FRAMEWORK_ROOT}run-report.json`) && !entries.some((e) => /events\.jsonl|run-meta\.json|checkpoint\.json|requirements-map\.json|rule-coverage\.json|\.zip$/.test(e)) && !entries.some((e) => e.endsWith('/' + srsName)), JSON.stringify(entries));
+  const eventsAfter = fs.readFileSync(path.join(runDir, 'events.jsonl'), 'utf8');
+  const added = eventsAfter.slice(eventsBefore.length).split('\n').filter(Boolean);
+  check(`${tag}: events.jsonl gained exactly one {type: "transcribe", source} line and kept every previous byte`, eventsAfter.startsWith(eventsBefore) && added.length === 1 && (JSON.parse(added[0]!) as { type: string; source: string }).type === 'transcribe' && (JSON.parse(added[0]!) as { source: string }).source === 'dashboard', JSON.stringify(added));
+  const second = runTranscribeRequest({ reportPath: reportRel }, troot, 'cli');
+  check(`${tag}: transcribing twice yields the same entry list and still one zip`, JSON.stringify(zipEntries(second.zipPath)) === JSON.stringify(entries) && Object.keys(snapshot(runDir)).filter((f) => f.endsWith('.zip')).length === 1);
+  fs.rmSync(troot, { recursive: true, force: true });
+  return entries;
+}
+// A fixture run folder with every file kind a real run leaves behind.
+const fixtureRun = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-fixture-run-')), '20260901T090000Z-fixt00');
+fs.mkdirSync(fixtureRun, { recursive: true });
+fs.writeFileSync(path.join(fixtureRun, 'run-report.json'), JSON.stringify({
+  url: 'https://www.saucedemo.com/', language: 'ts', startedAt: '2026-09-01T09:00:00.000Z', finishedAt: '2026-09-01T09:01:00.000Z', steps: 4,
+  scenarios: [{ name: 'login succeeds', feature: 'login', category: 'happy', steps: [
+    { kind: 'navigate', url: 'https://www.saucedemo.com/' },
+    { kind: 'fill', target: { level: 'role', arg: { role: 'textbox', name: 'Username', exact: true }, intent: 'username input' }, value: 'standard_user' },
+    { kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login', exact: true }, intent: 'login button' } },
+    { kind: 'assert', name: 'inventory URL', assertion: { type: 'toHaveURL', pattern: '/inventory' } },
+  ] }],
+  cascadeStats: { role: 2, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 }, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0.5 },
+  plan: [{ name: 'login succeeds', category: 'happy', rationale: 'r', feature: 'login' }],
+  reconciliation: { planned: 1, generated: 1, dropped: [], incomplete: [], findings: [], skipped: [], accountedFor: 1, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0 },
+}, null, 2));
+fs.writeFileSync(path.join(fixtureRun, 'events.jsonl'), JSON.stringify({ t: '2026-09-01T09:00:01.000Z', type: 'plan_started' }) + '\n');
+fs.writeFileSync(path.join(fixtureRun, 'run-meta.json'), JSON.stringify({ source: 'dashboard', flags: {}, writtenAt: 'x' }));
+fs.writeFileSync(path.join(fixtureRun, 'requirements-map.json'), JSON.stringify({ features: [{ name: 'login', rules: [{ id: 'R1', text: 'Valid login lands on inventory', type: 'behavior' }] }], roles: [] }));
+fs.writeFileSync(path.join(fixtureRun, 'rule-coverage.json'), JSON.stringify({ covered: [{ ruleId: 'R1', scenarios: ['login succeeds'] }], uncovered: [] }));
+fs.writeFileSync(path.join(fixtureRun, 'saucedemo-srs.md'), '# SRS\nR1 login works');
+fs.writeFileSync(path.join(fixtureRun, 'saucedemo-automation-framework.zip'), 'PK-old');
+transcribeOnlyTheZip('fixture', fixtureRun, 'saucedemo-srs.md');
+fs.rmSync(path.dirname(fixtureRun), { recursive: true, force: true });
+// The real run that reproduced the bug, when this checkout has it (output/ is not in git).
+const realRun = path.join(process.cwd(), 'output', 'saucedemo-com', '20260914T173105Z-1050ef');
+if (fs.existsSync(path.join(realRun, 'run-report.json'))) {
+  const entries = transcribeOnlyTheZip('real-run', realRun, 'saucedemo-srs.md');
+  console.log('real-run regenerated zip entries:\n  ' + entries.join('\n  '));
+} else {
+  console.log('note: output/saucedemo-com/20260914T173105Z-1050ef is not present in this checkout; the real-run check was skipped (the fixture check above covers the same assertions).');
+}
 
 /* ─── fixture ─── */
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-resume-'));
