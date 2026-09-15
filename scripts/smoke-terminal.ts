@@ -37,6 +37,7 @@ import { EXPLORE_FLAGS, parseExploreTokens, tokenizeCommand, defaultExploreReque
 import { newRunId } from '../src/agent/output-layout.js';
 import type { AgentEvent } from '../src/agent/runtime.js';
 import { buildCommand, defaultForm, formFromRequest, startBlocker, validateSrsFile, FORM_FIELDS, type TerminalForm } from '../dashboard/src/lib/command.js';
+import { storeProjectSrs } from '../src/server/project-srs.js';
 
 let pass = 0;
 let fail = 0;
@@ -139,6 +140,8 @@ const report = {
 fs.writeFileSync(path.join(runDir, 'run-report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(runDir, 'saucedemo-automation-framework.zip'), 'PKzip');
 fs.writeFileSync(path.join(runDir, 'requirements.md'), '# SRS');
+// A project-level SRS for saucedemo-com, so the Terminal offers it and the preview shows its path.
+storeProjectSrs(root, 'saucedemo-com', { name: 'reqs.md', base64: Buffer.from('# project SRS').toString('base64') }, new Date('2026-09-14T09:00:00Z'));
 fs.writeFileSync(path.join(runDir, 'run-meta.json'), JSON.stringify({ source: 'dashboard', flags: {}, writtenAt: 'x' }));
 fs.writeFileSync(path.join(runDir, 'events.jsonl'), '');
 
@@ -178,7 +181,7 @@ const repo = process.cwd();
 const dist = path.join(repo, 'dashboard', 'dist');
 if (!fs.existsSync(path.join(dist, 'index.html'))) { console.error('dashboard/dist is missing. Run `npm run dashboard:build` first.'); process.exit(1); }
 const apiHandler = createApiHandler({ db, root, token: TOKEN });
-const statik = createStaticHandler({ distDir: dist, legacyFile: path.join(repo, 'qa-core-ui.html') });
+const statik = createStaticHandler({ distDir: dist });
 const server = http.createServer(async (req, res) => { if (await apiHandler(req, res)) return; if (statik(req, res)) return; res.writeHead(404); res.end(); });
 const wss = new WebSocketServer({ server });
 const send = (ws: WebSocket, p: object) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(p)); };
@@ -257,6 +260,26 @@ await page.goto(`${base}/terminal#token=${TOKEN}`, { waitUntil: 'networkidle' })
 await page.waitForSelector('[data-testid="composer"]');
 await page.waitForFunction(() => document.querySelector('[data-testid="gateway-status"]')?.textContent?.includes('connected'));
 check('C1. with an empty URL, Start is disabled and says why', (await page.isDisabled('[data-testid="start"]')) && (await page.textContent('[data-testid="start-blocker"]')) === 'enter a URL');
+// Three tiers: the top row, then Scope and Budget collapsed by default.
+const tiers = await page.evaluate(() => ({
+  top: !!document.querySelector('[data-testid="composer"][data-tier="top"] [data-testid="f-url"]') && !!document.querySelector('[data-testid="composer"] [data-testid="f-features"]') && !!document.querySelector('[data-testid="composer"] [data-testid="srs-attach"]') && !!document.querySelector('[data-testid="composer"] [data-testid="start"]'),
+  scope: (document.querySelector('[data-testid="tier-scope"]') as HTMLDetailsElement | null)?.open, scopeFields: ['f-urls', 'f-discover', 'f-pom', 'f-lang'].every((t) => !!document.querySelector(`[data-testid="tier-scope"] [data-testid="${t}"]`)),
+  budget: (document.querySelector('[data-testid="tier-budget"]') as HTMLDetailsElement | null)?.open, budgetFields: ['f-ceiling', 'f-repairReserve', 'f-maxSteps', 'f-plannerModel', 'f-explorerModel', 'f-criticModel'].every((t) => !!document.querySelector(`[data-testid="tier-budget"] [data-testid="${t}"]`)),
+  defaultChips: document.querySelectorAll('[data-testid="tier-budget"] [data-testid="default-chip"]').length,
+  ceilingEffective: document.querySelector('[data-testid="f-ceiling-effective"]')?.textContent ?? '',
+  placeholders: ['f-url', 'f-features', 'f-urls'].map((t) => { const el = document.querySelector(`[data-testid="${t}"]`) as HTMLInputElement; return { t, ph: el.placeholder, cls: el.className }; }),
+  numericPlaceholders: ['f-ceiling', 'f-repairReserve', 'f-maxSteps', 'f-plannerModel'].map((t) => (document.querySelector(`[data-testid="${t}"]`) as HTMLInputElement).placeholder),
+  preview: document.querySelector('[data-testid="command-preview"]')?.textContent ?? '', textarea: !!document.querySelector('[data-testid="command"]'),
+  help: !!document.querySelector('[data-testid="usage-help"]'), startCeiling: document.querySelector('[data-testid="start-ceiling"]')?.textContent ?? '',
+}));
+check('T1. three tiers: URL, features, SRS and Start on top; Scope and Budget collapsed with their fields inside', tiers.top && tiers.scope === false && tiers.scopeFields && tiers.budget === false && tiers.budgetFields, JSON.stringify(tiers));
+check('T2. placeholders are examples prefixed "e.g." with the ph-example class; numeric and model fields have no placeholder and show a default chip with the value', tiers.placeholders.every((p) => p.ph.startsWith('e.g. ') && p.cls.includes('ph-example') && p.cls.includes('placeholder:text-fg-3')) && tiers.numericPlaceholders.every((p) => p === '') && tiers.defaultChips === 6 && /2\.00/.test(tiers.ceilingEffective) && /default/.test(tiers.ceilingEffective), JSON.stringify({ ph: tiers.placeholders, np: tiers.numericPlaceholders, chips: tiers.defaultChips, ceiling: tiers.ceilingEffective }));
+check('T3. the command is a read-only one-line preview (no textarea until "edit command"); the usage help is a popover', tiers.preview === '/explore' && !tiers.textarea && tiers.help, JSON.stringify({ preview: tiers.preview, textarea: tiers.textarea }));
+check('T4. beside Start: "ceiling $2.00, stops cleanly if reached" from the gateway default', tiers.startCeiling === 'ceiling $2.00, stops cleanly if reached', tiers.startCeiling);
+// Open both tiers so the form fills below reach every field.
+await page.click('[data-testid="tier-scope"] > summary');
+await page.click('[data-testid="tier-budget"] > summary');
+await page.waitForSelector('[data-testid="f-urls"]', { state: 'visible' });
 
 // Fill every form field and compare the displayed command's parse with the page's parsed request.
 await page.fill('[data-testid="f-url"]', fullForm.url);
@@ -271,7 +294,12 @@ await page.click('[data-testid="f-stabilize"]');
 await page.fill('[data-testid="f-stabilizeAttempts"]', fullForm.stabilizeAttempts);
 await page.click('[data-testid="f-stabilize"]');
 for (const f of ['ceiling', 'repairReserve', 'maxSteps', 'plannerModel', 'explorerModel', 'criticModel'] as const) await page.fill(`[data-testid="f-${f}"]`, fullForm[f]);
-const shownCommand = await page.inputValue('[data-testid="command"]');
+const shownCommand = (await page.textContent('[data-testid="command-preview"]')) ?? '';
+check('T5. with a typed ceiling the text beside Start reads that value', (await page.textContent('[data-testid="start-ceiling"]')) === 'ceiling $3.00, stops cleanly if reached', (await page.textContent('[data-testid="start-ceiling"]')) ?? '');
+// The editable textarea appears on request and carries the same command.
+await page.click('[data-testid="edit-command"]');
+await page.waitForSelector('[data-testid="command"]');
+check('T6. "edit command" opens the textarea with the previewed command', (await page.inputValue('[data-testid="command"]')) === shownCommand);
 check('C2. the page shows exactly the command buildCommand produces for the form', shownCommand === buildCommand(fullForm), shownCommand);
 await page.waitForSelector('[data-testid="parsed-request"]', { state: 'attached' });
 await page.waitForFunction((cmd) => { const pre = document.querySelector('[data-testid="parsed-request"]'); return !!pre && (pre.textContent ?? '').includes('shop.example') && document.querySelector<HTMLTextAreaElement>('[data-testid="command"]')?.value === cmd; }, shownCommand);
@@ -301,6 +329,18 @@ check('C6. a bad flag in the raw box shows the parser\'s own error and disables 
 // Start is disabled while the gateway has a live run.
 await page.fill('[data-testid="command"]', '/explore https://www.saucedemo.com/ --features login,cart');
 await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="start"]')?.disabled);
+// The project SRS is offered for this host and the preview shows exactly what will run.
+await page.waitForSelector('[data-testid="project-srs-option"]');
+await page.click('[data-testid="edit-command"]');
+await page.waitForSelector('[data-testid="command-preview"]');
+const previewWithSrs = (await page.textContent('[data-testid="command-preview"]')) ?? '';
+check('T7. with the project SRS checked the preview appends --srs <project srs path>', previewWithSrs === '/explore https://www.saucedemo.com/ --features login,cart --srs output/saucedemo-com/srs/reqs.md', previewWithSrs);
+await page.uncheck('[data-testid="use-project-srs"]');
+await page.waitForFunction(() => !/--srs/.test(document.querySelector('[data-testid="command-preview"]')?.textContent ?? ''));
+check('T8. unchecking it removes --srs from the preview; the command itself never carried it', (await page.textContent('[data-testid="command-preview"]')) === '/explore https://www.saucedemo.com/ --features login,cart');
+await page.check('[data-testid="use-project-srs"]');
+await page.click('[data-testid="edit-command"]');
+await page.waitForSelector('[data-testid="command"]');
 busyOverride = { run_id: 'busy-run-1', run_dir: 'output/x/busy-run-1', url: 'https://x/', started_at: new Date().toISOString() };
 broadcastActive();
 await page.waitForSelector('[data-testid="active-run"]');
@@ -322,6 +362,11 @@ check('C9. the page rejects a 3 MB file stating the 2 MB cap', /3\.0 MB; the cap
 await page.setInputFiles('[data-testid="f-srs"]', path.join(tmpFiles, 'requirements.md'));
 await page.waitForFunction(() => /requirements\.md/.test(document.querySelector('[data-testid="srs-name"]')?.textContent ?? ''));
 check('C10. a valid SRS attaches and the command box says it travels with the command', /requirements\.md/.test((await page.textContent('[data-testid="command-srs-note"]')) ?? ''));
+await page.click('[data-testid="edit-command"]');
+await page.waitForSelector('[data-testid="command-preview"]');
+check('T9. with a per-run file attached the preview shows its run-folder path instead of the project SRS', /--srs <run folder>\/requirements\.md$/.test((await page.textContent('[data-testid="command-preview"]')) ?? '') && !!(await page.$('[data-testid="project-srs-overridden"]')), (await page.textContent('[data-testid="command-preview"]')) ?? '');
+await page.click('[data-testid="edit-command"]');
+await page.waitForSelector('[data-testid="command"]');
 
 // Start: the page navigates to the run and renders live from the stream.
 const sentCommand = await page.inputValue('[data-testid="command"]');
@@ -357,6 +402,16 @@ await page.waitForSelector('[data-testid="stage-view"][data-live="false"]');
 const historyHtml = await page.evaluate(() => document.querySelector('[data-testid="stage-view"]')?.innerHTML ?? '');
 check('C18. the live rendering after run_report is byte-identical to the history view of the same report', afterLive.html.length > 1000 && afterLive.html === historyHtml, `live ${afterLive.html.length} chars vs history ${historyHtml.length} chars`);
 check('C19. events.jsonl in the run folder holds every streamed event', readRunEvents(runDir).length === liveEvents.length);
+// A session override from Settings shows on the Terminal as a chip and as the field's effective value.
+await page.goto(`${base}/terminal#token=${TOKEN}`);
+await page.evaluate(() => sessionStorage.setItem('qa-core.session-overrides', JSON.stringify({ QA_CORE_MAX_STEPS: '55' })));
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('[data-testid="composer"]');
+await page.click('[data-testid="tier-budget"] > summary');
+await page.waitForSelector('[data-testid="f-maxSteps-effective"]');
+const overrideView = await page.evaluate(() => ({ chips: Array.from(document.querySelectorAll('[data-testid="override-chip"]')).map((c) => c.textContent ?? ''), field: document.querySelector('[data-testid="f-maxSteps-effective"]')?.textContent ?? '', fieldChip: !!document.querySelector('[data-testid="f-maxSteps-wrap"] [data-testid="override-chip-field"]'), ceilingChip: !!document.querySelector('[data-testid="f-ceiling-wrap"] [data-testid="default-chip"]') }));
+check('T10. a session override shows as a chip by the command and as the field\'s effective value with a "session override" chip; untouched fields keep "default"', overrideView.chips.length === 1 && /max steps = 55/.test(overrideView.chips[0]!) && /55/.test(overrideView.field) && overrideView.fieldChip && overrideView.ceilingChip, JSON.stringify(overrideView));
+await page.evaluate(() => sessionStorage.removeItem('qa-core.session-overrides'));
 check('C20. zero console errors', errors.filter((e) => !/404|WebSocket|Failed to load resource/.test(e)).length === 0, errors.join(' | '));
 
 await browser.close();
