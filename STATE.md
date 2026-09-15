@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-14 (late night). Update this file at the end of every working day.
+Updated: 2026-09-15. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -63,12 +63,18 @@ Schedule: two focused days, then the audit.
   live stage view converging on the history view via run-report. First
   dashboard-started run: saucedemo SRS, 4 planned, 4 shipped, 4 of 4
   rules, $0.6187. Parallel-run plumbing deferred to after the audit.
-- PR D projects/findings/coverage/trends: IN PROGRESS. Branch
-  dashboard/pr-d-projects.
-- PR E settings/resume/transcribe + retire legacy UI, plus polish: MCP
-  srsText into the run folder, placeholders styled as placeholders (e.g.
-  prefix, dimmer), header cost sub-line not truncated, site URL and
-  wordmark as links.
+- PR D projects/findings/coverage/trends (PR #14): MERGED Sept 15.
+  Project page, findings triage (open / triaged / fixed / wont-fix,
+  persists across reindex), coverage across runs, trends from index rows,
+  legacy-only cards show n/a, schema v5 (finding_runs).
+- PR E settings/resume/transcribe + retire legacy UI: IN PROGRESS.
+  Branch dashboard/pr-e-settings. Also: project create/edit, project-level
+  SRS, MCP srsText into the run folder, finding observed text without
+  inference, composer restructure (three tiers, real placeholders, command
+  preview, ceiling shown at Start), header cost sub-line, links on site
+  URL and wordmark.
+- PR F design pass: after the $6 run, before the audit. Brief first at
+  docs/dashboard-design.md, then page by page, numbers untouched.
 
 Cut line if the schedule slips: the Terminals page cannot move after the
 audit, it is the only way to start a run from the new dashboard and the
@@ -77,9 +83,9 @@ and move the parallel-run plumbing (RunSettings, registry, concurrent
 terminals) to after the audit.
 
 Audit data: v2 run-reports on disk as of Sept 14 are 2, both single-page
-login runs, zero multi-page. Decision: one $6 SRS discovery run during PR D
-to give the audit a real multi-page report. Verified at $0 after that
-(transcribe, history views, fixtures).
+login runs, zero multi-page. Decision: one $6 SRS discovery run after PR E
+(started and, if needed, resumed from the dashboard), before PR F, so the
+design pass and the audit both have a real multi-page report.
 
 ## After the dashboard: the audit
 
