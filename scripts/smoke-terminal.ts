@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { WebSocketServer, type WebSocket } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { chromium } from 'playwright';
 import { openDatabase } from '../src/server/db/migrate.js';
 import { indexOutput } from '../src/server/db/indexer.js';
@@ -162,6 +162,10 @@ const liveEvents: AgentEvent[] = [
   { type: 'tool_result', name: 'end_scenario', ok: true },
   { type: 'critic_started' },
   { type: 'critic_done', verdicts: report.review.verdicts, usd: 0.0093 },
+  { type: 'repair_started', count: 1, budgetUsd: 0.3 },
+  { type: 'repair_scenario', name: 'add to cart updates the badge', outcome: 're-recorded' },
+  { type: 'critic_done', verdicts: [{ scenario: 'add to cart updates the badge', verdict: 'pass', reasons: ['captures the badge count before and after'], required_fixes: [] }], usd: 0.002 },
+  { type: 'repair_done', usd: 0.2, kept: 1, dropped: 0 },
   { type: 'replay_started', total: 2 },
   { type: 'replay_scenario_passed', name: 'login succeeds with valid credentials', durationMs: 2000 },
   { type: 'replay_scenario_passed', name: 'add to cart updates the badge', durationMs: 2500 },
@@ -173,6 +177,10 @@ const liveEvents: AgentEvent[] = [
   { type: 'done', scenarios: 2 },
 ];
 const DROP_AT = 9;
+// The stream pauses right after repair_done until the smoke sends {type:'__continue'}, so the live Review panel can be read mid-run.
+const PAUSE_AT = liveEvents.findIndex((e) => e.type === 'repair_done') + 1;
+let paused = false;
+let continued = false;
 
 const db = openDatabase(path.join(root, 'data', 'qa-core.sqlite'));
 indexOutput(db, root);
@@ -210,6 +218,7 @@ const streamFrom = (i: number): void => {
       for (const c of wss.clients) c.terminate();
       return; // resumes when a reconnected socket catches up
     }
+    if (streamIndex === PAUSE_AT && !continued) { paused = true; return; }
     const e = liveEvents[streamIndex++]!;
     appendRunEvent(runDir, e, new Date(Date.UTC(2026, 8, 15, 12, 0, streamIndex)));
     toRun({ type: 'event', event: e });
@@ -226,6 +235,7 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
     if (msg.type === 'active_run') { send(ws, { type: 'active_run', run: busyOverride ?? active }); return; }
+    if (msg.type === '__continue') { continued = true; if (paused) { paused = false; streamFrom(streamIndex); } return; }
     if ((msg.type === 'watch' || msg.type === 'catch_up') && msg.run_id === runId) {
       watchers.add(ws);
       if (msg.type === 'catch_up') {
@@ -382,6 +392,11 @@ check('C13. when the socket drops mid-run the page says so and offers reconnect;
 await page.click('[data-testid="reconnect"]');
 await page.waitForSelector('[data-testid="caught-up"]', { timeout: 15000 });
 check('C14. after reconnect the page catches up from the run folder\'s events.jsonl', /Caught up from the run folder: 9 stored events/.test((await page.textContent('[data-testid="caught-up"]')) ?? ''), (await page.textContent('[data-testid="caught-up"]')) ?? '');
+// The stream pauses after repair_done: the live Review panel must show the repair banner built from the events alone.
+await page.waitForFunction(() => /spent \$0\.2000/.test(document.querySelector('[data-testid="repair-banner"]')?.textContent ?? ''), null, { timeout: 15000 });
+const liveReview = await page.evaluate(() => ({ banner: document.querySelector('[data-testid="repair-banner"]')?.textContent ?? '', status: document.querySelector('[data-testid="rail-item"][data-stage="review"]')?.getAttribute('data-status'), stat: document.querySelector('[data-testid="rail-item"][data-stage="review"] [data-testid="rail-stat"]')?.textContent ?? '', live: document.querySelector('[data-testid="stage-view"]')?.getAttribute('data-live') }));
+check('C14b. mid-run the live Review panel shows the repair banner from repair_started and repair_done (count and spend), while the run is still live', /repair pass 1 scenario re-explored/.test(liveReview.banner) && /spent \$0\.2000/.test(liveReview.banner) && liveReview.live === 'true' && liveReview.status === 'running', JSON.stringify(liveReview));
+await new Promise<void>((resolve, reject) => { const c = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${TOKEN}`); c.on('open', () => { c.send(JSON.stringify({ type: '__continue' }), () => { setTimeout(() => { c.close(); resolve(); }, 200); }); }); c.on('error', reject); });
 await page.waitForSelector('[data-testid="run-detail"]:not([data-live])', { timeout: 20000 });
 await page.waitForSelector('[data-testid="stage-view"][data-live="false"]');
 const afterLive = await page.evaluate(() => ({

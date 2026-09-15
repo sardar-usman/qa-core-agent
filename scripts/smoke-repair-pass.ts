@@ -12,7 +12,7 @@
  *
  * Fixture verdicts only. No live calls. No browser.
  */
-import { splitGate, mergeRepairVerdicts, verdictMatchesScenario, verdictFor, type ScenarioVerdict } from '../src/agent/critic.js';
+import { splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, type ScenarioVerdict } from '../src/agent/critic.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -120,6 +120,25 @@ check('F6. mergeRepairVerdicts pairs first and second verdicts tolerantly',
   JSON.stringify(tolerantMerge));
 check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   verdictFor(prefixed, 's-rework-a')?.verdict === 'rework');
+
+
+/* ─── G. the repair pass reports itself as events: started, one per scenario, done ─── */
+{
+  const rework = ['s-rework-a', 's-rework-b', 's-rework-c'];
+  const perScenario = repairScenarioEvents(rework, ['1. [happy] s-rework-a'], { 's-rework-b': 'mid-repair when the cost ceiling hit; the in-progress work is discarded' });
+  check('G1. one repair_scenario event per rework scenario, in plan order', perScenario.length === 3 && perScenario.every((e) => e.type === 'repair_scenario') && perScenario.map((e) => e.name).join(',') === rework.join(','));
+  check('G2. a re-recorded trace matches tolerantly (echoed prefix) and carries no reason', perScenario[0]?.outcome === 're-recorded' && perScenario[0]?.reason === undefined);
+  check('G3. a scenario the pass never re-recorded says so with the recorded reason', perScenario[1]?.outcome === 'not re-recorded' && /cost ceiling/.test(perScenario[1]?.reason ?? ''));
+  check('G4. a scenario with no recorded reason still gets an honest one', perScenario[2]?.outcome === 'not re-recorded' && perScenario[2]?.reason === 'no trace came back from the repair pass');
+  const history = mergeRepairVerdicts(
+    [{ scenario: 's-rework-a', verdict: 'rework', reasons: [], required_fixes: [] }, { scenario: 's-rework-b', verdict: 'rework', reasons: [], required_fixes: [] }, { scenario: 's-rework-c', verdict: 'rework', reasons: [], required_fixes: [] }],
+    [{ scenario: 's-rework-a', verdict: 'pass', reasons: [], required_fixes: [] }],
+  ).history;
+  const done = repairDoneEvent(history, 0.8642775);
+  check('G5. repair_done carries the spend and the kept/dropped split of the verdict history (1 kept, 2 dropped)', done.type === 'repair_done' && done.usd === 0.8642775 && done.kept === 1 && done.dropped === 2 && history.length === 3, JSON.stringify(done));
+  const started = { type: 'repair_started', count: rework.length, budgetUsd: 1.28 } as const;
+  check('G6. the three event types appear once, in order, with the counts the report will carry', [started.type, ...perScenario.map((e) => e.type), done.type].join(',') === 'repair_started,repair_scenario,repair_scenario,repair_scenario,repair_done' && started.count === rework.length && started.count === done.kept + done.dropped);
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

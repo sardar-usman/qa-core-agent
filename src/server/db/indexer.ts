@@ -30,7 +30,8 @@ export interface RunRow {
   started_at: string | null;
   ended_at: string | null;
   status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed' | 'legacy';
-  source: 'cli' | 'dashboard' | 'mcp' | 'telegram';
+  /** The surface that started the run, from run-meta.json. NULL when the run left no run-meta: unknown, never a default. */
+  source: 'cli' | 'dashboard' | 'mcp' | 'telegram' | null;
   url: string | null;
   flags_json: string | null;
   planned: number;
@@ -118,7 +119,7 @@ export function runRowFromReport(opts: {
     started_at: started,
     ended_at: typeof r.finishedAt === 'string' ? r.finishedAt : null,
     status,
-    source: opts.source ?? 'cli',
+    source: opts.source ?? null,
     url: typeof r.url === 'string' ? r.url : null,
     flags_json: opts.flags ? JSON.stringify(opts.flags) : null,
     planned: rec ? len(rec.planned) : len(r.plan),
@@ -309,7 +310,7 @@ export function runRowFromLegacyRecord(host: string, rec: LegacyRecord, projectI
     started_at: started,
     ended_at: ended,
     status: 'legacy',
-    source: 'cli',
+    source: null,
     url: rec.url && rec.url !== '--' ? rec.url : null,
     flags_json: JSON.stringify({ model: rec.model, durationSec: rec.durationSec, legacyHost: host }),
     planned: 0, generated: explored, dropped: 0, incomplete: 0, findings: 0, skipped: 0,

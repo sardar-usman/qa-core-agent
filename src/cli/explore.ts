@@ -15,7 +15,7 @@ import {
   applyCheckpointFlags, buildExploreOptions, outDirForRequest, parseExploreArgv, resumeConflicts, slugUrl,
   type ExploreRequest,
 } from '../agent/explore-request.js';
-import { slimFrameworkDir } from '../agent/framework-dir.js';
+import os from 'node:os';
 import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent } from '../server/events.js';
 
@@ -200,6 +200,9 @@ async function main(): Promise<void> {
   console.log(`  language: ${args.lang}`);
   console.log(`  output:   ${path.relative(process.cwd(), outDir)}`);
   console.log('');
+  // run-meta.json at run start (source and flags are known now) and again at
+  // every end, so a run that stops early still records who started it.
+  writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
 
   // SRS ingestion — all of it happens BEFORE the browser launches, so a bad
   // document or an empty map fails fast and free. A resumed run restores the
@@ -360,8 +363,9 @@ async function main(): Promise<void> {
     if (diag?.cause === 'planner-none') {
       try { if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* noop */ }
     } else {
-      slimFrameworkDir(outDir);
-      console.error(`  Kept ${path.relative(process.cwd(), path.join(outDir, 'run-report.json'))} — full verdicts and trace, the spend is not lost.`);
+      // Nothing was scaffolded, so nothing is slimmed: every artifact the run left stays (report, events, checkpoint, SRS copy, maps).
+      writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
+      console.error(`  Kept ${path.relative(process.cwd(), path.join(outDir, 'run-report.json'))}: full verdicts and trace, the spend is not lost.`);
     }
     console.error(`  Cost so far: $${totalUsd.toFixed(4)}`);
     // The one resume hint, always the LAST line of an abnormal end that
@@ -383,24 +387,26 @@ async function main(): Promise<void> {
   if (args.pom) {
     // v3: scaffold emits the full project (package.json, configs, README, etc.)
     // and calls pom.ts internally for pages/tests/a11y. Then we zip it.
+    // The framework is scaffolded in a temporary directory named by the
+    // framework and zipped from there: the run directory's own files (report,
+    // events, checkpoint, SRS copy, maps, run-meta) are never held aside,
+    // deleted or slimmed; only the zip lands next to them.
+    const zipRootName = args.name ? `${args.name}-automation-framework` : frameworkDirName(url);
+    const emitTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-emit-'));
+    const frameworkDir = path.join(emitTmp, zipRootName);
     const scaffoldResult = scaffold({
       report: result,
-      outDir,
+      outDir: frameworkDir,
       siteName: hostnameOf(url),
       features: args.features,
       ...(requirements ? { requirements } : {}),
     });
-    // Checkpoint lifecycle: never ships inside the framework zip. A fully
-    // successful run (framework written) deletes it; a stopped run holds it
-    // aside during zipping and puts it back so --resume still works.
     const cpFile = path.join(outDir, 'checkpoint.json');
-    const heldCheckpoint = result.stopped && fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8') : undefined;
-    deleteCheckpoint(outDir);
-    primaryPath = scaffoldResult.pomResult.specFile;
+    primaryPath = path.join(outDir, path.relative(frameworkDir, scaffoldResult.pomResult.specFile));
     scenarios = scaffoldResult.pomResult.scenarios;
     const features = scaffoldResult.pomResult.features;
     const specCount = scaffoldResult.pomResult.specFiles.length;
-    console.log(`\nWrote complete framework to ${path.relative(process.cwd(), outDir)}/`);
+    console.log(`\nWrote complete framework zip to ${path.relative(process.cwd(), outDir)}/`);
     console.log(`  pages/        ${scaffoldResult.pomResult.pageFiles.length} page object class(es) (one per feature + BasePage)`);
     if (features.length > 0) {
       console.log(`  tests/        ${specCount} spec file(s) across feature folder(s): ${features.map((f) => `tests/${f}/`).join(', ')}`);
@@ -418,28 +424,23 @@ async function main(): Promise<void> {
     // tombstone that keeps the dashboard's run-history scan working.
     try {
       // The zip lives INSIDE the run directory, next to run-report.json, so a
-      // run's files stay together. Zip first, slim, then write the zip.
-      const zipRootName = args.name ? `${args.name}-automation-framework` : frameworkDirName(url);
-      const zipBuf = zipFrameworkToBuffer(outDir, zipRootName);
+      // run's files stay together; it is written atomically (temp name, rename).
+      const zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
       const zipPath = path.join(outDir, `${zipRootName}.zip`);
-      slimFrameworkDir(outDir);
-      fs.writeFileSync(zipPath, zipBuf);
+      const tmpZip = path.join(outDir, `.${zipRootName}.zip.${process.pid}.tmp`);
+      fs.writeFileSync(tmpZip, zipBuf);
+      fs.renameSync(tmpZip, zipPath);
       frameworkZipPath = zipPath;
       console.log(`  zip:          ${path.relative(process.cwd(), zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
-      console.log(`  (framework files live in the zip; the run directory keeps the report files and the zip)`);
+      console.log(`  (framework files live in the zip; the run directory keeps its own files and the zip)`);
     } catch (err) {
-      console.log(`  zip:          skipped — ${(err as Error).message}`);
+      console.log(`  zip:          skipped, ${(err as Error).message}`);
+    } finally {
+      try { fs.rmSync(emitTmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }
-    if (heldCheckpoint !== undefined) {
-      fs.writeFileSync(cpFile, heldCheckpoint);
-      console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped?.reason})`);
-    }
-    // The zip carries a REDACTED run-report (credential fill values masked);
-    // the working-directory copy keeps the raw values for the dashboard and
-    // debugging, so restore it after the zip + slim are done.
-    try {
-      fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(result, null, 2));
-    } catch { /* best effort — the zip already shipped the redacted copy */ }
+    // Checkpoint lifecycle: deleted only on a fully complete run; a stopped run keeps it for --resume.
+    if (result.stopped && fs.existsSync(cpFile)) console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped.reason})`);
+    else deleteCheckpoint(outDir);
     writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
     const fin = finalizeRunDir(outDir);
     if (fin.latest) console.log(`  latest:       ${path.relative(process.cwd(), path.join(path.dirname(outDir), 'latest'))} -> ${path.basename(outDir)}`);

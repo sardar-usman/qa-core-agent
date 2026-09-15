@@ -116,7 +116,7 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (5: finding triage statuses and finding_runs)', schemaVersion(db) === 5);
+check('A. schema migrated to the current version (6: run source nullable, never defaulted)', schemaVersion(db) === 6);
 const r1 = indexOutput(db, root);
 check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
@@ -157,7 +157,8 @@ check('H. runRowFromReport is the same mapping the smoke re-derived (spot check)
 })());
 const s2 = runs.find((r) => r.id === sauce2)!;
 check('I. source and flags come from run-meta; zip and checkpoint paths are relative', s2.source === 'dashboard' && s2.flags_json === '{"lang":"ts"}' && runs.find((r) => r.id === sauce1)?.zip_path === `output/saucedemo-com/${sauce1}/saucedemo-automation-framework.zip` && runs.find((r) => r.id === sauce3)?.checkpoint_path === `output/saucedemo-com/${sauce3}/checkpoint.json` && runs.find((r) => r.id === sauce3)?.status === 'stopped');
-check('J. a legacy folder is indexed in place under its host project with source cli', runs.find((r) => r.id === 'legacy-automation-framework')?.project_id === 'legacy-example' && runs.find((r) => r.id === 'legacy-automation-framework')?.source === 'cli');
+check('J. a legacy folder is indexed in place under its host project; with no run-meta its source is NULL, never a default', runs.find((r) => r.id === 'legacy-automation-framework')?.project_id === 'legacy-example' && runs.find((r) => r.id === 'legacy-automation-framework')?.source === null);
+check('J2. a per-run directory without run-meta.json has source NULL (unknown), never cli', runs.find((r) => r.id === sauce1)?.source === null, JSON.stringify(runs.find((r) => r.id === sauce1)?.source));
 
 const findings = db.prepare('SELECT * FROM findings').all() as Array<Record<string, unknown>>;
 check('K. the finding seen in two runs (name differs by case and a full stop) is ONE row', findings.length === 1 && findings[0]?.id === findingKey('saucedemo-com', finding.scenario, finding.expected), JSON.stringify(findings));
@@ -174,7 +175,7 @@ const julyRec = { at: legacyAt, url: 'https://www.saucedemo.com/', scenarios: 5,
 const july = legacyRows.find((r) => r.id === legacyRunId('www.saucedemo.com', julyRec))!;
 check('T1. the July record is a legacy row: its scenario count is EXPLORED (generated), shipped is NULL, nothing invented', !!july && july.status === 'legacy' && july.shipped === null && july.generated === 5 && july.planned === 0 && Math.abs(Number(july.cost_total) - 0.7647535) < 1e-9 && Number(july.cost_explorer) === Number(july.cost_total) && july.report_path === null && july.zip_path === null && july.flake_rate === null, JSON.stringify(july));
 check('T2. legacy timing: ended_at is the record time, started_at is durationSec earlier', july.ended_at === legacyAt && july.started_at === '2026-07-03T09:13:19.000Z', JSON.stringify([july.started_at, july.ended_at]));
-check('T3. legacy flags keep the model and duration; source is cli', JSON.parse(String(july.flags_json)).model === 'claude-opus-4-7' && JSON.parse(String(july.flags_json)).durationSec === 101 && july.source === 'cli');
+check('T3. legacy flags keep the model and duration; a pre-v2 record has no known source (NULL)', JSON.parse(String(july.flags_json)).model === 'claude-opus-4-7' && JSON.parse(String(july.flags_json)).durationSec === 101 && july.source === null);
 check('T4. a record covered by a real report (same host, finished within the window) is NOT imported and the report row is untouched', !legacyRows.some((r) => r.ended_at === '2026-09-12T10:00:40.000Z') && runs.find((r) => r.id === sauce2)?.shipped === 4 && runs.find((r) => r.id === sauce2)?.status === 'completed');
 check('T5. a host with records but no reports gets its own project', legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.generated === 5 && legacyRows.find((r) => r.project_id === 'demo-playwright-dev')?.shipped === null);
 check('T6. the unknown host record lands in Unassigned with a null url', legacyRows.find((r) => r.project_id === UNASSIGNED_PROJECT_ID)?.url === null);
@@ -250,7 +251,7 @@ const v3Path = path.join(root, 'data', 'qa-core-v3.sqlite');
 let migrated: ReturnType<typeof openDatabase> | null = null;
 let migrateError: string | null = null;
 try { migrated = openDatabase(v3Path); } catch (e) { migrateError = String(e); }
-check('V2. migration reaches the current version (5) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 5, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
+check('V2. migration reaches the current version (6) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 6, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
 if (migrated) {
   const runsAfter = migrated.prepare("SELECT id, project_id, status FROM runs ORDER BY id").all() as Array<{ id: string; project_id: string; status: string }>;
   check('V3. every runs row survives with its project_id intact (one reported, one legacy)', runsAfter.length === 2 && runsAfter.every((r) => r.project_id === 'saucedemo-com') && runsAfter.some((r) => r.status === 'legacy') && runsAfter.some((r) => r.id === sauce1), JSON.stringify(runsAfter));
@@ -266,7 +267,7 @@ if (migrated) {
   indexOutput(reopened, root);
   const proj = reopened.prepare("SELECT name, environment FROM projects WHERE id = 'saucedemo-com'").get() as { name: string; environment: string | null };
   const fnd = reopened.prepare('SELECT status, notes FROM findings').get() as { status: string; notes: string | null };
-  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 5 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
+  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 6 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
   check('V8. finding status and notes survive the reopen and re-index too', fnd.status === 'wont-fix' && fnd.notes === 'by design', JSON.stringify(fnd));
   reopened.close();
 }

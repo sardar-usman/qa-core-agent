@@ -34,7 +34,7 @@ export function RunsTable({ runs, hideProject = false }: { runs: RunRow[]; hideP
             <TableCell className="text-right"><Link to={to(r)} className="block money text-cost" data-testid="cost">{usd(r.cost_total)}</Link></TableCell>
             <TableCell className="text-right"><Link to={to(r)} className={`block mono ${r.flake_rate ? 'text-rework' : 'text-fg-2'}`} data-testid="flake-rate">{pct(r.flake_rate)}</Link></TableCell>
             <TableCell className="text-right"><Link to={to(r)} className="block mono text-fg-2">{duration(r.started_at, r.ended_at)}</Link></TableCell>
-            <TableCell><Link to={to(r)} className="block text-fg-2">{r.source}</Link></TableCell>
+            <TableCell><Link to={to(r)} className="block text-fg-2" data-testid="run-source">{r.source ?? 'unknown'}</Link></TableCell>
             <TableCell><Link to={to(r)} className="block text-fg-2" title={r.started_at ?? ''}>{fmtDate(r.started_at)}</Link></TableCell>
           </TableRow>
         ))}

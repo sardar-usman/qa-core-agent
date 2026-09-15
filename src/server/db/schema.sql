@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS runs (
   ended_at        TEXT,
   -- 'legacy': a pre-v2 gateway record (.qa-core/sites/<host>.json recentRuns) with no report on disk.
   status          TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'empty', 'failed', 'legacy')),
-  source          TEXT NOT NULL CHECK (source IN ('cli', 'dashboard', 'mcp', 'telegram')),
+  -- From run-meta.json. NULL when a run left none (the indexer never defaults it); the dashboard shows "unknown".
+  source          TEXT CHECK (source IS NULL OR source IN ('cli', 'dashboard', 'mcp', 'telegram')),
   url             TEXT,
   flags_json      TEXT,
   planned         INTEGER NOT NULL DEFAULT 0,

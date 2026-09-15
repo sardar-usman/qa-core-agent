@@ -70,11 +70,17 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
   }
   const verdicts = [...byScenario.values()];
   const counts = { pass: verdicts.filter((v) => v.verdict === 'pass').length, rework: verdicts.filter((v) => v.verdict === 'rework').length, reject: verdicts.filter((v) => v.verdict === 'reject').length };
-  const reviewDone = has('critic_done') && (replayStarted || done || finished);
+  // The repair pass, from its own events: announced with a count, closed with the spend.
+  const repairStarted = of('repair_started')[0];
+  const repairDone = of('repair_done')[0];
+  const repairInFlight = !!repairStarted && !repairDone;
+  const reviewDone = has('critic_done') && !repairInFlight && (replayStarted || done || finished);
   const review: RunDetailStages['review'] = {
     status: reviewDone ? (counts.rework + counts.reject > 0 ? 'warning' : 'done') : criticStarted || has('critic_done') ? 'running' : 'pending',
-    stat: has('critic_done') ? `${counts.pass} pass / ${counts.rework} rework / ${counts.reject} reject` : criticStarted ? 'reviewing' : 'waiting',
-    ran: criticStarted || has('critic_done'), counts, critic_usd: criticUsd, verdicts, journeys: [], repair: null, summary: null,
+    stat: repairInFlight ? `repair pass: ${Number(repairStarted!.count ?? 0)} scenario${Number(repairStarted!.count ?? 0) === 1 ? '' : 's'} re-explored` : has('critic_done') ? `${counts.pass} pass / ${counts.rework} rework / ${counts.reject} reject` : criticStarted ? 'reviewing' : 'waiting',
+    ran: criticStarted || has('critic_done'), counts, critic_usd: criticUsd, verdicts, journeys: [],
+    repair: repairStarted ? { count: Number(repairStarted.count ?? 0), spent_usd: Number(repairDone?.usd ?? 0) } : null,
+    summary: null,
   };
 
   const replayRows = [
