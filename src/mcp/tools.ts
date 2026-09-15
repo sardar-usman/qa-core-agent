@@ -28,7 +28,7 @@ export const exploreArgs = {
   language: z.enum(['ts', 'js']).default('ts').describe('Output language of the generated framework (CLI: --lang ts|js, default ts).'),
   features: z.array(z.string()).optional().describe('Feature names to steer the Planner, e.g. ["login","cart"]. Omit and the Planner infers 2-3 flows from the page (CLI: --features login,cart).'),
   srs: z.string().optional().describe('Path to an SRS document (.md/.txt/.pdf/.docx), relative to the project root or absolute. Builds a requirements map for rule-first planning and a rule-coverage report (CLI: --srs <file>).'),
-  srsText: z.string().optional().describe('The SRS content inline, when the client holds the text rather than a file. Written to output/.uploads and treated like --srs. Ignored when srs is given.'),
+  srsText: z.string().optional().describe('The SRS content inline, when the client holds the text rather than a file. Saved into the run folder as srs.md and treated like --srs, the same path a dashboard upload takes. Ignored when srs is given.'),
   urls: z.array(z.string()).optional().describe('Explicit page list for multi-page discovery, paths or absolute URLs (CLI: --urls /login,/cart).'),
   discover: z.boolean().default(false).describe('Multi-page discovery ladder: sitemap, then a polite crawl, then entry-only (CLI: --discover). Also activated by urls or srs.'),
   pom: z.boolean().default(true).describe('true: emit the Page Object Model framework + zip (default). false: a single inline spec file (CLI: --no-pom / --inline).'),
@@ -94,6 +94,16 @@ function envFromSettings(a: SettingArgs): Record<string, string> {
     env[name] = value;
   }
   return env;
+}
+
+/**
+ * Inline SRS text as the upload the request layer saves into the run folder
+ * (run-explore.ts saveSrsUpload), exactly like a dashboard attach. Nothing is
+ * written to output/.uploads by any surface any more.
+ */
+export function srsUploadFromToolArgs(a: Pick<ExploreToolArgs, 'srs' | 'srsText'>): { name: string; base64: string } | undefined {
+  if (a.srs || !a.srsText) return undefined;
+  return { name: 'srs.md', base64: Buffer.from(a.srsText, 'utf8').toString('base64') };
 }
 
 /**
