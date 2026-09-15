@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-15. Update this file at the end of every working day.
+Updated: 2026-09-15 (afternoon). Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -67,12 +67,19 @@ Schedule: two focused days, then the audit.
   Project page, findings triage (open / triaged / fixed / wont-fix,
   persists across reindex), coverage across runs, trends from index rows,
   legacy-only cards show n/a, schema v5 (finding_runs).
-- PR E settings/resume/transcribe + retire legacy UI: IN PROGRESS.
-  Branch dashboard/pr-e-settings. Also: project create/edit, project-level
-  SRS, MCP srsText into the run folder, finding observed text without
-  inference, composer restructure (three tiers, real placeholders, command
-  preview, ceiling shown at Start), header cost sub-line, links on site
-  URL and wordmark.
+- PR E1 settings/resume/transcribe/projects/SRS (PR #15): MERGED Sept 15.
+  Settings page (defaults from process, per-tab session overrides), Resume
+  and Regenerate on Run Detail, project create/edit, project-level SRS
+  with versioning under output/<slug>/srs/, MCP srsText into the run
+  folder, observed text without inference. Fix found in verification:
+  transcribe wrote into the run folder and zipped it; now writes only the
+  zip. Also found: every explore zip since the per-run layout was rooted
+  at the run id, not <brand>-automation-framework/; fixed.
+- PR E2 retire legacy UI + polish: IN PROGRESS. Branch
+  dashboard/pr-e2-retire-legacy. Legacy UI removed with every legacy
+  smoke ported or retired with a reason; composer three tiers; real
+  placeholders; header cost sub-line; site URL and wordmark links; trend
+  charts anchored at zero; Unassigned card wording.
 - PR F design pass: after the $6 run, before the audit. Brief first at
   docs/dashboard-design.md, then page by page, numbers untouched.
 
