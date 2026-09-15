@@ -13,7 +13,6 @@ import {
   applyCheckpointFlags, buildExploreOptions, outDirForRequest, resumeConflicts,
   type ExploreRequest,
 } from '../agent/explore-request.js';
-import { slimFrameworkDir } from '../agent/framework-dir.js';
 import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent, appendRunNote } from './events.js';
 import os from 'node:os';
@@ -271,6 +270,12 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
   return withEnvOverrides(input.request.env, async () => {
     const prepared = await prepareExploreRun(input);
     const { request: req, url, outDir } = prepared;
+    // run-meta.json is written the moment the run directory is known (source
+    // and flags are known then) and rewritten at every end, so a run that
+    // stops early (ceiling, billing, API failure, SIGINT) still records who
+    // started it. The indexer never defaults a missing source.
+    const meta = { source: input.source ?? 'dashboard', flags: runFlags(req) } as const;
+    writeRunMeta(outDir, meta);
     input.onPrepared?.({ runId: path.basename(outDir), outDir, url, resume: !!prepared.resume });
     for (const n of prepared.notes) note(n);
 
@@ -301,7 +306,9 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       if (diag?.cause === 'planner-none') {
         try { if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* noop */ }
       } else {
-        slimFrameworkDir(outDir);
+        // Nothing was scaffolded, so nothing is slimmed: the run folder keeps
+        // every artifact it has (report, events, checkpoint, SRS copy, maps).
+        writeRunMeta(outDir, meta);
         lines.push(`Kept ${reportPath}: full verdicts and trace, the spend is not lost.`);
       }
       lines.push(`Cost so far: $${totalCost(report).toFixed(4)}`);
@@ -320,30 +327,33 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
 
     const summary = summarize(report);
     if (req.pom) {
-      const scaffoldResult = scaffold({
-        report, outDir, siteName: hostnameOf(url), features: req.features,
-        ...(prepared.requirements ? { requirements: prepared.requirements } : {}),
-      });
-      // Checkpoint lifecycle mirrors the CLI: never inside the zip; deleted on
-      // a complete run, held aside and restored on a stopped one.
-      const heldCheckpoint = report.stopped && fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8') : undefined;
-      deleteCheckpoint(outDir);
-      // An uploaded SRS is a run artifact, not framework content: held out of
-      // the zip and restored after slimming.
-      const heldSrs = prepared.srsFile && fs.existsSync(prepared.srsFile) ? fs.readFileSync(prepared.srsFile) : undefined;
-      if (heldSrs !== undefined) fs.rmSync(prepared.srsFile!, { force: true });
-      // The zip lives inside the run directory: zip (rooted at the framework
-      // name, not the run id), slim, then write it.
+      // The framework is scaffolded in a temporary directory named by the
+      // framework and zipped from there, so the run directory's own files
+      // (report, events, checkpoint, SRS copy, requirements map, rule
+      // coverage, run-meta) are never held aside, deleted or slimmed. The
+      // redacted report the scaffold writes lives under the framework root
+      // only; the run's raw report is untouched. Only the zip lands here.
       const zipRootName = req.name ? `${req.name}-automation-framework` : frameworkDirName(url);
-      const zipBuf = zipFrameworkToBuffer(outDir, zipRootName);
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-emit-'));
+      let scaffoldResult: ReturnType<typeof scaffold>;
+      let zipBuf: Buffer;
+      try {
+        const frameworkDir = path.join(tmp, zipRootName);
+        scaffoldResult = scaffold({
+          report, outDir: frameworkDir, siteName: hostnameOf(url), features: req.features,
+          ...(prepared.requirements ? { requirements: prepared.requirements } : {}),
+        });
+        zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
+      } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
       const filename = `${zipRootName}.zip`;
-      slimFrameworkDir(outDir);
-      fs.writeFileSync(path.join(outDir, filename), zipBuf);
-      if (heldCheckpoint !== undefined) fs.writeFileSync(cpFile, heldCheckpoint);
-      if (heldSrs !== undefined) fs.writeFileSync(prepared.srsFile!, heldSrs);
-      // The zip carries the redacted report; the working copy keeps raw values.
-      try { fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(report, null, 2)); } catch { /* best effort */ }
-      writeRunMeta(outDir, { source: input.source ?? 'dashboard', flags: runFlags(req) });
+      const tmpZip = path.join(outDir, `.${filename}.${process.pid}.tmp`);
+      fs.writeFileSync(tmpZip, zipBuf);
+      fs.renameSync(tmpZip, path.join(outDir, filename));
+      // Checkpoint lifecycle: deleted only on a fully complete run; a stopped run keeps it for --resume.
+      if (!report.stopped) deleteCheckpoint(outDir);
+      writeRunMeta(outDir, meta);
       finalizeRunDir(outDir);
       const hint = resumeHintForRun({
         ...(report.stopped ? { stopped: report.stopped } : {}),
@@ -354,15 +364,14 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       return {
         kind: 'framework', report, outDir, reportPath, summary,
         zip: { buffer: zipBuf, filename, sizeBytes: zipBuf.length, fileCount: scaffoldResult.fileCount, scenarios: scaffoldResult.pomResult.scenarios },
-        specPath: scaffoldResult.pomResult.specFile,
-        ...(heldCheckpoint !== undefined ? { checkpointPath: rel(root, cpFile) } : {}),
+        ...(fs.existsSync(cpFile) ? { checkpointPath: rel(root, cpFile) } : {}),
         ...(hint ? { resumeHint: hint } : {}),
       };
     }
 
     const r = transcribe({ report, outDir, name: req.name ?? frameworkDirName(url).replace(/-automation-framework$/, '') });
     if (!report.stopped) deleteCheckpoint(outDir);
-    writeRunMeta(outDir, { source: input.source ?? 'dashboard', flags: runFlags(req) });
+    writeRunMeta(outDir, meta);
     finalizeRunDir(outDir);
     const hint = resumeHintForRun({
       ...(report.stopped ? { stopped: report.stopped } : {}),

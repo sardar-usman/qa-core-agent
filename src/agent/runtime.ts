@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js'
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, type PlannedScenario } from './planner.js';
-import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, splitCarriedVerdicts, splitGate, verdictFor, type ScenarioVerdict } from './critic.js';
+import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -337,6 +337,8 @@ async function repairPass(args: {
   heals: Array<{ scenario?: string; intent: string; from: string; to: string }>;
   /** Human-readable notes about repair-internal outcomes (findings, incompletes). */
   notes: string[];
+  /** Why a rework scenario was not re-recorded, by scenario name (the structured form of `notes`). */
+  reasons: Record<string, string>;
 }> {
   const plan: PlannedScenario[] = args.rework.map((s) => {
     const v = verdictFor(args.verdicts, s.name);
@@ -384,19 +386,19 @@ async function repairPass(args: {
       onEvent: args.onEvent,
     });
     const notes: string[] = [];
+    const reasons: Record<string, string> = {};
     if (ctx.current) {
-      notes.push(
-        loop.endedReason === 'cost_ceiling'
-          ? `"${ctx.current.name}" was mid-repair when the cost ceiling hit; the in-progress work is discarded.`
-          : `"${ctx.current.name}" was left unfinished by the repair pass; discarded.`,
-      );
+      const why = loop.endedReason === 'cost_ceiling' ? 'mid-repair when the cost ceiling hit; the in-progress work is discarded' : 'left unfinished by the repair pass; discarded';
+      notes.push(`"${ctx.current.name}" was ${why}.`);
+      reasons[ctx.current.name] = why;
       ctx.current = null;
     }
-    for (const f of ctx.findings) notes.push(`finding during repair of "${f.scenario}": expected ${f.expected}, page stayed at ${f.url}.`);
-    for (const i of ctx.incomplete) notes.push(`"${i.scenario}" not re-recorded: ${i.reason}.`);
-    for (const b of ctx.brokenByGate) notes.push(`"${b.scenario}" rejected by the gate during repair: ${b.reason}.`);
-    for (const s of ctx.skipped) notes.push(`"${s.scenario}" skipped during repair: ${s.reason}.`);
-    return { scenarios: ctx.scenarios, cost: loop.cost, steps: ctx.steps, heals: ctx.heals, notes };
+    for (const f of ctx.findings) { notes.push(`finding during repair of "${f.scenario}": expected ${f.expected}, page stayed at ${f.url}.`); reasons[f.scenario] ??= `finding: expected ${f.expected}, URL at the time ${f.url}`; }
+    for (const i of ctx.incomplete) { notes.push(`"${i.scenario}" not re-recorded: ${i.reason}.`); reasons[i.scenario] ??= i.reason; }
+    for (const b of ctx.brokenByGate) { notes.push(`"${b.scenario}" rejected by the gate during repair: ${b.reason}.`); reasons[b.scenario] ??= `rejected by the gate: ${b.reason}`; }
+    for (const s of ctx.skipped) { notes.push(`"${s.scenario}" skipped during repair: ${s.reason}.`); reasons[s.scenario] ??= `skipped: ${s.reason}`; }
+    if (loop.endedReason === 'cost_ceiling') for (const p of plan) reasons[p.name] ??= 'never re-explored: the repair budget ran out first';
+    return { scenarios: ctx.scenarios, cost: loop.cost, steps: ctx.steps, heals: ctx.heals, notes, reasons };
   } finally {
     await context?.close();
     await browser?.close();
@@ -450,6 +452,12 @@ export type AgentEvent =
   // re-resolved a different stable way during exploration). The type stays
   // 'heal' and the payload shape stays fixed because the dashboard consumes it.
   | { type: 'heal'; from: string; to: string; intent: string; scenario?: string }
+  // The single repair pass (invariant 32): announced with its count and budget,
+  // one event per re-explored scenario with its outcome, and a closing event
+  // with the spend and the kept/dropped split from the verdict history.
+  | RepairStartedEvent
+  | RepairScenarioEvent
+  | RepairDoneEvent
   | { type: 'done'; scenarios: number };
 
 const PRICE = {
@@ -1155,7 +1163,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     if (decision) {
       opts.onEvent?.({ type: 'message', text: decision.line });
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
+      let repairUsd = 0;
       if (decision.run) {
+        opts.onEvent?.({ type: 'repair_started', count: decision.rework.length, budgetUsd: decision.budgetUsd });
         try {
           const repair = await repairPass({
             client, model, price, remainingUsd: decision.budgetUsd,
@@ -1177,9 +1187,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           // already accounted for once, by its FINAL verdict, and adding them
           // would double-count the funnel. They surface as messages instead.
           heals.push(...repair.heals);
+          repairUsd = repair.cost.usd;
           for (const note of repair.notes) {
             opts.onEvent?.({ type: 'message', text: `repair: ${note}` });
           }
+          for (const ev of repairScenarioEvents(decision.rework.map((s) => s.name), repair.scenarios.map((s) => s.name), repair.reasons)) opts.onEvent?.(ev);
           if (repair.scenarios.length > 0) {
             const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
@@ -1212,6 +1224,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           text: `Repair verdict: "${h.scenario}" rework -> ${h.second ?? 'not re-recorded'} (${h.outcome})`,
         });
       }
+      if (decision.run) opts.onEvent?.(repairDoneEvent(merged.history, repairUsd));
     }
     scenariosForReplay = kept;
   }

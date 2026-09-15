@@ -28,6 +28,14 @@ import path from 'node:path';
 const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB — pathological cap, real frameworks are <1 MB
 
 /**
+ * Run-folder artifacts that never belong in a framework zip, excluded by
+ * name at zip time (`zip -x`) whenever the zipped directory is a run
+ * directory. The redacted run-report the scaffold writes under the framework
+ * root is a different file and stays.
+ */
+export const RUN_ARTIFACTS: readonly string[] = ['checkpoint.json', 'events.jsonl', 'run-meta.json', 'requirements-map.json', 'rule-coverage.json', '*.zip', '*-srs.md', '*-srs.txt', '*-srs.pdf', '*-srs.docx'];
+
+/**
  * Where to run `zip` from and what to name the archive root. By default the
  * root is the source directory's own name. A run directory is named by its
  * run id, so callers pass `rootName` (the <brand>-automation-framework name)
@@ -91,14 +99,15 @@ export function zipFrameworkToFile(srcDir: string, destZipPath: string, rootName
  * Throws if the result would exceed `MAX_ZIP_BYTES` — that's a sanity cap
  * against pathological inputs, real generated frameworks are well under 1 MB.
  */
-export function zipFrameworkToBuffer(srcDir: string, rootName?: string): Buffer {
+export function zipFrameworkToBuffer(srcDir: string, rootName?: string, exclude: readonly string[] = RUN_ARTIFACTS): Buffer {
   if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     throw new Error(`Source is not a directory: ${srcDir}`);
   }
   const root = zipRoot(srcDir, rootName);
 
-  // `zip -rqX -` writes the archive to stdout.
-  const result = spawnSync('zip', ['-rqX', '-', root.base], {
+  // `zip -rqX -` writes the archive to stdout. Run-folder artifacts are excluded by name, never moved aside.
+  const excludeArgs = exclude.length ? ['-x', ...exclude.map((name) => `${root.base}/${name}`)] : [];
+  const result = spawnSync('zip', ['-rqX', '-', root.base, ...excludeArgs], {
     cwd: root.cwd,
     maxBuffer: MAX_ZIP_BYTES,
   });

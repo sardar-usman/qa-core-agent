@@ -27,6 +27,11 @@ import {
 } from '../src/agent/checkpoint.js';
 import { splitCarriedVerdicts, type ScenarioVerdict } from '../src/agent/critic.js';
 import { runAgentLoop } from '../src/agent/runtime.js';
+import { runExploreRequest } from '../src/server/run-explore.js';
+import { defaultExploreRequest } from '../src/agent/explore-request.js';
+import { readRunMeta } from '../src/agent/output-layout.js';
+import { spawnSync } from 'node:child_process';
+import type { RunReport } from '../src/agent/trace.js';
 import { createContext } from '../src/agent/tools.js';
 import type { Scenario } from '../src/agent/trace.js';
 import type { PlannedScenario } from '../src/agent/planner.js';
@@ -275,6 +280,58 @@ check('G1. the stop message carries reason, state note, and the resume command',
 }
 
 fs.rmSync(dir, { recursive: true, force: true });
+
+/* ─── J. a stopped run keeps run-meta.json (written at start, rewritten at the end) and its SRS copy ─── */
+{
+  const jroot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-stopped-'));
+  const stopped = { kind: 'cost_ceiling' as const, reason: 'cost ceiling hit ($5.14 against the explorer share); raise QA_CORE_COST_CEILING and resume' };
+  const loginSteps = [
+    { kind: 'navigate', url: 'https://www.saucedemo.com/' },
+    { kind: 'fill', target: { level: 'role', arg: { role: 'textbox', name: 'Username', exact: true }, intent: 'username input' }, value: 'standard_user' },
+    { kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login', exact: true }, intent: 'login button' } },
+    { kind: 'assert', name: 'inventory URL', assertion: { type: 'toHaveURL', pattern: '/inventory' } },
+  ];
+  // A fake explore standing in for the runtime: it leaves what a real stopped
+  // run leaves in the run folder (report, checkpoint, requirements map, the
+  // SRS copy) and notes whether run-meta.json already existed when it started.
+  const metaSeenAtStart: boolean[] = [];
+  const fakeExplore = (shipped: number) => async (opts: { outDir: string }): Promise<RunReport> => {
+    metaSeenAtStart.push(fs.existsSync(path.join(opts.outDir, 'run-meta.json')));
+    fs.mkdirSync(opts.outDir, { recursive: true });
+    fs.writeFileSync(path.join(opts.outDir, 'toolshop-srs.md'), '# Tool shop SRS');
+    fs.writeFileSync(path.join(opts.outDir, 'requirements-map.json'), JSON.stringify({ features: [], roles: [] }));
+    fs.writeFileSync(path.join(opts.outDir, 'checkpoint.json'), JSON.stringify({ version: 1, phase: 'reviewing' }));
+    const report = {
+      url: 'https://www.saucedemo.com/', language: 'ts', startedAt: '2026-09-15T17:43:18.000Z', finishedAt: '2026-09-15T18:00:00.000Z', steps: 40, stopped,
+      scenarios: Array.from({ length: shipped }, (_, i) => ({ name: `login succeeds ${i + 1}`, feature: 'login', category: 'happy', steps: loginSteps })),
+      cascadeStats: { role: 2, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 }, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 5.1, plannerUsd: 0.01, criticUsd: 0.04, repairUsd: 0.8 },
+      plan: [{ name: 'login succeeds 1', category: 'happy', rationale: 'r', feature: 'login' }, { name: 'sorted by price', category: 'happy', rationale: 'r', feature: 'catalog' }],
+      incomplete: [{ scenario: 'sorted by price', reason: 'never explored' }],
+      reconciliation: { planned: 2, generated: shipped, dropped: [], incomplete: [{ name: 'sorted by price', reason: 'never explored' }, ...(shipped ? [] : [{ name: 'login succeeds 1', reason: 'cost ceiling hit mid-scenario' }])], findings: [], skipped: [], accountedFor: 2, added: 0, balanced: true, stable: shipped, recovered: 0, flaky: 0, broken: 0 },
+    } as unknown as RunReport;
+    fs.writeFileSync(path.join(opts.outDir, 'run-report.json'), JSON.stringify(report, null, 2));
+    return report;
+  };
+  const filesOf = (dir: string) => fs.readdirSync(dir).sort();
+  // Empty stop (0 scenarios shipped): the path that deleted the SRS copy on the real run.
+  const empty = await runExploreRequest({ request: { ...defaultExploreRequest(), url: 'https://www.saucedemo.com/' }, projectRoot: jroot, source: 'mcp', exploreImpl: fakeExplore(0) as never });
+  const emptyDir = empty.outDir;
+  const emptyMeta = readRunMeta(emptyDir);
+  check('J1. stopped with 0 scenarios: run-meta.json is present with the surface that started the run and its flags', empty.kind === 'empty' && emptyMeta?.source === 'mcp' && (emptyMeta?.flags as { lang?: string } | undefined)?.lang === 'ts', JSON.stringify(emptyMeta));
+  check('J2. stopped with 0 scenarios: the SRS copy, the checkpoint, the requirements map and the report all survive (nothing slimmed)', ['checkpoint.json', 'requirements-map.json', 'run-meta.json', 'run-report.json', 'toolshop-srs.md'].every((f) => filesOf(emptyDir).includes(f)), JSON.stringify(filesOf(emptyDir)));
+  // Stopped with a framework (1 scenario shipped): the zip lands, nothing else moves.
+  const framework = await runExploreRequest({ request: { ...defaultExploreRequest(), url: 'https://www.saucedemo.com/' }, projectRoot: jroot, source: 'dashboard', exploreImpl: fakeExplore(1) as never });
+  const fwDir = framework.outDir;
+  const fwMeta = readRunMeta(fwDir);
+  const rawReport = fs.readFileSync(path.join(fwDir, 'run-report.json'), 'utf8');
+  check('J3. stopped with a framework: run-meta.json names the dashboard as the source; the checkpoint stays for --resume', framework.kind === 'framework' && fwMeta?.source === 'dashboard' && fs.existsSync(path.join(fwDir, 'checkpoint.json')) && framework.checkpointPath === path.relative(jroot, path.join(fwDir, 'checkpoint.json')), JSON.stringify({ meta: fwMeta, files: filesOf(fwDir) }));
+  check('J4. stopped with a framework: the SRS copy and the requirements map survive, and the raw report keeps its unredacted value', fs.existsSync(path.join(fwDir, 'toolshop-srs.md')) && fs.existsSync(path.join(fwDir, 'requirements-map.json')) && /standard_user/.test(rawReport) && !/redacted:credential/.test(rawReport), JSON.stringify(filesOf(fwDir)));
+  const zipEntries = spawnSync('unzip', ['-Z1', path.join(fwDir, 'saucedemo-automation-framework.zip')], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  check('J5. the zip is rooted at the framework name and excludes the run folder\'s artifacts by name (SRS, checkpoint, maps, meta)', zipEntries.length > 5 && zipEntries.every((e) => e.startsWith('saucedemo-automation-framework/')) && !zipEntries.some((e) => /toolshop-srs\.md|checkpoint\.json|requirements-map\.json|run-meta\.json|events\.jsonl|\.zip$/.test(e)) && zipEntries.includes('saucedemo-automation-framework/run-report.json'), JSON.stringify(zipEntries));
+  check('J6. run-meta.json existed before the runtime started on both runs (written at run start)', metaSeenAtStart.length === 2 && metaSeenAtStart.every(Boolean), JSON.stringify(metaSeenAtStart));
+  fs.rmSync(jroot, { recursive: true, force: true });
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
 console.log('OK: checkpoints write atomically per scenario, survive abnormal ends, delete on success, and a resume finishes the remaining plan with carried spend.');

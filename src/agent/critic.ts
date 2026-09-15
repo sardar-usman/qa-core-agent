@@ -578,6 +578,36 @@ export interface RepairHistoryEntry {
   outcome: 'kept' | 'dropped';
 }
 
+/* ─────────────────── repair pass events ─────────────────── */
+
+/** One event per re-explored scenario: re-recorded, or not and why. */
+export interface RepairScenarioEvent { type: 'repair_scenario'; name: string; outcome: 're-recorded' | 'not re-recorded'; reason?: string }
+export interface RepairStartedEvent { type: 'repair_started'; count: number; budgetUsd: number }
+export interface RepairDoneEvent { type: 'repair_done'; usd: number; kept: number; dropped: number }
+
+/**
+ * The per-scenario repair events: every rework scenario the pass was given,
+ * re-recorded when a trace came back for it (tolerant name match), otherwise
+ * not re-recorded with the recorded reason (incomplete, finding, gate,
+ * skipped, mid-repair stop) or "no trace came back" when none was recorded.
+ */
+export function repairScenarioEvents(rework: string[], reRecorded: string[], reasons: Record<string, string>): RepairScenarioEvent[] {
+  // Exact key first, containment only for what is left, each trace claimable
+  // once (assignVerdicts): sibling names such as "s-rework-a" / "s-rework-b"
+  // never blur into one another.
+  const recorded = assignVerdicts(rework, reRecorded.map((scenario) => ({ scenario, verdict: 'pass' as const, reasons: [], required_fixes: [] })));
+  const why = assignVerdicts(rework, Object.entries(reasons).map(([scenario, reason]) => ({ scenario, verdict: 'rework' as const, reasons: [reason], required_fixes: [] })));
+  return rework.map((name) => {
+    if (recorded.has(name)) return { type: 'repair_scenario', name, outcome: 're-recorded' };
+    return { type: 'repair_scenario', name, outcome: 'not re-recorded', reason: why.get(name)?.reasons[0] ?? 'no trace came back from the repair pass' };
+  });
+}
+
+/** The closing repair event: spend, and kept versus dropped from the verdict history. */
+export function repairDoneEvent(history: RepairHistoryEntry[], usd: number): RepairDoneEvent {
+  return { type: 'repair_done', usd, kept: history.filter((h) => h.outcome === 'kept').length, dropped: history.filter((h) => h.outcome === 'dropped').length };
+}
+
 /**
  * Fold the second-round verdicts back into the first: non-rework verdicts
  * pass through untouched; each rework is replaced by its second verdict when

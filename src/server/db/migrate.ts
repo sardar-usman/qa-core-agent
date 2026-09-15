@@ -111,6 +111,33 @@ export const MIGRATIONS: Migration[] = [
       db.exec('INSERT OR IGNORE INTO finding_runs (finding_id, run_id) SELECT id, last_seen_run_id FROM findings');
     },
   },
+  {
+    // runs.source becomes nullable: a run that left no run-meta.json has an
+    // unknown source and the indexer must never default it to 'cli'. Rows are
+    // copied as they are; the next index pass rewrites each reported run's
+    // source from its run-meta (or NULL) and legacy records become NULL.
+    version: 6,
+    name: 'run source nullable, never defaulted',
+    rebuild: true,
+    up: (db) => {
+      db.exec(`CREATE TABLE runs_v6 (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), started_at TEXT, ended_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'empty', 'failed', 'legacy')),
+        source TEXT CHECK (source IS NULL OR source IN ('cli', 'dashboard', 'mcp', 'telegram')),
+        url TEXT, flags_json TEXT,
+        planned INTEGER NOT NULL DEFAULT 0, generated INTEGER NOT NULL DEFAULT 0, dropped INTEGER NOT NULL DEFAULT 0, incomplete INTEGER NOT NULL DEFAULT 0,
+        findings INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0, stable INTEGER NOT NULL DEFAULT 0, flaky INTEGER NOT NULL DEFAULT 0, broken INTEGER NOT NULL DEFAULT 0,
+        shipped INTEGER, cost_total REAL NOT NULL DEFAULT 0, cost_planner REAL NOT NULL DEFAULT 0, cost_explorer REAL NOT NULL DEFAULT 0, cost_critic REAL NOT NULL DEFAULT 0, cost_repair REAL NOT NULL DEFAULT 0,
+        flake_rate REAL, report_path TEXT, zip_path TEXT, checkpoint_path TEXT, stopped_reason TEXT
+      )`);
+      db.exec(`INSERT INTO runs_v6 SELECT id, project_id, started_at, ended_at, status, source, url, flags_json, planned, generated, dropped, incomplete,
+               findings, skipped, stable, flaky, broken, shipped, cost_total, cost_planner, cost_explorer, cost_critic, cost_repair, flake_rate, report_path, zip_path, checkpoint_path, stopped_reason FROM runs`);
+      db.exec('DROP TABLE runs');
+      db.exec('ALTER TABLE runs_v6 RENAME TO runs');
+      db.exec('CREATE INDEX IF NOT EXISTS runs_project_started ON runs(project_id, started_at DESC)');
+      db.exec('CREATE INDEX IF NOT EXISTS runs_status ON runs(status)');
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */

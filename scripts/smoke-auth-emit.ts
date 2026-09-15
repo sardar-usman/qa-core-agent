@@ -138,8 +138,8 @@ check('C1b. the framework run-report masks credential fills with the redaction m
 check('C1c. the in-memory report is NOT mutated (the working-dir copy keeps raw values)',
   withLogin.scenarios[0]!.steps.some((s) => s.kind === 'fill' && (s as { value: string }).value === PASS) &&
   withLogin.scenarios[2]!.steps.some((s) => s.kind === 'fill' && (s as { value: string }).value === USER));
-check('C1d. the CLI restores the raw run-report to the working directory after zip + slim',
-  /REDACTED run-report[\s\S]{0,400}JSON\.stringify\(result, null, 2\)/.test(fs.readFileSync('src/cli/explore.ts', 'utf8')));
+check('C1d. the CLI scaffolds the framework in a temporary directory, so the run directory\'s raw run-report is never rewritten (the redacted copy exists only inside the zip)',
+  (() => { const cli = fs.readFileSync('src/cli/explore.ts', 'utf8'); return /qa-core-emit-/.test(cli) && /outDir: frameworkDir/.test(cli) && !/writeFileSync\(path\.join\(outDir, 'run-report\.json'\)/.test(cli); })());
 check('C2. .env.example has empty placeholders for a non-demo host',
   read('.env.example').includes(`${AUTH_ENV_USER}=\n`) && read('.env.example').includes(`${AUTH_ENV_PASS}=\n`));
 check('C3. .gitignore covers playwright/.auth/', read('.gitignore').includes('playwright/.auth/'));

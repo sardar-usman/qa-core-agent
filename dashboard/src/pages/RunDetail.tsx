@@ -98,7 +98,7 @@ export function RunDetailPage() {
           <Fact label="started" value={fmtDate(h.started_at)} title={h.started_at ?? ''} testid="detail-started" />
           <Fact label="ended" value={fmtDate(h.ended_at)} title={h.ended_at ?? ''} testid="detail-ended" />
           <Fact label="total cost" value={usd(h.cost.total)} mono cost testid="detail-cost" sub={`planner ${usd(h.cost.planner)} · explorer ${usd(h.cost.explorer)} · critic ${usd(h.cost.critic)}${h.cost.repair ? ` · repair ${usd(h.cost.repair)}` : ''}`} />
-          <Fact label="source" value={h.source} testid="detail-source" sub={h.url ? <a href={h.url} target="_blank" rel="noreferrer" className="text-accent hover:underline" data-testid="detail-site-link">{h.url}</a> : undefined} />
+          <Fact label="source" value={h.source ?? 'unknown'} testid="detail-source" sub={h.url ? <a href={h.url} target="_blank" rel="noreferrer" className="text-accent hover:underline" data-testid="detail-site-link">{h.url}</a> : undefined} />
         </dl>
         {h.stopped_reason ? <div className="rounded-md border border-transparent bg-rework-soft px-3 py-2 text-s text-rework" data-testid="detail-stopped">stopped early: {h.stopped_reason}</div> : null}
         {gw.lastRegenerated && gw.lastRegenerated.reportPath === detail.run.report_path ? (

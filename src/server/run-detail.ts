@@ -137,7 +137,7 @@ export interface RunDetailBody {
   run: Record<string, unknown>;
   header: {
     run_id: string; project_id: string; project_name: string; host: string | null; url: string | null;
-    started_at: string | null; ended_at: string | null; environment: string | null; status: string; source: string;
+    started_at: string | null; ended_at: string | null; environment: string | null; status: string; source: string | null;
     cost: { total: number; planner: number; explorer: number; critic: number; repair: number; stabilizer: number | null };
     stopped_reason: string | null;
   };
@@ -226,7 +226,7 @@ function header(run: Record<string, unknown>, env: string | null, extraCost?: { 
     host: hostOf(run.url as string | null), url: (run.url as string | null) ?? null,
     started_at: (run.started_at as string | null) ?? null, ended_at: (run.ended_at as string | null) ?? null,
     environment: env && env !== 'other' ? env : null,
-    status: String(run.status), source: String(run.source),
+    status: String(run.status), source: (run.source as string | null) ?? null,
     cost: {
       total: Number(run.cost_total) || 0, planner: Number(run.cost_planner) || 0, explorer: Number(run.cost_explorer) || 0,
       critic: Number(run.cost_critic) || 0, repair: Number(run.cost_repair) || 0, stabilizer: extraCost?.stabilizer ?? null,

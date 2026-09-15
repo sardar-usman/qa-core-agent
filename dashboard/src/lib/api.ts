@@ -52,7 +52,7 @@ export interface ProjectDetail {
 
 export interface RunRow {
   id: string; project_id: string; project_name?: string; started_at: string | null; ended_at: string | null;
-  status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed' | 'legacy'; source: string; url: string | null;
+  status: 'running' | 'completed' | 'stopped' | 'empty' | 'failed' | 'legacy'; source: string | null; url: string | null;
   planned: number; generated: number; dropped: number; incomplete: number; findings: number; skipped: number;
   stable: number; flaky: number; broken: number; shipped: number | null;
   cost_total: number; cost_planner: number; cost_explorer: number; cost_critic: number; cost_repair: number;
@@ -69,7 +69,7 @@ export interface RunDetailScenario {
 }
 export interface RunDetailHeader {
   run_id: string; project_id: string; project_name: string; host: string | null; url: string | null;
-  started_at: string | null; ended_at: string | null; environment: string | null; status: string; source: string;
+  started_at: string | null; ended_at: string | null; environment: string | null; status: string; source: string | null;
   cost: { total: number; planner: number; explorer: number; critic: number; repair: number; stabilizer: number | null };
   stopped_reason: string | null;
 }
