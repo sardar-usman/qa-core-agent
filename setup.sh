@@ -43,7 +43,7 @@ Next steps:
 
   Web UI:
     npm run gateway              # starts WebSocket gateway on :18789
-    open qa-core-ui.html         # in another terminal / browser tab
+    open http://127.0.0.1:18789/ # the dashboard, in your browser
     click Connect, type /explore <url>
 
 EOF

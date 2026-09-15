@@ -1,105 +1,43 @@
 /**
- * Reproduces the EXACT dashboard math (both old and new) against the actual
- * runs on disk. Confirms the fix produces sensible numbers.
- *
- * The UI's renderDashboard() reads runs from localStorage that the gateway
- * populates from disk via listRunsFromDisk(). This script mimics the same
- * flow without involving the browser.
+ * Locks invariant 7: per-site pass-rate math divides by the runs that have a
+ * pass rate (runsWithPass), never by the total run count. The aggregate lives
+ * in src/server/runs.ts (sitePassRates), the shared home of the math the
+ * retired single-file UI rendered. Checked against synthetic runs and, when
+ * this checkout has runs on disk, against listRunsFromDisk.
  */
-import fs from 'node:fs';
-import path from 'node:path';
+import { listRunsFromDisk, sitePassRates } from '../src/server/runs.js';
 
-interface DiskRun {
-  host: string | null;
-  passRate: number | null;
-  scenarios: number;
-  timestamp: number;
-  source: string;
-}
+let pass = 0;
+let fail = 0;
+const check = (label: string, ok: boolean, hint?: string): void => {
+  if (ok) { pass++; console.log(`OK  ${label}`); }
+  else { fail++; console.log(`FAIL ${label}${hint ? ' : ' + hint : ''}`); }
+};
 
-function walk(dir: string, out: DiskRun[], depth = 0): void {
-  if (depth > 3 || !fs.existsSync(dir)) return;
-  const reportPath = path.join(dir, 'run-report.json');
-  if (fs.existsSync(reportPath)) {
-    try {
-      const r = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, unknown>;
-      const url = String(r.url ?? '');
-      let host: string | null = null;
-      try { host = url ? new URL(url).host : null; } catch { /* keep null */ }
-      let passRate: number | null = null;
-      const pwPath = path.join(dir, 'pw-results.json');
-      if (fs.existsSync(pwPath)) {
-        try {
-          const pw = JSON.parse(fs.readFileSync(pwPath, 'utf8')) as Record<string, unknown>;
-          const stats = (pw.stats ?? {}) as Record<string, number>;
-          const expected = stats.expected ?? 0;
-          const unexpected = stats.unexpected ?? 0;
-          const flaky = stats.flaky ?? 0;
-          const total = expected + unexpected + flaky;
-          if (total > 0) passRate = Math.round((expected / total) * 100);
-        } catch { /* ignore */ }
-      }
-      const scenarios = Array.isArray(r.scenarios) ? r.scenarios.length : 0;
-      const startedAt = String(r.startedAt ?? '');
-      const ts = startedAt ? Date.parse(startedAt) : Date.now();
-      out.push({ host, passRate, scenarios, timestamp: ts, source: path.relative(process.cwd(), dir) });
-    } catch { /* skip malformed */ }
-    return;
-  }
-  for (const entry of fs.readdirSync(dir)) {
-    const full = path.join(dir, entry);
-    try {
-      if (fs.statSync(full).isDirectory()) walk(full, out, depth + 1);
-    } catch { /* skip */ }
-  }
-}
+const synthetic = [
+  { host: 'a.example', passRate: 100 },
+  { host: 'a.example', passRate: null },
+  { host: 'a.example', passRate: null },
+  { host: 'a.example', passRate: null },
+  { host: 'b.example', passRate: 50 },
+  { host: 'b.example', passRate: 100 },
+  { host: 'c.example', passRate: null },
+];
+const sites = sitePassRates(synthetic);
+const a = sites.find((s) => s.host === 'a.example')!;
+const b = sites.find((s) => s.host === 'b.example')!;
+const c = sites.find((s) => s.host === 'c.example')!;
+check('A. one measured run out of four: the average is that run (100), not a quarter of it (25)', a.runs === 4 && a.runsWithPass === 1 && a.avgPassRate === 100, JSON.stringify(a));
+check('B. two measured runs average over two', b.runs === 2 && b.runsWithPass === 2 && b.avgPassRate === 75, JSON.stringify(b));
+check('C. no measured run: null, never 0', c.runs === 1 && c.runsWithPass === 0 && c.avgPassRate === null, JSON.stringify(c));
+check('D. sites are sorted by host and every site appears once', sites.map((s) => s.host).join(',') === 'a.example,b.example,c.example');
+check('E. a run without a host lands under "(no host)"', sitePassRates([{ host: null, passRate: 20 }])[0]?.host === '(no host)');
 
-const runs: DiskRun[] = [];
-walk(path.resolve(process.cwd(), 'output'), runs);
-walk(path.resolve(process.cwd(), 'eval-results'), runs);
-runs.sort((a, b) => b.timestamp - a.timestamp);
+const real = listRunsFromDisk(process.cwd());
+const realSites = sitePassRates(real);
+check('F. on this checkout\'s runs, every site divides by its own measured count and never reports 0 for an unmeasured site', realSites.every((s) => s.runsWithPass <= s.runs && (s.runsWithPass > 0 ? s.avgPassRate !== null : s.avgPassRate === null)), JSON.stringify(realSites));
+console.log(`  (this checkout: ${real.length} run(s) on disk across ${realSites.length} site(s), ${realSites.filter((s) => s.runsWithPass > 0).length} with a measured pass rate)`);
 
-console.log(`Found ${runs.length} run-report.json files on disk.\n`);
-
-// Per-site aggregation — exactly the same shape the UI computes.
-const sitesMap = new Map<string, { host: string; runs: number; runsWithPass: number; passes: number; tests: number }>();
-for (const r of runs) {
-  if (!r.host) continue;
-  const cur = sitesMap.get(r.host) || { host: r.host, runs: 0, runsWithPass: 0, passes: 0, tests: 0 };
-  cur.runs++;
-  cur.tests += r.scenarios;
-  if (typeof r.passRate === 'number') { cur.passes += r.passRate; cur.runsWithPass++; }
-  sitesMap.set(r.host, cur);
-}
-
-const sites = [...sitesMap.values()].sort((a, b) => b.runs - a.runs);
-
-console.log('Per-site dashboard math — OLD (buggy) vs NEW (fixed):\n');
-console.log(
-  'Site'.padEnd(36) +
-  'Runs'.padStart(6) +
-  'WithPass'.padStart(10) +
-  'OLD avg'.padStart(10) +
-  'NEW avg'.padStart(10),
-);
-console.log('-'.repeat(72));
-for (const s of sites) {
-  const oldAvg = s.runs ? Math.round(s.passes / s.runs) : null;
-  const newAvg = s.runsWithPass ? Math.round(s.passes / s.runsWithPass) : null;
-  const oldStr = oldAvg == null ? '—' : oldAvg + '%';
-  const newStr = newAvg == null ? 'no data' : newAvg + '%';
-  console.log(
-    s.host.padEnd(36) +
-    String(s.runs).padStart(6) +
-    String(s.runsWithPass).padStart(10) +
-    oldStr.padStart(10) +
-    newStr.padStart(10),
-  );
-}
-
-// Overall stat used by the TOTAL panel — this math was already correct.
-const withPass = runs.filter(r => typeof r.passRate === 'number');
-const overallAvg = withPass.length ? Math.round(withPass.reduce((a, r) => a + (r.passRate ?? 0), 0) / withPass.length) : null;
-console.log('\nOverall (TOTAL panel) avg pass-rate:', overallAvg == null ? 'no data' : overallAvg + '%');
-console.log(`  (computed over ${withPass.length} runs that have a passRate, out of ${runs.length} total)`);
+console.log(`\n${pass}/${pass + fail} checks passed.`);
+if (fail > 0) process.exit(1);
 console.log('OK: dashboard per-site pass-rate math divides by runsWithPass, not total runs.');

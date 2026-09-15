@@ -145,6 +145,35 @@ export function parseRunReport(root: string, dir: string, reportPath: string): D
 }
 
 /**
+ * Per-site pass-rate aggregate over disk runs. The average divides by the
+ * number of runs that HAVE a pass rate (runs with a pw-results.json), never
+ * by the total run count, so a site with one measured run and three
+ * unmeasured ones reports that one run's rate, not a quarter of it. This is
+ * the math the retired single-file UI rendered; it lives here as the shared
+ * aggregate (invariant 7) and smoke-dashboard-math locks it.
+ */
+export interface SitePassRate {
+  host: string;
+  runs: number;
+  /** Runs with a measured pass rate. The divisor. */
+  runsWithPass: number;
+  /** Rounded average over runsWithPass; null when none were measured (never 0). */
+  avgPassRate: number | null;
+}
+
+export function sitePassRates(runs: ReadonlyArray<Pick<DiskRun, 'host' | 'passRate'>>): SitePassRate[] {
+  const sites = new Map<string, { host: string; runs: number; runsWithPass: number; passes: number }>();
+  for (const r of runs) {
+    const host = r.host ?? '(no host)';
+    const cur = sites.get(host) ?? { host, runs: 0, runsWithPass: 0, passes: 0 };
+    cur.runs++;
+    if (typeof r.passRate === 'number') { cur.passes += r.passRate; cur.runsWithPass++; }
+    sites.set(host, cur);
+  }
+  return [...sites.values()].sort((a, b) => a.host.localeCompare(b.host)).map((s) => ({ host: s.host, runs: s.runs, runsWithPass: s.runsWithPass, avgPassRate: s.runsWithPass ? Math.round(s.passes / s.runsWithPass) : null }));
+}
+
+/**
  * The report as the dashboard receives it at the end of a run: everything
  * except the per-step traces (large, and the panels do not read steps).
  * Every number the UI shows comes from this object or from the event stream.

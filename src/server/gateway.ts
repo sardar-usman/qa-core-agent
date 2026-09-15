@@ -13,7 +13,7 @@ import { parseFeatures } from '../agent/parse-features.js';
 import { readRunSettings, type ExploreRequest } from '../agent/explore-request.js';
 import { parseGatewayCommand } from './commands.js';
 import { listRunsFromDisk, loadReportForUi, reportForUi } from './runs.js';
-import { runExploreRequest, runTranscribeRequest, type FrameworkZip, type SrsUpload } from './run-explore.js';
+import { runExploreRequest, runTranscribeRequest, type SrsUpload } from './run-explore.js';
 import { eventForUi, readRunEvents } from './events.js';
 import { listRunDirs } from '../agent/output-layout.js';
 import { projectSrsUploadFor } from './project-srs.js';
@@ -25,8 +25,8 @@ import { createStaticHandler } from './static.js';
 /**
  * QA-Core gateway.
  *
- * A thin WebSocket server that speaks the protocol [qa-core-ui.html] sends:
- * `{type: "message", content, model, lang, env?, srs?}`. The gateway parses
+ * A thin WebSocket server that speaks the protocol the dashboard sends:
+ * `{type: "message", content, lang, env?, srs?, srs_project?}`. The gateway parses
  * the slash command out of `content` (src/server/commands.ts), runs it
  * through the same request layer the CLI and MCP server use, and streams
  * progress back as JSON messages:
@@ -36,12 +36,13 @@ import { createStaticHandler } from './static.js';
  *   {type:'active_run', run}     the run in progress on this gateway (or null), on connect and on change
  *   {type:'run_started', ...}    the resolved request for the run header, with run_id and run_dir
  *   {type:'event', event}        every AgentEvent, for the live pipeline view
- *   {type:'run_report', report}  the final RunReport (traces stripped); also the
- *                                reply to a get_report request (fromHistory: true)
+ *   {type:'run_report', report}  the final RunReport (traces stripped); for a
+ *                                /transcribe its outcome carries regenerated: true and the zip's
+ *                                filename, file count and size (the dashboard downloads the zip
+ *                                itself from /api/runs/:id/artifacts)
  *   {type:'catch_up', ...}       reply to a catch_up request: the run folder's events.jsonl
  *                                and, when finished, its run-report; the socket then watches the run
- *   {type:'framework_zip', ...}  the zipped framework, base64
- *   {type:'runs', runs}          run history from disk
+ *   {type:'runs', runs}          run history from disk, sent after every command so lists refresh
  *
  * A dashboard socket that reconnects mid-run sends {type:'catch_up', run_id}
  * and gets the run folder's state back (never gateway memory), then receives
@@ -58,7 +59,7 @@ const TOKEN = process.env.QA_CORE_GATEWAY_TOKEN ?? '';
 const ROOT = process.cwd();
 
 interface IncomingMessage {
-  /** 'message' for slash commands; 'list_runs' / 'get_settings' / 'get_report' / 'active_run' / 'watch' / 'catch_up' for state sync. */
+  /** 'message' for slash commands; 'active_run' / 'watch' / 'catch_up' for state sync. */
   type?: string;
   /** For watch / catch_up: the run to follow. */
   run_id?: string;
@@ -72,8 +73,6 @@ interface IncomingMessage {
   srs?: { name: string; base64: string };
   /** Use the named project's current SRS (output/<slug>/srs/); the run still gets its own copy. Ignored when `srs` is given. */
   srs_project?: string;
-  /** For get_report: the run-report.json path, relative to the project root. */
-  reportPath?: string;
 }
 
 function send(ws: WebSocket, payload: object): void {
@@ -155,11 +154,10 @@ function reindex(): ReturnType<typeof indexOutput> {
 }
 reindex();
 
-// One HTTP server: REST API under /api, the built dashboard at /, the legacy
-// single-file UI at /legacy, and the WebSocket upgrade on any path (/ws for
-// the dashboard, / for the legacy UI).
+// One HTTP server: REST API under /api, the built dashboard at /, and the
+// WebSocket upgrade on any path (/ws for the dashboard).
 const api = createApiHandler({ db, root: ROOT, token: TOKEN, reindex, log: (line) => console.log(`  ${line}`), gateway: { host: HOST, port: PORT } });
-const statik = createStaticHandler({ distDir: process.env.QA_CORE_DASHBOARD_DIST ?? path.join(ROOT, 'dashboard', 'dist'), legacyFile: process.env.QA_CORE_LEGACY_UI ?? path.join(ROOT, 'qa-core-ui.html') });
+const statik = createStaticHandler({ distDir: process.env.QA_CORE_DASHBOARD_DIST ?? path.join(ROOT, 'dashboard', 'dist') });
 const server = http.createServer(async (req, res) => {
   try {
     if (await api(req, res)) return;
@@ -220,29 +218,6 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    if (msg.type === 'list_runs') {
-      try {
-        send(ws, { type: 'runs', runs: listRunsFromDisk(ROOT) });
-      } catch (err) {
-        send(ws, { text: `✗ Could not read runs from disk: ${(err as Error).message}` });
-      }
-      return;
-    }
-    if (msg.type === 'get_settings') {
-      send(ws, { type: 'settings', settings: readRunSettings() });
-      return;
-    }
-    // History "view": the full report for a past run, rendered as the same
-    // six panels a live run shows.
-    if (msg.type === 'get_report') {
-      try {
-        const loaded = loadReportForUi(ROOT, String(msg.reportPath ?? ''));
-        send(ws, { type: 'run_report', fromHistory: true, ...loaded });
-      } catch (err) {
-        send(ws, { text: `✗ ${(err as Error).message}` });
-      }
-      return;
-    }
 
     const content = (msg.content ?? '').trim();
     if (!content) return;
@@ -255,7 +230,7 @@ wss.on('connection', (ws, req) => {
     state.busy = true;
     try {
       await dispatch(content, msg, ws);
-      // Run completion: refresh the index and the legacy history list.
+      // Run completion: refresh the index and tell every list to reload.
       try { reindex(); } catch (err) { console.error('  index refresh failed:', (err as Error).message); }
       try { send(ws, { type: 'runs', runs: listRunsFromDisk(ROOT) }); } catch { /* best-effort */ }
     } catch (err) {
@@ -269,7 +244,7 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`QA-Core gateway listening on http://${HOST}:${PORT}`);
-  console.log(`  dashboard  http://${HOST}:${PORT}/        (legacy UI at /legacy)`);
+  console.log(`  dashboard  http://${HOST}:${PORT}/`);
   console.log(`  api        http://${HOST}:${PORT}/api/    websocket ws://${HOST}:${PORT}/ws`);
   console.log(TOKEN ? '  (token required: Authorization: Bearer <token> or ?token=)' : '  (no token, local use only)');
   console.log(`  index      ${path.relative(ROOT, DB_PATH)}`);
@@ -384,8 +359,7 @@ async function handleExplore(request: ExploreRequest, model: string | undefined,
     }
     const zipLine = outcome.zip ? ` (${outcome.zip.scenarios} scenarios, ${outcome.zip.fileCount} files)` : '';
     send(ws, { text: [`**Done.** Wrote ${outcome.kind === 'framework' ? 'framework' : 'spec'} to \`${path.relative(ROOT, outcome.outDir)}\`${zipLine}.`, ...outcome.summary].join('\n') });
-    if (outcome.zip) sendZip(ws, outcome.zip, outcome.reportPath);
-    else if (outcome.specPath) send(ws, { text: fs.readFileSync(outcome.specPath, 'utf8') });
+    if (!outcome.zip && outcome.specPath) send(ws, { text: fs.readFileSync(outcome.specPath, 'utf8') });
     if (outcome.resumeHint) send(ws, { text: outcome.resumeHint });
   } catch (err) {
     if (runId) sendToRun(ws, runId, { type: 'run_failed', error: (err as Error).message });
@@ -397,26 +371,14 @@ async function handleExplore(request: ExploreRequest, model: string | undefined,
   }
 }
 
-function sendZip(ws: WebSocket, zip: FrameworkZip, runReportPath: string): void {
-  send(ws, {
-    type: 'framework_zip',
-    filename: zip.filename,
-    base64: zip.buffer.toString('base64'),
-    sizeBytes: zip.sizeBytes,
-    fileCount: zip.fileCount,
-    scenarios: zip.scenarios,
-    runReportPath,
-  });
-}
-
 /* ─────────────────── /transcribe ─────────────────── */
 
 function handleTranscribe(reportPath: string, outDir: string | undefined, ws: WebSocket): void {
   send(ws, { text: `▸ Transcribing ${reportPath} (no exploration, no model call)` });
   const outcome = runTranscribeRequest({ reportPath, ...(outDir ? { outDir } : {}) }, ROOT, 'dashboard');
   for (const n of outcome.notes) send(ws, { text: n });
-  send(ws, { type: 'run_report', report: reportForUi(outcome.report), outcome: { kind: 'framework', reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true } });
-  sendZip(ws, outcome.zip, reportPath);
+  // The regenerate result the run page confirms with: the dashboard downloads the zip from /api/runs/:id/artifacts.
+  send(ws, { type: 'run_report', report: reportForUi(outcome.report), outcome: { kind: 'framework', reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true, at: new Date().toISOString(), zip: { filename: outcome.zip.filename, fileCount: outcome.zip.fileCount, sizeBytes: outcome.zip.sizeBytes, scenarios: outcome.zip.scenarios } } });
 }
 
 /* ─────────────────── /generate ─────────────────── */
