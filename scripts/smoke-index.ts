@@ -258,7 +258,38 @@ if (migrated) {
   check('V5. PRAGMA foreign_key_check returns nothing and foreign keys are back on', (migrated.pragma('foreign_key_check') as unknown[]).length === 0 && (migrated.pragma('foreign_keys', { simple: true }) as number) === 1);
   const rm = indexOutput(migrated, root);
   check('V6. a migrated database and a fresh database produce identical rows after reindex', dump(migrated) === dump(db2) && JSON.stringify(rm) === JSON.stringify(r2), JSON.stringify(rm));
+  // Person-set rows survive a reopen at the current version and a re-index: project name and environment, finding status and notes.
+  migrated.prepare("UPDATE projects SET name = 'Sauce Renamed', environment = 'production' WHERE id = 'saucedemo-com'").run();
+  migrated.prepare("UPDATE findings SET status = 'wont-fix', notes = 'by design'").run();
   migrated.close();
+  const reopened = openDatabase(v3Path);
+  indexOutput(reopened, root);
+  const proj = reopened.prepare("SELECT name, environment FROM projects WHERE id = 'saucedemo-com'").get() as { name: string; environment: string | null };
+  const fnd = reopened.prepare('SELECT status, notes FROM findings').get() as { status: string; notes: string | null };
+  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 5 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
+  check('V8. finding status and notes survive the reopen and re-index too', fnd.status === 'wont-fix' && fnd.notes === 'by design', JSON.stringify(fnd));
+  reopened.close();
+}
+
+/* ─── observed text: report data only, no inference ─── */
+{
+  const oroot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-observed-'));
+  const dir = path.join(oroot, 'output', 'msg-example', newRunId(new Date('2026-09-15T10:00:00Z'), 'obs'));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'run-report.json'), JSON.stringify({ url: 'https://msg.example/', language: 'ts', startedAt: '2026-09-15T10:00:00.000Z', finishedAt: '2026-09-15T10:01:00.000Z', steps: 1, scenarios: [{ name: 's1', steps: [] }], cascadeStats: {}, cost: { usd: 0.1 }, plan: [],
+    findings: [
+      { scenario: 'login shows an error', expected: 'an error banner', url: 'https://msg.example/login', messages: ['Epic sadface: Username is required', 'Please try again'] },
+      { scenario: 'checkout redirects', expected: 'the confirmation page', url: 'https://msg.example/cart', messages: [] },
+    ],
+    reconciliation: { planned: 3, generated: 1, dropped: [], incomplete: [], findings: [{ name: 'a', expected: 'b', url: 'u', messages: [] }, { name: 'c', expected: 'd', url: 'u', messages: [] }], skipped: [], accountedFor: 3, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0 } }));
+  const odb = openDatabase(path.join(oroot, 'db.sqlite'));
+  indexOutput(odb, oroot);
+  const observed = (odb.prepare('SELECT scenario, observed FROM findings ORDER BY scenario').all() as Array<{ scenario: string; observed: string }>);
+  check('W1. observed is the page\'s messages verbatim, joined, when there are any', observed.find((o) => o.scenario === 'login shows an error')?.observed === 'Epic sadface: Username is required | Please try again', JSON.stringify(observed));
+  check('W2. without messages, observed says so and gives the URL at the time', observed.find((o) => o.scenario === 'checkout redirects')?.observed === 'no message recorded; URL at the time: https://msg.example/cart');
+  check('W3. no inference about navigation anywhere in observed', observed.every((o) => !/stayed|navigat|redirect/i.test(o.observed.replace(o.scenario, ''))), JSON.stringify(observed));
+  odb.close();
+  fs.rmSync(oroot, { recursive: true, force: true });
 }
 fs.rmSync(path.join(output, 'shop-example', shop1), { recursive: true, force: true });
 const r3 = indexOutput(db2, root);
