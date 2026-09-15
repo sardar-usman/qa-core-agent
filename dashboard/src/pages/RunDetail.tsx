@@ -8,7 +8,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/EmptyState';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StageView, formatSize } from '@/components/StageView';
-import { connectGateway, followRun, useGateway, type LiveEvent, type LiveRun } from '@/lib/gateway';
+import { connectGateway, followRun, startCommand, useGateway, type LiveEvent, type LiveRun } from '@/lib/gateway';
+import { resumeCommand, transcribeCommand } from '@/lib/command';
+import { readOverrides } from '@/lib/session-overrides';
 import { liveStagesFrom } from '@/lib/live-stages';
 import { fmtDate, usd } from '@/lib/utils';
 
@@ -39,7 +41,7 @@ export function RunDetailPage() {
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
   const [attempt, setAttempt] = useState(0);
 
-  // History fetch: on load, and again when a live run for this id finishes.
+  // History fetch: on load, when a live run for this id finishes, and when a regenerate lands a new zip on disk.
   const liveFinished = live?.status === 'finished';
   const liveRunning = !!live && live.status === 'running';
   useEffect(() => {
@@ -56,7 +58,7 @@ export function RunDetailPage() {
         setError({ status, message: (e as Error).message });
       });
     return () => { alive = false; };
-  }, [id, liveRunning, liveFinished, attempt]);
+  }, [id, liveRunning, liveFinished, attempt, gw.regenerated]);
 
   // Not started here but the gateway says this id is running (a reload mid-run): follow it from its folder.
   useEffect(() => { if (!live && gw.activeRun?.run_id === id) followRun(id); }, [id, live, gw.activeRun]);
@@ -90,6 +92,7 @@ export function RunDetailPage() {
           <StatusBadge status={h.status} />
           {h.environment ? <Badge variant="accent" data-testid="env-badge">{h.environment}</Badge> : null}
           {detail.legacy ? <Badge variant="neutral">summary only (pre-v2)</Badge> : null}
+          {!detail.legacy ? <RunActions run={detail.run} activeRunId={gw.activeRun?.run_id ?? null} socket={gw.socket} /> : null}
         </div>
         <dl className="grid gap-3 sm:grid-cols-4">
           <Fact label="started" value={fmtDate(h.started_at)} title={h.started_at ?? ''} testid="detail-started" />
@@ -154,6 +157,37 @@ export function RunDetailPage() {
 
       <EventsSection status={detail.events_status} events={detail.events} />
       {live ? <RunLog log={live.log} /> : null}
+    </div>
+  );
+}
+
+/* ─────────────────── resume and regenerate ─────────────────── */
+
+/**
+ * Resume (a stopped run with its checkpoint.json) and Regenerate framework
+ * (a completed run's run-report.json). Both send a slash command through the
+ * gateway's parser, the same request layer the Terminal uses: /resume and
+ * /transcribe. Neither appears on a legacy record; each is disabled with the
+ * reason while any run is live.
+ */
+function RunActions({ run, activeRunId, socket }: { run: { status: string; checkpoint_path: string | null; report_path: string | null }; lang?: 'ts' | 'js'; activeRunId: string | null; socket: string }) {
+  const [ceiling, setCeiling] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
+  const blocker = socket !== 'connected' ? 'the gateway socket is not connected' : activeRunId ? `a run is already in progress: ${activeRunId}` : null;
+  const canResume = run.status === 'stopped' && !!run.checkpoint_path;
+  const canRegenerate = run.status === 'completed' && !!run.report_path;
+  if (!canResume && !canRegenerate) return null;
+  const go = (content: string) => { if (startCommand({ content, lang: 'ts', env: readOverrides() })) setSent(content); };
+  return (
+    <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="run-actions">
+      {canResume ? (
+        <>
+          <input className="h-8 w-28 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg placeholder:text-fg-3" placeholder="ceiling USD" inputMode="decimal" value={ceiling} onChange={(e) => setCeiling(e.target.value)} data-testid="resume-ceiling" aria-label="Resume cost ceiling" />
+          <Button type="button" size="sm" disabled={!!blocker || !!sent} title={blocker ?? resumeCommand(run.checkpoint_path!, ceiling)} onClick={() => go(resumeCommand(run.checkpoint_path!, ceiling))} data-testid="resume">Resume</Button>
+        </>
+      ) : null}
+      {canRegenerate ? <Button type="button" size="sm" variant="outline" disabled={!!blocker || !!sent} title={blocker ?? transcribeCommand(run.report_path!)} onClick={() => go(transcribeCommand(run.report_path!))} data-testid="regenerate">Regenerate framework</Button> : null}
+      {blocker ? <span className="text-s text-fg-2" data-testid="actions-blocker">{blocker}</span> : sent ? <span className="mono text-s text-fg-2" data-testid="actions-sent">sent {sent}</span> : null}
     </div>
   );
 }

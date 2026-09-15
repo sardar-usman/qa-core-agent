@@ -8,6 +8,7 @@ import { TerminalPage } from '@/pages/Terminal';
 import { ProjectPage } from '@/pages/Project';
 import { FindingsPage } from '@/pages/Findings';
 import { CoveragePage } from '@/pages/Coverage';
+import { SettingsPage } from '@/pages/Settings';
 import { connectGateway, useGateway } from '@/lib/gateway';
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/runs" element={<RunsPage refreshKey={refreshKey} />} />
             <Route path="/runs/:id" element={<RunDetailPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<ProjectsPage refreshKey={refreshKey} />} />
           </Routes>
         </main>

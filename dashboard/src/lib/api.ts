@@ -9,7 +9,19 @@ export interface ProjectCard {
   shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
+  srs: { name: string; uploaded_at: string; path: string } | null;
 }
+
+export interface GatewaySettings {
+  run_settings: Array<{ name: string; label: string; value: string; fromEnv: boolean }>;
+  output_root: string;
+  gateway: { host: string | null; port: number | null };
+  token_set: boolean;
+  api_key_set: boolean;
+}
+export interface ProjectSrsRecord { file: string; original_name: string; path: string; uploaded_at: string; size: number }
+export interface ProjectSrsState { current: ProjectSrsRecord | null; previous: ProjectSrsRecord[] }
+export const PROJECT_ENVIRONMENTS = ['staging', 'production', 'other'] as const;
 
 export type FindingStatus = 'open' | 'triaged' | 'fixed' | 'wont-fix';
 export const FINDING_STATUSES: FindingStatus[] = ['open', 'triaged', 'fixed', 'wont-fix'];
@@ -35,6 +47,7 @@ export interface ProjectDetail {
   summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
   trend: Array<Record<string, unknown>>;
   unresolved_findings: FindingRow[];
+  srs: ProjectSrsState;
 }
 
 export interface RunRow {
@@ -124,6 +137,15 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** A JSON write. Errors carry the API's own message and, for a 409, the body's `existing` link. */
+export class ApiWriteError extends ApiError { constructor(status: number, message: string, public body: Record<string, unknown>) { super(status, message); } }
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new ApiWriteError(res.status, typeof data.error === 'string' ? data.error : res.statusText, data);
+  return data as T;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
   if (!res.ok) {
@@ -165,11 +187,17 @@ export const api = {
   report: (id: string) => get<Record<string, unknown>>(`/api/runs/${encodeURIComponent(id)}/report`),
   zipUrl: (id: string) => `/api/runs/${encodeURIComponent(id)}/zip${token ? `?token=${encodeURIComponent(token)}` : ''}`,
   /** The Terminal page's one parser: the gateway's parseGatewayCommand over the displayed command. */
-  parseCommand: async (content: string, lang: 'ts' | 'js') => {
-    const res = await fetch('/api/command/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ content, lang }) });
+  parseCommand: async (content: string, lang: 'ts' | 'js', env?: Record<string, string>) => {
+    const res = await fetch('/api/command/parse', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ content, lang, ...(env && Object.keys(env).length ? { env } : {}) }) });
     if (!res.ok) throw new ApiError(res.status, res.statusText);
     return (await res.json()) as ParsedCommand;
   },
+  settings: () => get<GatewaySettings>('/api/settings'),
+  matchProject: (url: string) => get<{ project_id: string | null; project: Record<string, unknown> | null; srs: ProjectSrsRecord | null }>(`/api/projects/match?url=${encodeURIComponent(url)}`),
+  projectSrs: (id: string) => get<ProjectSrsState>(`/api/projects/${encodeURIComponent(id)}/srs`),
+  uploadProjectSrs: (id: string, upload: { name: string; base64: string }) => send<ProjectSrsState>('POST', `/api/projects/${encodeURIComponent(id)}/srs`, upload),
+  createProject: (body: { name: string; base_url: string; environment: string | null }) => send<{ project: Record<string, unknown> }>('POST', '/api/projects', body),
+  patchProject: (id: string, body: { name?: string; environment?: string | null }) => send<{ project: Record<string, unknown> }>('PATCH', `/api/projects/${encodeURIComponent(id)}`, body),
   reindex: async () => {
     const res = await fetch('/api/reindex', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!res.ok) throw new ApiError(res.status, res.statusText);
