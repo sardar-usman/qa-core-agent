@@ -58,12 +58,21 @@ CREATE TABLE IF NOT EXISTS findings (
   expected          TEXT NOT NULL,
   observed          TEXT,
   page_url          TEXT,
-  status            TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'confirmed', 'not_a_bug', 'fixed')),
+  -- Triage state set by a person in the dashboard; survives every re-index (the indexer never touches it).
+  status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'triaged', 'fixed', 'wont-fix')),
   first_seen_run_id TEXT NOT NULL,
   last_seen_run_id  TEXT NOT NULL,
   notes             TEXT
 );
 CREATE INDEX IF NOT EXISTS findings_project_status ON findings(project_id, status);
+
+-- One row per run a finding was seen in (the plan's "one row with two run references").
+-- Rebuilt with the runs; times seen is COUNT(*) here, never a stored counter.
+CREATE TABLE IF NOT EXISTS finding_runs (
+  finding_id TEXT NOT NULL REFERENCES findings(id),
+  run_id     TEXT NOT NULL REFERENCES runs(id),
+  PRIMARY KEY (finding_id, run_id)
+);
 
 CREATE TABLE IF NOT EXISTS rule_coverage (
   run_id         TEXT NOT NULL REFERENCES runs(id),

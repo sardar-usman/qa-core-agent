@@ -99,14 +99,14 @@ const shop = projects.find((p) => p.id === 'shop-example')!;
 check('E. /api/projects lists both host projects plus the records-only host', projects.length === 3 && !!sauce && !!shop && projects.some((p) => p.id === 'old-example'), JSON.stringify(projects.map((p) => p.id)));
 check('F. project card sums runs, lifetime shipped and spend from the runs rows', sauce.runs === 2 && sauce.shipped === 5 && sauce.legacy_runs === 0 && Math.abs(Number(sauce.spend_total) - 2.3) < 1e-9, JSON.stringify(sauce));
 const old = projects.find((p) => p.id === 'old-example')!;
-check('F2. a legacy-only project shows shipped 0 and legacy_runs 1: explored scenarios never count as shipped', old.shipped === 0 && old.legacy_runs === 1 && old.runs === 1 && (old.last_run as Record<string, unknown>).shipped === null && (old.last_run as Record<string, unknown>).generated === 3, JSON.stringify(old));
+check('F2. a legacy-only project reports shipped null (unknown, never 0) and legacy_runs 1: explored scenarios never count as shipped', old.shipped === null && old.legacy_runs === 1 && old.runs === 1 && (old.last_run as Record<string, unknown>).shipped === null && (old.last_run as Record<string, unknown>).generated === 3, JSON.stringify(old));
 check('G. spend this month counts only runs started this month', Math.abs(Number(sauce.spend_month) - 1.15) < 1e-9 && Math.abs(Number(shop.spend_month) - 1.15) < 1e-9, JSON.stringify([sauce.spend_month, shop.spend_month]));
 check('H. last run is the newest by start time with its status', (sauce.last_run as Record<string, unknown>).id === a2 && (sauce.last_run as Record<string, unknown>).status === 'stopped');
-check('I. open findings and coverage series are zero/empty without findings or SRS runs', sauce.open_findings === 0 && Array.isArray(sauce.coverage_series) && (sauce.coverage_series as unknown[]).length === 0);
+check('I. unresolved findings and coverage series are zero/empty without findings or SRS runs', sauce.unresolved_findings === 0 && Array.isArray(sauce.coverage_series) && (sauce.coverage_series as unknown[]).length === 0);
 const detail = (await get('/api/projects/saucedemo-com', auth)).json();
-check('J. /api/projects/:id returns summary, trend (oldest first) and open findings', (detail.summary as Record<string, unknown>).runs === 2 && (detail.trend as Array<Record<string, unknown>>).length === 2 && (detail.trend as Array<Record<string, unknown>>)[0]?.run_id === a1 && Array.isArray(detail.open_findings));
+check('J. /api/projects/:id returns summary, trend (oldest first) and unresolved findings', (detail.summary as Record<string, unknown>).runs === 2 && (detail.trend as Array<Record<string, unknown>>).length === 2 && (detail.trend as Array<Record<string, unknown>>)[0]?.run_id === a1 && Array.isArray(detail.unresolved_findings));
 const oldDetail = (await get('/api/projects/old-example', auth)).json();
-check('J2. the summary exposes shipped and legacy_runs separately', (oldDetail.summary as Record<string, unknown>).shipped === 0 && (oldDetail.summary as Record<string, unknown>).legacy_runs === 1 && (detail.summary as Record<string, unknown>).legacy_runs === 0);
+check('J2. the summary exposes shipped and legacy_runs separately', (oldDetail.summary as Record<string, unknown>).shipped === null && (oldDetail.summary as Record<string, unknown>).legacy_runs === 1 && (detail.summary as Record<string, unknown>).legacy_runs === 0);
 check('K. unknown project is 404', (await get('/api/projects/nope', auth)).status === 404);
 
 /* ─── runs ─── */

@@ -238,13 +238,14 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
       const existing = db.prepare('SELECT first_seen_run_id, last_seen_run_id FROM findings WHERE id = ?').get(id) as { first_seen_run_id: string; last_seen_run_id: string } | undefined;
       if (!existing) {
         db.prepare(`INSERT INTO findings (id, run_id, project_id, scenario, expected, observed, page_url, status, first_seen_run_id, last_seen_run_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`).run(id, row.id, projectId, f.scenario, f.expected, observed, f.url, row.id, row.id);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(id, row.id, projectId, f.scenario, f.expected, observed, f.url, row.id, row.id);
       } else {
         const first = runOrder(existing.first_seen_run_id, db) <= runOrder(row.id, db) ? existing.first_seen_run_id : row.id;
         const last = runOrder(existing.last_seen_run_id, db) >= runOrder(row.id, db) ? existing.last_seen_run_id : row.id;
         db.prepare('UPDATE findings SET run_id = ?, observed = ?, page_url = ?, first_seen_run_id = ?, last_seen_run_id = ? WHERE id = ?')
           .run(last, observed, f.url, first, last, id);
       }
+      db.prepare('INSERT OR IGNORE INTO finding_runs (finding_id, run_id) VALUES (?, ?)').run(id, row.id);
     }
   })();
   return row;
@@ -383,6 +384,7 @@ export function indexOutput(db: Database.Database, root: string): IndexResult {
     for (const id of ids) {
       db.prepare('DELETE FROM verdicts WHERE run_id = ?').run(id);
       db.prepare('DELETE FROM rule_coverage WHERE run_id = ?').run(id);
+      db.prepare('DELETE FROM finding_runs WHERE run_id = ? OR finding_id IN (SELECT id FROM findings WHERE run_id = ? OR first_seen_run_id = ? OR last_seen_run_id = ?)').run(id, id, id, id);
       db.prepare('DELETE FROM findings WHERE run_id = ? OR first_seen_run_id = ? OR last_seen_run_id = ?').run(id, id, id);
       db.prepare('UPDATE terminals SET run_id = NULL WHERE run_id = ?').run(id);
       db.prepare('DELETE FROM runs WHERE id = ?').run(id);

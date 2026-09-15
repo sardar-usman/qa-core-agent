@@ -4,9 +4,37 @@
  */
 export interface ProjectCard {
   id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null;
-  runs: number; shipped: number; legacy_runs: number; open_findings: number; spend_month: number; spend_total: number;
+  runs: number; reported_runs: number;
+  /** null when the project has no reported run (pre-v2 records only): unknown, never 0. */
+  shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
+}
+
+export type FindingStatus = 'open' | 'triaged' | 'fixed' | 'wont-fix';
+export const FINDING_STATUSES: FindingStatus[] = ['open', 'triaged', 'fixed', 'wont-fix'];
+export interface FindingRow {
+  id: string; project_id: string; project_name: string; scenario: string; expected: string; observed: string | null; page_url: string | null;
+  status: FindingStatus; notes: string | null;
+  first_seen_run_id: string; last_seen_run_id: string; first_seen_at: string | null; last_seen_at: string | null;
+  run_ids: string[]; times_seen: number;
+}
+export type RuleStatus = 'covered' | 'not_planned' | 'planned_but_dropped' | 'planned_not_explored';
+export interface ProjectCoverage {
+  project_id: string; srs_runs: number;
+  rules: Array<{ rule_id: string; text: string | null; feature: string | null; latest_status: RuleStatus; latest_run_id: string; latest_run_at: string | null; last_covered_run_id: string | null; last_covered_at: string | null; last_covered_scenarios: string[]; runs_reported: number; runs_covered: number }>;
+  not_automated: Array<{ rule_id: string; text: string | null; reason: RuleStatus; run_id: string }>;
+}
+export interface ProjectTrends {
+  project_id: string;
+  points: Array<{ run_id: string; started_at: string | null; shipped: number | null; cost_total: number; flake_rate: number | null }>;
+  excluded: { legacy: number; stopped: number; empty: number; failed: number };
+}
+export interface ProjectDetail {
+  project: { id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null; notes: string | null };
+  summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
+  trend: Array<Record<string, unknown>>;
+  unresolved_findings: FindingRow[];
 }
 
 export interface RunRow {
@@ -108,7 +136,21 @@ async function get<T>(path: string): Promise<T> {
 
 export const api = {
   projects: () => get<{ projects: ProjectCard[] }>('/api/projects').then((r) => r.projects),
-  project: (id: string) => get<Record<string, unknown>>(`/api/projects/${encodeURIComponent(id)}`),
+  project: (id: string) => get<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
+  projectCoverage: (id: string) => get<ProjectCoverage>(`/api/projects/${encodeURIComponent(id)}/coverage`),
+  projectTrends: (id: string) => get<ProjectTrends>(`/api/projects/${encodeURIComponent(id)}/trends`),
+  findings: (q: { project_id?: string; status?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (q.project_id) p.set('project_id', q.project_id);
+    if (q.status) p.set('status', q.status);
+    return get<{ findings: FindingRow[] }>(`/api/findings${p.toString() ? '?' + p : ''}`).then((r) => r.findings);
+  },
+  /** Triage a finding: status and/or notes. Token-guarded like every /api route. */
+  patchFinding: async (id: string, body: { status?: FindingStatus; notes?: string | null }) => {
+    const res = await fetch(`/api/findings/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+    if (!res.ok) { let msg = res.statusText; try { msg = ((await res.json()) as { error?: string }).error ?? msg; } catch { /* keep */ } throw new ApiError(res.status, msg); }
+    return ((await res.json()) as { finding: FindingRow }).finding;
+  },
   runs: (q: { project_id?: string; status?: string; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.project_id) p.set('project_id', q.project_id);
