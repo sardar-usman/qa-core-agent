@@ -19,7 +19,11 @@ import {
   type ExploreRequest,
 } from '../src/agent/explore-request.js';
 import { parseGatewayCommand } from '../src/server/commands.js';
-import { exploreRequestFromToolArgs, resumeRequestFromToolArgs, TOOL_SCHEMAS, TOOL_NAMES, exploreArgs, resumeArgs } from '../src/mcp/tools.js';
+import { exploreRequestFromToolArgs, resumeRequestFromToolArgs, srsUploadFromToolArgs, TOOL_SCHEMAS, TOOL_NAMES, exploreArgs, resumeArgs } from '../src/mcp/tools.js';
+import { saveSrsUpload } from '../src/server/run-explore.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Checkpoint } from '../src/agent/checkpoint.js';
 import { FORM_FIELDS } from '../dashboard/src/lib/command.js';
 
@@ -145,8 +149,14 @@ for (const name of TOOL_NAMES) {
 }
 check('W. qa_transcribe takes reportPath and outDir', 'reportPath' in TOOL_SCHEMAS.qa_transcribe && 'outDir' in TOOL_SCHEMAS.qa_transcribe);
 check('X. qa_explore accepts srsText as the inline SRS form', 'srsText' in TOOL_SCHEMAS.qa_explore);
-const inline = exploreRequestFromToolArgs(exploreSchema.parse({ url: 'https://shop.example/', srsText: '# SRS' }), 'output/.uploads/x.md');
-check('Y. inline SRS text becomes an srs path on the request (same as --srs)', inline.srs === 'output/.uploads/x.md');
+const inlineArgs = exploreSchema.parse({ url: 'https://shop.example/', srsText: '# SRS' });
+const inlineUpload = srsUploadFromToolArgs(inlineArgs);
+check('Y. inline SRS text becomes the upload the request layer saves into the run folder (srs.md), and the request carries no path of its own', inlineUpload?.name === 'srs.md' && Buffer.from(inlineUpload!.base64, 'base64').toString('utf8') === '# SRS' && exploreRequestFromToolArgs(inlineArgs).srs === undefined && srsUploadFromToolArgs({ srs: 'docs/srs.md', srsText: '# SRS' }) === undefined);
+const mcpRunDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-mcp-srs-'));
+const savedSrs = saveSrsUpload(mcpRunDir, inlineUpload!);
+check('Y2. the MCP upload lands in the run folder through saveSrsUpload, the same path a dashboard attach takes', savedSrs === path.join(mcpRunDir, 'srs.md') && fs.readFileSync(savedSrs, 'utf8') === '# SRS');
+fs.rmSync(mcpRunDir, { recursive: true, force: true });
+check('Y3. no surface writes output/.uploads any more', !fs.readFileSync(path.join(process.cwd(), 'src', 'mcp', 'server.ts'), 'utf8').includes('.uploads') && !fs.readFileSync(path.join(process.cwd(), 'src', 'server', 'gateway.ts'), 'utf8').includes('.uploads') && !fs.readFileSync(path.join(process.cwd(), 'src', 'mcp', 'tools.ts'), 'utf8').includes('output/.uploads and'));
 check('Z. an invalid setting value throws at the MCP boundary', (() => { try { exploreRequestFromToolArgs(exploreSchema.parse({ url: 'https://shop.example/', plannerModel: 'not a model id' })); return false; } catch (e) { return /model id/.test((e as Error).message); } })());
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

@@ -48,11 +48,13 @@ export interface GatewayState {
   live: LiveRun | null;
   /** The last error text the gateway sent for a command that never became a run. */
   lastError: string | null;
+  /** Bumped when a /transcribe finished (run_report with outcome.regenerated), so a run page re-reads its artifacts from disk. */
+  regenerated: number;
 }
 
 type Listener = (s: GatewayState) => void;
 
-let state: GatewayState = { socket: 'offline', settings: [], sessionSpend: 0, runsChanged: 0, activeRun: null, live: null, lastError: null };
+let state: GatewayState = { socket: 'offline', settings: [], sessionSpend: 0, runsChanged: 0, activeRun: null, live: null, lastError: null, regenerated: 0 };
 const listeners = new Set<Listener>();
 let ws: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -140,6 +142,8 @@ function handleMessage(data: Record<string, unknown>): void {
     }
     case 'run_report': {
       if (data.fromHistory) return;
+      const outcome = (data.outcome as Record<string, unknown> | undefined) ?? {};
+      if (outcome.regenerated) { pendingStart = false; emit({ regenerated: state.regenerated + 1, runsChanged: state.runsChanged + 1 }); return; }
       emit({ sessionSpend: state.sessionSpend + reportCost(data.report as Record<string, unknown>), runsChanged: state.runsChanged + 1 });
       if (forLive()) patchLive({ status: 'finished', report: (data.report as Record<string, unknown>) ?? null, outcome: (data.outcome as Record<string, unknown>) ?? null });
       return;
@@ -171,11 +175,15 @@ function handleMessage(data: Record<string, unknown>): void {
 }
 
 /** Send a slash command the same way the legacy UI does: {type:'message', content, lang, srs?}. */
-export function startCommand(input: { content: string; lang: 'ts' | 'js'; srs?: { name: string; base64: string } }): boolean {
+export function startCommand(input: { content: string; lang: 'ts' | 'js'; srs?: { name: string; base64: string }; srsProject?: string; env?: Record<string, string> }): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
   pendingStart = true;
   emit({ lastError: null });
-  ws.send(JSON.stringify({ type: 'message', content: input.content, lang: input.lang, ...(input.srs ? { srs: input.srs } : {}) }));
+  ws.send(JSON.stringify({
+    type: 'message', content: input.content, lang: input.lang,
+    ...(input.srs ? { srs: input.srs } : input.srsProject ? { srs_project: input.srsProject } : {}),
+    ...(input.env && Object.keys(input.env).length ? { env: input.env } : {}),
+  }));
   return true;
 }
 

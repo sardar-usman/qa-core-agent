@@ -5,6 +5,11 @@ import type Database from 'better-sqlite3';
 import { indexOutput, renderIndexResult, type IndexResult } from './db/indexer.js';
 import { buildRunDetail, runArtifactFile } from './run-detail.js';
 import { parseGatewayCommand } from './commands.js';
+import { readRunSettings, validateEnvOverride } from '../agent/explore-request.js';
+import { projectSlug } from '../agent/output-layout.js';
+import { brandSlug } from '../agent/scaffold.js';
+import { readProjectSrs, storeProjectSrs } from './project-srs.js';
+import { validateSrsUpload } from './run-explore.js';
 
 /**
  * REST API over the index (dashboard v2 plan, section 6; PR A ships the GET
@@ -26,6 +31,8 @@ export interface ApiContext {
   /** Called by POST /api/reindex; defaults to a full indexOutput pass. */
   reindex?: () => IndexResult;
   log?: (line: string) => void;
+  /** Where the gateway listens, for the Settings page. */
+  gateway?: { host: string; port: number };
 }
 
 export type ApiHandler = (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
@@ -62,11 +69,43 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
     const method = req.method ?? 'GET';
     const parts = url.pathname.split('/').filter(Boolean); // ['api', ...]
     try {
-      if (method === 'GET' && parts.length === 2 && parts[1] === 'projects') { json(res, 200, { projects: listProjects(db) }); return true; }
+      if (method === 'GET' && parts.length === 2 && parts[1] === 'settings') { json(res, 200, gatewaySettings(ctx)); return true; }
+      if (method === 'GET' && parts.length === 2 && parts[1] === 'projects') { json(res, 200, { projects: listProjects(db, root) }); return true; }
+      if (method === 'POST' && parts.length === 2 && parts[1] === 'projects') {
+        const result = createProject(db, await readJsonBody(req));
+        json(res, result.status, result.body); return true;
+      }
+      // The project a URL would land in (the indexer's host slug rule), for the Terminal's project-SRS default.
+      if (method === 'GET' && parts.length === 3 && parts[1] === 'projects' && parts[2] === 'match') {
+        const target = url.searchParams.get('url') ?? '';
+        let id: string | null = null;
+        try { id = new URL(target).hostname ? projectSlug(target) : null; } catch { id = null; }
+        const p = id ? projectDetail(db, id, root) : null;
+        json(res, 200, { project_id: id, project: p ? p.project : null, srs: id ? readProjectSrs(root, id).current : null }); return true;
+      }
       if (method === 'GET' && parts.length === 3 && parts[1] === 'projects') {
-        const p = projectDetail(db, decodeURIComponent(parts[2]!));
+        const p = projectDetail(db, decodeURIComponent(parts[2]!), root);
         if (!p) { json(res, 404, { error: 'project not found' }); return true; }
         json(res, 200, p); return true;
+      }
+      if (method === 'PATCH' && parts.length === 3 && parts[1] === 'projects') {
+        const result = patchProject(db, decodeURIComponent(parts[2]!), await readJsonBody(req));
+        json(res, result.status, result.body); return true;
+      }
+      if (parts.length === 4 && parts[1] === 'projects' && parts[3] === 'srs') {
+        const id = decodeURIComponent(parts[2]!);
+        if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) { json(res, 404, { error: 'project not found' }); return true; }
+        if (method === 'GET') { json(res, 200, readProjectSrs(root, id)); return true; }
+        if (method === 'POST') {
+          const body = await readJsonBody(req);
+          const name = typeof body.name === 'string' ? body.name : '';
+          const base64 = typeof body.base64 === 'string' ? body.base64 : '';
+          const err = validateSrsUpload(name, Buffer.byteLength(base64, 'base64'));
+          if (err) { json(res, 400, { error: err }); return true; }
+          const state = storeProjectSrs(root, id, { name, base64 });
+          db.prepare('UPDATE projects SET srs_path = ?, updated_at = ? WHERE id = ?').run(state.current?.path ?? null, new Date().toISOString(), id);
+          json(res, 200, state); return true;
+        }
       }
       if (method === 'GET' && parts.length === 4 && parts[1] === 'projects' && (parts[3] === 'coverage' || parts[3] === 'trends')) {
         const id = decodeURIComponent(parts[2]!);
@@ -132,7 +171,8 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
         const body = await readJsonBody(req);
         const content = typeof body.content === 'string' ? body.content : '';
         const lang = body.lang === 'js' ? 'js' : 'ts';
-        json(res, 200, parseCommandForUi(content, lang)); return true;
+        const env = body.env && typeof body.env === 'object' ? Object.fromEntries(Object.entries(body.env as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string> : undefined;
+        json(res, 200, parseCommandForUi(content, lang, env)); return true;
       }
       if (method === 'POST' && parts.length === 2 && parts[1] === 'reindex') {
         const result = reindex();
@@ -163,10 +203,11 @@ export type ParsedCommandForUi =
   | { ok: true; kind: 'transcribe' | 'generate' | 'heal' | 'eval'; summary: string }
   | { ok: false; error: string };
 
-export function parseCommandForUi(content: string, lang: 'ts' | 'js'): ParsedCommandForUi {
+export function parseCommandForUi(content: string, lang: 'ts' | 'js', env?: Record<string, string>): ParsedCommandForUi {
   const trimmed = content.trim();
   if (!trimmed) return { ok: false, error: 'Type a command: /explore <url> [flags], /resume <checkpoint.json>, /transcribe <run-report.json>, /heal <spec>, /generate <story>.' };
-  const cmd = parseGatewayCommand(trimmed, { lang });
+  // Session overrides from the dashboard merge under the text flags, exactly as the socket applies them.
+  const cmd = parseGatewayCommand(trimmed, { lang, ...(env && Object.keys(env).length ? { env } : {}) });
   switch (cmd.kind) {
     case 'reply': return { ok: false, error: cmd.text };
     case 'explore': return { ok: true, kind: 'explore', request: cmd.request as unknown as Record<string, unknown>, notes: cmd.notes, naturalHint: cmd.naturalHint ?? null };
@@ -212,15 +253,17 @@ export interface ProjectCard {
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   /** Rule coverage percent per run (oldest first), for the sparkline; empty without SRS runs. */
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
+  /** The project-level requirements document, read from output/<slug>/srs/ (files are truth). */
+  srs: { name: string; uploaded_at: string; path: string } | null;
 }
 
-export function listProjects(db: Database.Database): ProjectCard[] {
+export function listProjects(db: Database.Database, root?: string): ProjectCard[] {
   // Unassigned (records with no URL) sorts last; the UI mutes it.
   const projects = db.prepare("SELECT * FROM projects ORDER BY CASE WHEN id = 'unassigned' THEN 1 ELSE 0 END, name").all() as Array<Record<string, unknown>>;
-  return projects.map((p) => projectCard(db, p));
+  return projects.map((p) => projectCard(db, p, root));
 }
 
-function projectCard(db: Database.Database, p: Record<string, unknown>): ProjectCard {
+function projectCard(db: Database.Database, p: Record<string, unknown>, root?: string): ProjectCard {
   const id = String(p.id);
   const agg = db.prepare(`SELECT COUNT(*) AS runs,
                           SUM(CASE WHEN report_path IS NOT NULL THEN 1 ELSE 0 END) AS reported_runs,
@@ -237,8 +280,10 @@ function projectCard(db: Database.Database, p: Record<string, unknown>): Project
                                  SUM(CASE WHEN c.status = 'covered' THEN 1 ELSE 0 END) AS covered, COUNT(*) AS total
                                FROM rule_coverage c JOIN runs r ON r.id = c.run_id WHERE r.project_id = ?
                                GROUP BY r.id ORDER BY r.started_at ASC, r.id ASC`).all(id) as Array<{ run_id: string; started_at: string | null; covered: number; total: number }>;
+  const srs = root ? readProjectSrs(root, id).current : null;
   return {
     id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: (p.environment as string | null) ?? null, srs_path: (p.srs_path as string | null) ?? null,
+    srs: srs ? { name: srs.original_name, uploaded_at: srs.uploaded_at, path: srs.path } : null,
     runs: agg.runs, reported_runs: reported, shipped: reported > 0 ? agg.shipped : null, legacy_runs: agg.legacy_runs ?? 0, legacy_explored: agg.legacy_explored,
     unresolved_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
@@ -246,15 +291,16 @@ function projectCard(db: Database.Database, p: Record<string, unknown>): Project
   };
 }
 
-export function projectDetail(db: Database.Database, id: string): Record<string, unknown> | null {
+export function projectDetail(db: Database.Database, id: string, root?: string): Record<string, unknown> | null {
   const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!p) return null;
-  const card = projectCard(db, p);
+  const card = projectCard(db, p, root);
   const trend = db.prepare(`SELECT id AS run_id, started_at, status, shipped, planned, cost_total, flake_rate FROM runs WHERE project_id = ? ORDER BY started_at ASC, id ASC`).all(id) as Array<Record<string, unknown>>;
   const coverageByRun = new Map(card.coverage_series.map((c) => [c.run_id, c.percent]));
   const unresolved = listFindings(db, { projectId: id, status: 'open,triaged' });
   return {
     project: p,
+    srs: root ? readProjectSrs(root, id) : { current: null, previous: [] },
     summary: { runs: card.runs, reported_runs: card.reported_runs, shipped: card.shipped, legacy_runs: card.legacy_runs, legacy_explored: card.legacy_explored, unresolved_findings: card.unresolved_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
     trend: trend.map((t) => ({ ...t, coverage_percent: coverageByRun.get(String(t.run_id)) ?? null })),
     unresolved_findings: unresolved,
@@ -401,4 +447,77 @@ export function projectTrends(db: Database.Database, projectId: string): Project
                              WHERE project_id = ? AND status = 'completed' AND report_path IS NOT NULL ORDER BY started_at ASC, id ASC`).all(projectId) as ProjectTrends['points'];
   const count = (status: string): number => (db.prepare('SELECT COUNT(*) AS n FROM runs WHERE project_id = ? AND status = ?').get(projectId, status) as { n: number }).n;
   return { project_id: projectId, points, excluded: { legacy: count('legacy'), stopped: count('stopped'), empty: count('empty'), failed: count('failed') } };
+}
+
+/* ─────────────────── settings ─────────────────── */
+
+/**
+ * The gateway's effective defaults as read from the process at request time.
+ * Secrets are reported as set or not set, never by value: ANTHROPIC_API_KEY
+ * and QA_CORE_GATEWAY_TOKEN never appear in this payload.
+ */
+export function gatewaySettings(ctx: Pick<ApiContext, 'root' | 'token' | 'gateway'>, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  return {
+    run_settings: readRunSettings(env),
+    output_root: path.join(ctx.root, 'output'),
+    gateway: { host: ctx.gateway?.host ?? null, port: ctx.gateway?.port ?? null },
+    token_set: !!ctx.token,
+    api_key_set: !!env.ANTHROPIC_API_KEY,
+  };
+}
+
+/* ─────────────────── projects: create and edit ─────────────────── */
+
+export const PROJECT_ENVIRONMENTS = ['staging', 'production', 'other'] as const;
+
+function environmentFrom(v: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (v === undefined || v === null || v === '') return { ok: true, value: null };
+  if (typeof v === 'string' && (PROJECT_ENVIRONMENTS as readonly string[]).includes(v)) return { ok: true, value: v };
+  return { ok: false, error: `environment must be one of ${PROJECT_ENVIRONMENTS.join(', ')}, or left unset` };
+}
+
+/**
+ * POST /api/projects: name, base_url (required, must parse), environment
+ * (optional, stored NULL when unset). The id follows the indexer's host slug
+ * rule, so a later run against that host lands in this project. A host that
+ * already has a project is rejected with the existing project named.
+ */
+export function createProject(db: Database.Database, body: Record<string, unknown>): { status: number; body: unknown } {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const baseUrl = typeof body.base_url === 'string' ? body.base_url.trim() : '';
+  if (!baseUrl) return { status: 400, body: { error: 'base_url is required' } };
+  let parsed: URL;
+  try { parsed = new URL(baseUrl); } catch { return { status: 400, body: { error: `base_url must be a full URL (got "${baseUrl}")` } }; }
+  if (!/^https?:$/.test(parsed.protocol) || !parsed.hostname) return { status: 400, body: { error: 'base_url must be an http or https URL with a host' } };
+  const env = environmentFrom(body.environment);
+  if (!env.ok) return { status: 400, body: { error: env.error } };
+  const id = projectSlug(baseUrl);
+  const existing = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(id) as { id: string; name: string } | undefined;
+  if (existing) return { status: 409, body: { error: `a project for ${parsed.hostname} already exists: ${existing.name}`, existing: { id: existing.id, name: existing.name, href: `/projects/${encodeURIComponent(existing.id)}` } } };
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO projects (id, name, base_url, environment, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, name || brandSlug(baseUrl), parsed.origin, env.value, now, now);
+  return { status: 201, body: { project: db.prepare('SELECT * FROM projects WHERE id = ?').get(id) } };
+}
+
+/** PATCH /api/projects/:id: name and environment only. base_url is identity and stays read-only. */
+export function patchProject(db: Database.Database, id: string, body: Record<string, unknown>): { status: number; body: unknown } {
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+  if (!existing) return { status: 404, body: { error: 'project not found' } };
+  if ('base_url' in body) return { status: 400, body: { error: 'base_url is the project identity and cannot be edited' } };
+  const sets: string[] = [];
+  const args: unknown[] = [];
+  if ('name' in body) {
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) return { status: 400, body: { error: 'name must not be empty' } };
+    sets.push('name = ?'); args.push(name.slice(0, 120));
+  }
+  if ('environment' in body) {
+    const env = environmentFrom(body.environment);
+    if (!env.ok) return { status: 400, body: { error: env.error } };
+    sets.push('environment = ?'); args.push(env.value);
+  }
+  if (!sets.length) return { status: 400, body: { error: 'nothing to update: send name and/or environment' } };
+  sets.push('updated_at = ?'); args.push(new Date().toISOString());
+  db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...args, id);
+  return { status: 200, body: { project: db.prepare('SELECT * FROM projects WHERE id = ?').get(id) } };
 }

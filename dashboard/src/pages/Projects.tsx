@@ -8,6 +8,8 @@ import { EmptyState } from '@/components/EmptyState';
 import { Sparkline } from '@/components/Sparkline';
 import { StatusBadge } from '@/components/StatusBadge';
 import { fmtDate, usd } from '@/lib/utils';
+import { ApiWriteError, PROJECT_ENVIRONMENTS } from '@/lib/api';
+import { Button } from '@/components/ui/button';
 
 const UNASSIGNED = 'unassigned';
 
@@ -16,26 +18,33 @@ const ENV_VARIANT: Record<string, 'accent' | 'rework' | 'neutral'> = { staging: 
 export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   const [projects, setProjects] = useState<ProjectCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let live = true;
     api.projects()
       .then((p) => { if (live) { setProjects(p); setError(null); } })
       .catch((e: unknown) => { if (live) setError(e instanceof ApiError && e.status === 401 ? 'Unauthorized: add #token=<QA_CORE_GATEWAY_TOKEN> to the URL.' : (e as Error).message); });
     return () => { live = false; };
-  }, [refreshKey]);
+  }, [refreshKey, reload]);
 
   if (error) return <EmptyState title="Could not load projects">{error}</EmptyState>;
   if (projects === null) return <div className="text-s text-fg-3">Loading…</div>;
+  const creator = <CreateProject onCreated={() => setReload((n) => n + 1)} />;
   if (projects.length === 0) {
     return (
-      <EmptyState title="No projects yet" icon={<FolderOpen className="h-8 w-8" />}>
-        A project appears for every host you explore. Run <code className="mono">npm run explore -- https://your-app.example/</code> (or start a run from the legacy UI at <a className="text-accent underline" href="/legacy">/legacy</a>); the index picks it up when the run finishes, or press the reindex button in the header.
-      </EmptyState>
+      <div className="flex flex-col gap-4">
+        {creator}
+        <EmptyState title="No projects yet" icon={<FolderOpen className="h-8 w-8" />}>
+          A project appears for every host you explore, or create one above. Run <code className="mono">npm run explore -- https://your-app.example/</code> or start a run from the Terminal page; the index picks it up when the run finishes, or press the reindex button in the header.
+        </EmptyState>
+      </div>
     );
   }
   // Unassigned (pre-v2 records with no URL) sorts last and is muted; the API orders it last too.
   const ordered = [...projects].sort((a, b) => Number(a.id === UNASSIGNED) - Number(b.id === UNASSIGNED));
   return (
+    <div className="flex flex-col gap-4">
+    {creator}
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="project-grid">
       {ordered.map((p) => p.id === UNASSIGNED ? (
         <Link key={p.id} to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id} data-unassigned="true">
@@ -77,8 +86,49 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
         </Link>
       ))}
     </div>
+    </div>
   );
 }
+
+/** Create a project by host: name, base URL (identity), environment (unset unless chosen). */
+function CreateProject({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [environment, setEnvironment] = useState('');
+  const [error, setError] = useState<{ message: string; existing?: { id: string; name: string } } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    setSaving(true); setError(null);
+    try {
+      await api.createProject({ name: name.trim(), base_url: baseUrl.trim(), environment: environment || null });
+      setName(''); setBaseUrl(''); setEnvironment(''); setOpen(false); onCreated();
+    } catch (e) {
+      const w = e instanceof ApiWriteError ? e : null;
+      const existing = w?.body.existing as { id: string; name: string } | undefined;
+      setError({ message: (e as Error).message, ...(existing ? { existing } : {}) });
+    } finally { setSaving(false); }
+  };
+  return (
+    <details className="rounded-lg border border-line bg-bg-1" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} data-testid="create-project">
+      <summary className="cursor-pointer px-4 py-3 text-m font-semibold">New project <span className="text-s font-normal text-fg-2">by host; a run against that host lands in it</span></summary>
+      <form className="flex flex-wrap items-end gap-3 px-4 pb-4" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Base URL <span className="font-normal text-fg-2">required, the identity</span></span><input className={inputCls} data-testid="new-project-url" placeholder="https://shop.example/" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} /></label>
+        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Name <span className="font-normal text-fg-2">defaults to the host</span></span><input className={inputCls} data-testid="new-project-name" placeholder="shop" value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Environment <span className="font-normal text-fg-2">optional</span></span>
+          <select className={inputCls} data-testid="new-project-env" value={environment} onChange={(e) => setEnvironment(e.target.value)}>
+            <option value="">unset</option>
+            {PROJECT_ENVIRONMENTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </label>
+        <Button type="submit" size="sm" disabled={saving || !baseUrl.trim()} data-testid="new-project-submit">Create</Button>
+        {error ? <span className="text-s text-reject" data-testid="new-project-error">{error.message}{error.existing ? <> <Link to={`/projects/${encodeURIComponent(error.existing.id)}`} className="underline" data-testid="new-project-existing">open {error.existing.name}</Link></> : null}</span> : null}
+      </form>
+    </details>
+  );
+}
+
+const inputCls = 'h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg placeholder:text-fg-2 focus:outline-none focus:ring-2 focus:ring-accent';
 
 function Stat({ label, value, tone, mono, testid, sub }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string; sub?: string }) {
   return (

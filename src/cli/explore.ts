@@ -419,8 +419,9 @@ async function main(): Promise<void> {
     try {
       // The zip lives INSIDE the run directory, next to run-report.json, so a
       // run's files stay together. Zip first, slim, then write the zip.
-      const zipBuf = zipFrameworkToBuffer(outDir);
-      const zipPath = path.join(outDir, `${args.name ? `${args.name}-automation-framework` : frameworkDirName(url)}.zip`);
+      const zipRootName = args.name ? `${args.name}-automation-framework` : frameworkDirName(url);
+      const zipBuf = zipFrameworkToBuffer(outDir, zipRootName);
+      const zipPath = path.join(outDir, `${zipRootName}.zip`);
       slimFrameworkDir(outDir);
       fs.writeFileSync(zipPath, zipBuf);
       frameworkZipPath = zipPath;

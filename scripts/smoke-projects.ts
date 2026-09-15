@@ -22,6 +22,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { newRunId } from '../src/agent/output-layout.js';
+import { projectSrsUploadFor, readProjectSrs } from '../src/server/project-srs.js';
 
 let pass = 0;
 let fail = 0;
@@ -139,6 +140,52 @@ check('L. trends: completed runs in run order, each point equal to its index row
 const legacyRows = rows.filter((r) => r.status === 'legacy');
 check('M. a finding is not a scenario, a pass, or a flake: the runs\' stable and flaky counts equal the report\'s reconciliation, and legacy rows carry no findings', rows.filter((r) => r.status !== 'legacy').every((r) => (r as unknown as { findings: number; stable: number; flaky: number }).findings === 1 && (r as unknown as { stable: number }).stable === r.shipped && (r as unknown as { flaky: number }).flaky === 0) && legacyRows.length === 3 && legacyRows.every((r) => (r as unknown as { findings: number }).findings === 0), JSON.stringify(rows.map((r) => ({ id: r.id, s: r.status }))));
 
+/* ─── projects: create, edit, duplicate host, reindex keeps edits ─── */
+const post = async (p: string, body: unknown, method = 'POST') => { const r = await fetch(base + p, { method, headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() as Record<string, unknown> }; };
+const created = await post('/api/projects', { name: 'New Shop', base_url: 'https://newshop.example/some/path', environment: 'staging' });
+const createdProject = created.body.project as Record<string, unknown> | undefined;
+check('PA. POST /api/projects creates a project whose id follows the host slug rule, base_url is the origin, environment as given', created.status === 201 && createdProject?.id === 'newshop-example' && createdProject?.name === 'New Shop' && createdProject?.base_url === 'https://newshop.example' && createdProject?.environment === 'staging', JSON.stringify(created));
+const unset = await post('/api/projects', { name: '', base_url: 'https://www.another.example/' });
+check('PB. environment left unset is stored null (never a default); an empty name defaults to the host brand', unset.status === 201 && (unset.body.project as Record<string, unknown>).environment === null && (unset.body.project as Record<string, unknown>).id === 'another-example' && (unset.body.project as Record<string, unknown>).name === 'another', JSON.stringify(unset));
+const badUrl = await post('/api/projects', { name: 'x', base_url: 'not a url' });
+check('PC. a base_url that does not parse is a 400', badUrl.status === 400 && /base_url/.test(String(badUrl.body.error)));
+const dup = await post('/api/projects', { name: 'Shop again', base_url: 'https://shop.example/other' });
+check('PD. a host that already has a project is rejected with the existing project linked', dup.status === 409 && (dup.body.existing as Record<string, unknown>)?.id === 'shop-example' && (dup.body.existing as Record<string, unknown>)?.href === '/projects/shop-example' && /already exists/.test(String(dup.body.error)), JSON.stringify(dup));
+const badEnv = await post('/api/projects', { name: 'x', base_url: 'https://envtest.example/', environment: 'prod' });
+check('PE. an environment outside staging / production / other is a 400', badEnv.status === 400 && /environment must be one of/.test(String(badEnv.body.error)));
+const edited = await post('/api/projects/shop-example', { name: 'Shop Renamed', environment: 'production' }, 'PATCH');
+check('PF. PATCH edits name and environment', edited.status === 200 && (edited.body.project as Record<string, unknown>).name === 'Shop Renamed' && (edited.body.project as Record<string, unknown>).environment === 'production', JSON.stringify(edited));
+const editUrl = await post('/api/projects/shop-example', { base_url: 'https://elsewhere.example/' }, 'PATCH');
+check('PG. base_url is identity and cannot be edited', editUrl.status === 400 && /identity/.test(String(editUrl.body.error)));
+const envClear = await post('/api/projects/newshop-example', { environment: '' }, 'PATCH');
+check('PH. clearing the environment stores null', envClear.status === 200 && (envClear.body.project as Record<string, unknown>).environment === null);
+// A run for an unknown host still auto-creates its project as before.
+const autoId = newRunId(new Date('2026-09-13T10:00:00Z'), 'auto');
+writeRun('autohost-example', autoId, { ...mk('https://autohost.example/', '2026-09-13T10:00:00.000Z', 1, 1), findings: [], plan: [{ name: 'scenario 1', category: 'happy', rationale: 'r' }], reconciliation: { planned: 1, generated: 1, dropped: [], incomplete: [], findings: [], skipped: [], accountedFor: 1, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0 } });
+const reindexAfterCreate = await (await fetch(`${base}/api/reindex`, { method: 'POST', headers: auth })).json() as { result: { runs: number } };
+const afterReindex = (await get<{ projects: Array<{ id: string; name: string; environment: string | null }> }>('/api/projects')).projects;
+check('PI. a re-index never overwrites a person-set name or environment', afterReindex.find((p) => p.id === 'shop-example')?.name === 'Shop Renamed' && afterReindex.find((p) => p.id === 'shop-example')?.environment === 'production' && afterReindex.find((p) => p.id === 'newshop-example')?.name === 'New Shop', JSON.stringify(afterReindex.map((p) => [p.id, p.name, p.environment])));
+check('PJ. the indexer still auto-creates a project for an unknown host, named by brand, environment null', afterReindex.find((p) => p.id === 'autohost-example')?.name === 'autohost' && afterReindex.find((p) => p.id === 'autohost-example')?.environment === null);
+
+/* ─── project-level SRS: storage and versioning ─── */
+const srsA = Buffer.from('# SRS v1\nR1 login works').toString('base64');
+const srsB = Buffer.from('# SRS v2\nR1 login works\nR2 lockout').toString('base64');
+const up1 = await post('/api/projects/shop-example/srs', { name: 'requirements.md', base64: srsA });
+type SrsState = { current: { file: string; original_name: string; path: string; uploaded_at: string; size: number } | null; previous: Array<{ file: string; path: string; uploaded_at: string }> };
+const s1 = up1.body as unknown as SrsState;
+check('SA. uploading a project SRS stores it under output/<slug>/srs/<original name> with its upload time', up1.status === 200 && s1.current?.file === 'requirements.md' && s1.current?.path === 'output/shop-example/srs/requirements.md' && fs.existsSync(path.join(root, s1.current!.path)) && /^\d{4}-\d{2}-\d{2}T/.test(s1.current!.uploaded_at) && s1.previous.length === 0, JSON.stringify(up1));
+await new Promise((r) => setTimeout(r, 1100));
+const up2 = await post('/api/projects/shop-example/srs', { name: 'requirements.md', base64: srsB });
+const s2 = up2.body as unknown as SrsState;
+check('SB. replacing it keeps the previous file renamed with its upload time; the new one takes the original name', up2.status === 200 && s2.current?.file === 'requirements.md' && s2.previous.length === 1 && /^requirements\.\d{8}T\d{6}Z\.md$/.test(s2.previous[0]!.file) && fs.readFileSync(path.join(root, s2.previous[0]!.path), 'utf8').startsWith('# SRS v1') && fs.readFileSync(path.join(root, s2.current!.path), 'utf8').startsWith('# SRS v2') && s2.previous[0]!.uploaded_at === s1.current!.uploaded_at, JSON.stringify(s2));
+check('SC. GET /api/projects/:id/srs reads the same state from the folder; the card and detail carry the current SRS', JSON.stringify(await get('/api/projects/shop-example/srs')) === JSON.stringify(readProjectSrs(root, 'shop-example')) && (await get<{ projects: Array<{ id: string; srs: { name: string } | null }> }>('/api/projects')).projects.find((p) => p.id === 'shop-example')?.srs?.name === 'requirements.md' && ((await get<{ srs: SrsState }>('/api/projects/shop-example')).srs.previous.length === 1));
+const badSrs = await post('/api/projects/shop-example/srs', { name: 'setup.exe', base64: 'TVo=' });
+check('SD. the project SRS upload uses the same validator: a .exe is refused naming the four types', badSrs.status === 400 && /Allowed: \.md, \.txt, \.pdf, \.docx\./.test(String(badSrs.body.error)));
+const upload = projectSrsUploadFor(root, 'shop-example');
+check('SE. the run copy is the current file under its original name (what the gateway saves into a run folder)', upload?.name === 'requirements.md' && upload?.base64 === srsB);
+const reindexAfterSrs = await (await fetch(`${base}/api/reindex`, { method: 'POST', headers: auth })).json() as { result: { runs: number } };
+check('SF. the srs folder is not a run: re-indexing counts the same runs as before the upload and keeps the SRS state', reindexAfterSrs.result.runs === reindexAfterCreate.result.runs && readProjectSrs(root, 'shop-example').current?.file === 'requirements.md' && (await get<{ projects: Array<{ id: string; srs_path: string | null }> }>('/api/projects')).projects.find((p) => p.id === 'shop-example')?.srs_path === 'output/shop-example/srs/requirements.md', JSON.stringify(reindexAfterSrs));
+
 /* ─── the pages ─── */
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
@@ -177,7 +224,7 @@ const proj = await page.evaluate(() => ({
   points: Array.from(document.querySelectorAll('[data-testid="trend-chart"]')).map((c) => ({ metric: c.getAttribute('data-metric'), pts: Array.from(c.querySelectorAll('[data-testid="trend-point"]')).map((p) => ({ run: p.getAttribute('data-run-id'), value: Number(p.getAttribute('data-value')), label: p.getAttribute('data-label') })) })),
   findingColor: getComputedStyle(document.documentElement).getPropertyValue('--finding').trim(),
 }));
-check('Q. project page: header with name, base URL as a new-tab link, no environment badge when unset; n/a-free numbers with the pre-v2 sub-line', proj.name === 'shop' && proj.url === 'https://shop.example/' && proj.target === '_blank' && !proj.env && proj.shipped === '7' && proj.sub === '3 pre-v2 runs, 9 scenarios explored' && proj.openFindings === '1' && /unresolved findings/.test(proj.headerText) && /\$\d+\.\d{4}$/.test(proj.spend ?? ''), JSON.stringify({ name: proj.name, url: proj.url, target: proj.target, shipped: proj.shipped, sub: proj.sub, spend: proj.spend }));
+check('Q. project page: header with the person-set name, base URL as a new-tab link, the set environment badge; n/a-free numbers with the pre-v2 sub-line', proj.name === 'Shop Renamed' && proj.url === 'https://shop.example/' && proj.target === '_blank' && proj.env === true && proj.shipped === '7' && proj.sub === '3 pre-v2 runs, 9 scenarios explored' && proj.openFindings === '1' && /unresolved findings/.test(proj.headerText) && /\$\d+\.\d{4}$/.test(proj.spend ?? ''), JSON.stringify({ name: proj.name, url: proj.url, target: proj.target, shipped: proj.shipped, sub: proj.sub, spend: proj.spend }));
 check('R. project page: the runs table lists the 2 reported and 3 legacy runs, and never the finding scenario', proj.runRows.length === 5 && proj.runRows.includes(r1) && proj.runRows.includes(r2) && !/footer social links open/.test(proj.runsText), JSON.stringify(proj.runRows));
 check('S. project page: the finding is one row, violet heading "Product behavior to review", seen 2 times, status triaged with its notes', proj.findingRows.length === 1 && proj.findingRows[0]?.status === 'triaged' && proj.findingRows[0]?.times === '2' && proj.findingRows[0]?.notes === 'seen by hand; twitter opens in the same tab' && /^Product behavior to review/.test(proj.headingText), JSON.stringify(proj.findingRows));
 check('T. project page: coverage lists R1..R4 with latest classification, last covered run for covered rules, "never" for the rest, and the not-automated list with reasons', proj.ruleRows.map((r) => r.id).join(',') === 'R1,R2,R3,R4' && proj.ruleRows.filter((r) => r.status === 'covered').length === 2 && proj.ruleRows.find((r) => r.id === 'R3')?.last === 'never' && proj.notAutomated.length === 2 && /R3/.test(proj.notAutomated[0] ?? '') && /planned, dropped/.test(proj.notAutomated[0] ?? '') && /R4/.test(proj.notAutomated[1] ?? '') && /not planned/.test(proj.notAutomated[1] ?? ''), JSON.stringify({ rules: proj.ruleRows, na: proj.notAutomated }));
@@ -216,11 +263,39 @@ const plainPage = await page.evaluate(() => ({ noSrs: document.querySelector('[d
 check('X. a project without SRS runs says "No SRS runs. Attach an SRS on the Terminal page to get requirements coverage." instead of an empty table', /^No SRS runs\. Attach an SRS on the Terminal page to get requirements coverage\./.test(plainPage.noSrs) && plain.reported_runs === 1, plainPage.noSrs);
 check('Y. a project with one completed run charts the single point and says a trend needs two', plainPage.points === 3 && /1 completed run\. A trend needs two runs; this is the single point\./.test(plainPage.caption) && plainPage.noFindings, JSON.stringify(plainPage));
 
+// Project page: edit form and the requirements document section.
+await page.goto(`${base}/projects/shop-example#token=${TOKEN}`, { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="project-srs-current"]');
+const srsSection = await page.evaluate(() => ({ current: document.querySelector('[data-testid="project-srs-current"]')?.textContent ?? '', previous: document.querySelectorAll('[data-testid="project-srs-previous-row"]').length, name: document.querySelector('[data-testid="project-name"]')?.textContent, env: document.querySelector('[data-testid="env-badge"]')?.textContent ?? null, url: document.querySelector('[data-testid="project-url"]')?.textContent }));
+check('PP. project page: the person-set name and environment render; the requirements document shows the current file and one previous upload', srsSection.name === 'Shop Renamed' && srsSection.env === 'production' && /requirements\.md/.test(srsSection.current) && srsSection.previous === 1, JSON.stringify(srsSection));
+await page.click('[data-testid="edit-project"]');
+await page.fill('[data-testid="edit-project-name"]', 'Shop Final');
+await page.selectOption('[data-testid="edit-project-env"]', '');
+await page.click('[data-testid="edit-project-save"]');
+await page.waitForFunction(() => document.querySelector('[data-testid="project-name"]')?.textContent === 'Shop Final');
+check('PQ. project page: inline edit saves name and clears the environment (no badge); base URL stays read-only', (await page.textContent('[data-testid="project-name"]')) === 'Shop Final' && !(await page.$('[data-testid="env-badge"]')) && !(await page.$('[data-testid="edit-project-form"]')) && (await get<{ project: { environment: string | null; base_url: string } }>('/api/projects/shop-example')).project.environment === null && (await get<{ project: { base_url: string } }>('/api/projects/shop-example')).project.base_url === 'https://shop.example/');
+// Terminal: the project SRS is the default for a URL on this host, the per-run attach overrides it.
+await page.goto(`${base}/terminal#token=${TOKEN}`, { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="composer"]');
+await page.fill('[data-testid="f-url"]', 'https://shop.example/login');
+await page.waitForSelector('[data-testid="project-srs-option"]');
+const srsOption = await page.evaluate(() => ({ text: document.querySelector('[data-testid="project-srs-option"]')?.textContent ?? '', checked: (document.querySelector('[data-testid="use-project-srs"]') as HTMLInputElement).checked }));
+check('PR. Terminal: a URL on a host with a project SRS offers "use project SRS (<name>, uploaded <date>)" checked by default', /use project SRS \(requirements\.md, uploaded /.test(srsOption.text) && srsOption.checked, JSON.stringify(srsOption));
+await page.fill('[data-testid="f-url"]', 'https://plain.example/');
+await page.waitForFunction(() => !document.querySelector('[data-testid="project-srs-option"]'));
+check('PS. Terminal: a host without a project SRS offers nothing', !(await page.$('[data-testid="project-srs-option"]')));
+await page.fill('[data-testid="f-url"]', 'https://shop.example/');
+await page.waitForSelector('[data-testid="project-srs-option"]');
+const attach = path.join(root, 'attach.md'); fs.writeFileSync(attach, '# per-run');
+await page.setInputFiles('[data-testid="f-srs"]', attach);
+await page.waitForSelector('[data-testid="project-srs-overridden"]');
+check('PT. Terminal: a per-run attach overrides the project SRS and says so', /overrides the project SRS \(requirements\.md\)/.test((await page.textContent('[data-testid="project-srs-overridden"]')) ?? ''));
+
 // Findings and Coverage pages.
 await page.goto(`${base}/findings#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="finding-row"]');
 const findingsPage = await page.evaluate(() => ({ rows: document.querySelectorAll('[data-testid="finding-row"]').length, project: document.querySelector('[data-testid="finding-row"] a')?.textContent, heading: document.querySelector('[data-testid="findings-heading"]')?.textContent }));
-check('Z. /findings lists the deduped finding with its project under the violet heading', findingsPage.rows === 1 && findingsPage.project === 'shop' && /^Product behavior to review/.test(findingsPage.heading ?? ''), JSON.stringify(findingsPage));
+check('Z. /findings lists the deduped finding with its project under the violet heading', findingsPage.rows === 1 && findingsPage.project === 'Shop Final' && /^Product behavior to review/.test(findingsPage.heading ?? ''), JSON.stringify(findingsPage));
 await page.selectOption('[data-testid="filter-status"]', 'open');
 await page.waitForFunction(() => document.querySelectorAll('[data-testid="finding-row"]').length === 0);
 check('Z2. /findings status filter narrows (the finding is fixed, so "open" shows none)', (await page.$$('[data-testid="finding-row"]')).length === 0 && /status=open/.test(page.url()));

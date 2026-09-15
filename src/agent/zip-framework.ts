@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -26,6 +27,24 @@ import path from 'node:path';
 
 const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB — pathological cap, real frameworks are <1 MB
 
+/**
+ * Where to run `zip` from and what to name the archive root. By default the
+ * root is the source directory's own name. A run directory is named by its
+ * run id, so callers pass `rootName` (the <brand>-automation-framework name)
+ * and the directory is zipped through a same-named symlink in a temporary
+ * wrapper; `zip -r` follows directory symlinks, so the entries land under
+ * the requested root. `cleanup` removes the wrapper.
+ */
+function zipRoot(srcDir: string, rootName?: string): { cwd: string; base: string; cleanup: () => void } {
+  const resolved = path.resolve(srcDir);
+  const base = path.basename(resolved);
+  if (!rootName || rootName === base) return { cwd: path.dirname(resolved), base, cleanup: () => {} };
+  if (!/^[A-Za-z0-9._-]+$/.test(rootName)) throw new Error(`zip root name must be a plain directory name (got "${rootName}")`);
+  const wrapper = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-zip-'));
+  fs.symlinkSync(resolved, path.join(wrapper, rootName), 'dir');
+  return { cwd: wrapper, base: rootName, cleanup: () => { try { fs.rmSync(wrapper, { recursive: true, force: true }); } catch { /* best effort */ } } };
+}
+
 export interface ZipResult {
   /** Absolute path to the .zip on disk. */
   zipPath: string;
@@ -38,17 +57,16 @@ export interface ZipResult {
  * as its top-level folder (so unzipping it produces `srcDir-basename/...`,
  * not loose files dumped into cwd).
  */
-export function zipFrameworkToFile(srcDir: string, destZipPath: string): ZipResult {
+export function zipFrameworkToFile(srcDir: string, destZipPath: string, rootName?: string): ZipResult {
   if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     throw new Error(`Source is not a directory: ${srcDir}`);
   }
   // Overwrite any pre-existing zip rather than letting `zip` append into it.
   if (fs.existsSync(destZipPath)) fs.unlinkSync(destZipPath);
 
-  const parent = path.dirname(path.resolve(srcDir));
-  const base = path.basename(srcDir);
-
-  const result = spawnSync('zip', ['-rqX', destZipPath, base], { cwd: parent, encoding: 'buffer' });
+  const root = zipRoot(srcDir, rootName);
+  const result = spawnSync('zip', ['-rqX', path.resolve(destZipPath), root.base], { cwd: root.cwd, encoding: 'buffer' });
+  root.cleanup();
   if (result.error) {
     throw new Error(
       `Failed to invoke 'zip': ${result.error.message}. ` +
@@ -73,18 +91,18 @@ export function zipFrameworkToFile(srcDir: string, destZipPath: string): ZipResu
  * Throws if the result would exceed `MAX_ZIP_BYTES` — that's a sanity cap
  * against pathological inputs, real generated frameworks are well under 1 MB.
  */
-export function zipFrameworkToBuffer(srcDir: string): Buffer {
+export function zipFrameworkToBuffer(srcDir: string, rootName?: string): Buffer {
   if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     throw new Error(`Source is not a directory: ${srcDir}`);
   }
-  const parent = path.dirname(path.resolve(srcDir));
-  const base = path.basename(srcDir);
+  const root = zipRoot(srcDir, rootName);
 
   // `zip -rqX -` writes the archive to stdout.
-  const result = spawnSync('zip', ['-rqX', '-', base], {
-    cwd: parent,
+  const result = spawnSync('zip', ['-rqX', '-', root.base], {
+    cwd: root.cwd,
     maxBuffer: MAX_ZIP_BYTES,
   });
+  root.cleanup();
   if (result.error) {
     throw new Error(
       `Failed to invoke 'zip': ${result.error.message}. ` +

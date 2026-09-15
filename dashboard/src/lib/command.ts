@@ -133,6 +133,17 @@ export function validateSrsFile(name: string, sizeBytes: number): string | null 
   return null;
 }
 
+/** The exact command Run Detail sends to continue a stopped run: /resume <checkpoint path> [--ceiling N]. Parsed by the gateway like any typed command. */
+export function resumeCommand(checkpointPath: string, ceiling?: string): string {
+  const c = (ceiling ?? '').trim();
+  return `/resume ${quote(checkpointPath)}${c ? ` --ceiling ${c}` : ''}`;
+}
+
+/** The exact command Run Detail sends to regenerate a completed run's framework: /transcribe <run-report path>. */
+export function transcribeCommand(reportPath: string): string {
+  return `/transcribe ${quote(reportPath)}`;
+}
+
 /** Why Start is disabled, or null when it may run. */
 export function startBlocker(input: { socket: string; activeRunId: string | null; command: string }): string | null {
   if (input.socket !== 'connected') return 'the gateway socket is not connected';

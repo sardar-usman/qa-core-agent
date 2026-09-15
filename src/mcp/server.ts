@@ -36,7 +36,7 @@ import { heal } from '../cli/heal.js';
 import { runExploreRequest, runTranscribeRequest, type RunExploreOutcome } from '../server/run-explore.js';
 import {
   exploreArgs, resumeArgs, transcribeArgs, generateArgs, healArgs,
-  exploreRequestFromToolArgs, resumeRequestFromToolArgs,
+  exploreRequestFromToolArgs, resumeRequestFromToolArgs, srsUploadFromToolArgs,
 } from './tools.js';
 import type { ExploreRequest } from '../agent/explore-request.js';
 
@@ -117,11 +117,12 @@ function outcomeText(outcome: RunExploreOutcome): { text: string; isError: boole
   return { text: lines.join('\n'), isError: false };
 }
 
-async function runRequest(request: ExploreRequest): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+async function runRequest(request: ExploreRequest, srsUpload?: { name: string; base64: string }): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   requireApiKey();
   const notes: string[] = [];
   const outcome = await runExploreRequest({
     request, projectRoot: PROJECT_ROOT, source: 'mcp',
+    ...(srsUpload ? { srsUpload } : {}),
     onNote: (n) => { notes.push(n); log(n); },
     onEvent: (e) => {
       if (e.type === 'plan_done') log(`${e.scenarios.length} scenarios planned`);
@@ -138,17 +139,10 @@ server.tool(
   'Drive a real Chromium browser through a URL and generate a Playwright Page Object Model framework. Pipeline: Planner (Haiku) → Explorer (Opus, tool-use) → Critic (Sonnet, verdicts + one repair pass) → Reality-Check replay → Stability (3x) → framework + zip. Every argument mirrors a CLI flag (named in its description). Takes 30-120s, longer for multi-page runs. Returns the run summary, the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped), rule coverage on SRS runs, and the paths of the report and zip.',
   exploreArgs,
   async (args) => {
-    let srsPathFromText: string | undefined;
-    if (!args.srs && args.srsText) {
-      const dir = projectFile('output', '.uploads');
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, `${runId()}-srs.md`);
-      fs.writeFileSync(file, args.srsText);
-      srsPathFromText = path.relative(PROJECT_ROOT, file);
-    }
-    const request = exploreRequestFromToolArgs(args, srsPathFromText);
+    // Inline SRS text goes into the run folder through the request layer, the same path a dashboard upload takes.
+    const request = exploreRequestFromToolArgs(args);
     log('explore', request.url ?? '');
-    return runRequest(request);
+    return runRequest(request, srsUploadFromToolArgs(args));
   },
 );
 
@@ -168,8 +162,8 @@ server.tool(
   'Regenerate the Playwright framework and zip from an existing run-report.json without exploring again. No browser, no model call: the same emission the explore pipeline runs after its last stage. Use it after emitter changes or to recover a deliverable. Same as the CLI: npm run transcribe -- <run-report.json> [--out <dir>].',
   transcribeArgs,
   async (args) => {
-    const outcome = runTranscribeRequest({ reportPath: args.reportPath, ...(args.outDir ? { outDir: args.outDir } : {}) }, PROJECT_ROOT);
-    const zipPath = path.join(path.dirname(path.relative(PROJECT_ROOT, outcome.outDir)), outcome.zip.filename);
+    const outcome = runTranscribeRequest({ reportPath: args.reportPath, ...(args.outDir ? { outDir: args.outDir } : {}) }, PROJECT_ROOT, 'mcp');
+    const zipPath = path.relative(PROJECT_ROOT, outcome.zipPath);
     const lines = [
       ...outcome.notes,
       `✓ ${outcome.zip.scenarios} scenarios, ${outcome.zip.fileCount} files`,

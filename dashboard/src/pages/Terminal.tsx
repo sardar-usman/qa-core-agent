@@ -6,6 +6,9 @@ import { startCommand, useGateway } from '@/lib/gateway';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { buildCommand, defaultForm, formFromRequest, startBlocker, validateSrsFile, type TerminalForm } from '@/lib/command';
+import { useSessionOverrides } from '@/lib/session-overrides';
+import { Link } from 'react-router-dom';
+import { fmtDate } from '@/lib/utils';
 
 /**
  * The Terminal: start a QA-Core run from the dashboard and watch it live.
@@ -29,6 +32,10 @@ export function TerminalPage() {
   const [srs, setSrs] = useState<{ name: string; size: number; base64: string } | null>(null);
   const [srsError, setSrsError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const overrides = useSessionOverrides();
+  // The project the URL lands in (the indexer's host slug rule) and its requirements document, if any.
+  const [projectSrs, setProjectSrs] = useState<{ projectId: string; name: string; uploadedAt: string } | null>(null);
+  const [useProjectSrs, setUseProjectSrs] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
   // Who edited last decides the direction: the form rewrites the command, the command refills the form.
   const source = useRef<'form' | 'raw'>('form');
@@ -43,15 +50,25 @@ export function TerminalPage() {
   // that parses as /explore fills the form from the parsed request.
   useEffect(() => {
     let live = true;
+    const url = form.url.trim();
+    if (!/^https?:\/\/[^/]+/i.test(url)) { setProjectSrs(null); return () => { live = false; }; }
     const t = setTimeout(() => {
-      api.parseCommand(command, form.lang).then((p) => {
+      api.matchProject(url).then((m) => { if (live) setProjectSrs(m.project_id && m.srs ? { projectId: m.project_id, name: m.srs.original_name, uploadedAt: m.srs.uploaded_at } : null); }).catch(() => { if (live) setProjectSrs(null); });
+    }, 250);
+    return () => { live = false; clearTimeout(t); };
+  }, [form.url]);
+
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => {
+      api.parseCommand(command, form.lang, overrides).then((p) => {
         if (!live) return;
         setParsed(p); setParseError(null);
         if (source.current === 'raw' && p.ok && p.kind === 'explore') setForm(formFromRequest(p.request as Parameters<typeof formFromRequest>[0]));
       }).catch((e: unknown) => { if (live) { setParsed(null); setParseError((e as Error).message); } });
     }, 250);
     return () => { live = false; clearTimeout(t); };
-  }, [command, form.lang]);
+  }, [command, form.lang, overrides]);
 
   // A run_started for our command: go watch it.
   const liveId = gw.live?.runId ?? null;
@@ -74,7 +91,10 @@ export function TerminalPage() {
   const start = () => {
     if (!canStart) return;
     setStarting(true);
-    const ok = startCommand({ content: command.trim(), lang: form.lang, ...(srs ? { srs: { name: srs.name, base64: srs.base64 } } : {}) });
+    const ok = startCommand({
+      content: command.trim(), lang: form.lang, env: overrides,
+      ...(srs ? { srs: { name: srs.name, base64: srs.base64 } } : projectSrs && useProjectSrs ? { srsProject: projectSrs.projectId } : {}),
+    });
     if (!ok) setStarting(false);
   };
 
@@ -140,6 +160,14 @@ export function TerminalPage() {
               {srs ? <Button type="button" variant="ghost" size="sm" onClick={() => { setSrs(null); if (fileRef.current) fileRef.current.value = ''; }} aria-label="Remove SRS"><X className="h-3.5 w-3.5" /></Button> : null}
             </div>
             {srsError ? <div className="mt-1 text-s text-reject" data-testid="srs-error">{srsError}</div> : null}
+            {projectSrs && !srs ? (
+              <label className="mt-1 flex items-center gap-2 text-s text-fg" data-testid="project-srs-option">
+                <input type="checkbox" checked={useProjectSrs} onChange={(e) => setUseProjectSrs(e.target.checked)} data-testid="use-project-srs" />
+                <span>use project SRS (<span className="mono">{projectSrs.name}</span>, uploaded {fmtDate(projectSrs.uploadedAt)})</span>
+                <span className="text-fg-2">a copy is saved into the run folder</span>
+              </label>
+            ) : null}
+            {projectSrs && srs ? <div className="mt-1 text-s text-fg-2" data-testid="project-srs-overridden">The attached file overrides the project SRS ({projectSrs.name}).</div> : null}
           </Field>
         </div>
       </section>
@@ -150,6 +178,13 @@ export function TerminalPage() {
           <span>this exact text is sent to the gateway; edit it and the form follows</span>
         </div>
         <textarea className={`${inputCls} mono min-h-[64px] w-full resize-y`} data-testid="command" value={command} onChange={(e) => onRaw(e.target.value)} spellCheck={false} />
+        {Object.keys(overrides).length ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-s" data-testid="session-overrides">
+            <span className="text-fg-2">sent with this command as per-run settings:</span>
+            {Object.entries(overrides).map(([k, v]) => <Badge key={k} variant="accent" data-testid="override-chip" data-name={k}>session override <span className="mono">{k.replace('QA_CORE_', '').toLowerCase().replace(/_/g, ' ')} = {v}</span></Badge>)}
+            <Link to="/settings" className="text-accent underline">change or clear in Settings</Link>
+          </div>
+        ) : null}
         {srs ? <div className="mt-1 text-s text-fg-2" data-testid="command-srs-note">SRS attached: {srs.name}. It is sent with the command and saved into the run folder, then passed to the run as --srs.</div> : null}
         <div className="mt-2 text-s" data-testid="parsed">
           {parseError ? <span className="text-reject">{parseError}</span>
