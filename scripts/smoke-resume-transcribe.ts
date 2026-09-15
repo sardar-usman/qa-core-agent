@@ -26,6 +26,7 @@ import { newRunId } from '../src/agent/output-layout.js';
 import { resumeCommand, transcribeCommand } from '../dashboard/src/lib/command.js';
 import { spawnSync } from 'node:child_process';
 import { runTranscribeRequest } from '../src/server/run-explore.js';
+import { appendRunNote } from '../src/server/events.js';
 
 let pass = 0;
 let fail = 0;
@@ -147,10 +148,11 @@ const repo = process.cwd();
 const dist = path.join(repo, 'dashboard', 'dist');
 if (!fs.existsSync(path.join(dist, 'index.html'))) { console.error('dashboard/dist is missing. Run `npm run dashboard:build` first.'); process.exit(1); }
 const apiHandler = createApiHandler({ db, root, token: TOKEN });
-const statik = createStaticHandler({ distDir: dist, legacyFile: path.join(repo, 'qa-core-ui.html') });
+const statik = createStaticHandler({ distDir: dist });
 const server = http.createServer(async (req, res) => { if (await apiHandler(req, res)) return; if (statik(req, res)) return; res.writeHead(404); res.end(); });
 const wss = new WebSocketServer({ server });
 const send = (ws: WebSocket, p: object) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(p)); };
+const REGEN_AT = '2026-09-15T12:34:56.000Z';
 let busy: { run_id: string; run_dir: string; url: string; started_at: string } | null = null;
 const received: Array<Record<string, unknown>> = [];
 const broadcastActive = () => { for (const c of wss.clients) send(c, { type: 'active_run', run: busy }); };
@@ -178,8 +180,8 @@ wss.on('connection', (ws) => {
       fs.writeFileSync(path.join(dir, 'shop-regenerated-automation-framework.zip'), 'PK2');
       const loaded = loadReportForUi(root, cmd.reportPath);
       send(ws, { text: `▸ Transcribing ${cmd.reportPath} (no exploration, no model call)` });
-      send(ws, { type: 'run_report', report: loaded.report, outcome: { kind: 'framework', reportPath: cmd.reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true } });
-      send(ws, { type: 'framework_zip', filename: 'shop-regenerated-automation-framework.zip', base64: Buffer.from('PK2').toString('base64'), sizeBytes: 3, fileCount: 1, scenarios: 2, runReportPath: cmd.reportPath });
+      appendRunNote(dir, { type: 'transcribe', source: 'dashboard' }, new Date(REGEN_AT));
+      send(ws, { type: 'run_report', report: loaded.report, outcome: { kind: 'framework', reportPath: cmd.reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true, at: REGEN_AT, zip: { filename: 'shop-regenerated-automation-framework.zip', fileCount: 15, sizeBytes: 14104, scenarios: 2 } } });
       return;
     }
     send(ws, { text: `✗ unexpected command ${String(msg.content)}` });
@@ -225,6 +227,11 @@ const zipsAfter = await page.$$eval('[data-testid="artifact-link"][data-kind="zi
 const regenMsg = received.find((m) => String(m.content).startsWith('/transcribe'));
 check('G. Regenerate sends /transcribe <run-report path> through the gateway parser', regenMsg?.content === transcribeCommand(reportRel) && parseGatewayCommand(String(regenMsg?.content), { lang: 'ts' }).kind === 'transcribe', JSON.stringify(regenMsg));
 check('H. when the new zip lands the artifacts list refreshes from disk', zipsBefore.length === 1 && zipsAfter.length === 2 && zipsAfter.some((z) => /regenerated/.test(z)), JSON.stringify({ zipsBefore, zipsAfter }));
+await page.waitForSelector('[data-testid="regenerated-note"]');
+const regen = await page.evaluate((at) => ({ note: document.querySelector('[data-testid="regenerated-note"]')?.textContent ?? '', expectedTime: new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), pin: document.querySelector('[data-testid="transcribe-pin"]')?.textContent ?? '', pinFirst: document.querySelector('[data-testid="events-section"] [data-testid="transcribe-pin"]') === document.querySelector('[data-testid="events-section"] summary')?.nextElementSibling }), REGEN_AT);
+check('H2. the run page confirms "Framework regenerated at <time>, N files, X KB" from the transcribe result', regen.note === `Framework regenerated at ${regen.expectedTime}, 15 files, 13.8 KB`, JSON.stringify(regen));
+if (process.env.QA_CORE_SMOKE_SHOTS) { fs.mkdirSync(process.env.QA_CORE_SMOKE_SHOTS, { recursive: true }); await page.screenshot({ path: path.join(process.env.QA_CORE_SMOKE_SHOTS, 'run-regenerated.png'), fullPage: false }); }
+check('H3. the transcribe event is pinned at the top of the Events section', /framework regenerated .* via dashboard/.test(regen.pin) && regen.pinFirst, JSON.stringify(regen));
 
 // Resume with a ceiling: the command, then the live view of the same run id.
 await actions(stoppedId);

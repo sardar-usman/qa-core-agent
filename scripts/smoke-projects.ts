@@ -87,7 +87,7 @@ const PORT = 18796;
 const TOKEN = 'projects-token';
 const gw = spawn('npx', ['tsx', path.join(repo, 'src', 'server', 'gateway.ts')], {
   cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_LEGACY_UI: path.join(repo, 'qa-core-ui.html'), QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: 'unused' },
+  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: 'unused' },
 });
 const killGw = (): void => { if (gw.pid) { try { process.kill(-gw.pid, 'SIGKILL'); } catch { /* gone */ } } };
 process.on('exit', killGw);
@@ -206,7 +206,8 @@ const shopCard = cards.find((c) => c.id === 'shop-example')!;
 check('O. page: a card with reported runs shows its numbers and its pre-v2 sub-line; cards open the project page', shopCard.shipped === '7' && shopCard.findings === '1' && shopCard.sub === '3 pre-v2 runs, 9 scenarios explored' && shopCard.href === '/projects/shop-example', JSON.stringify(shopCard));
 check('O2. page: the card\'s spend renders through the shared 4-decimal formatter and its label reads "unresolved findings"', shopCard.spend === `$${shop.spend_month.toFixed(4)}` && /\$\d+\.\d{4}$/.test(shopCard.spend ?? '') && /unresolved findings/.test(shopCard.text ?? ''), JSON.stringify({ spend: shopCard.spend, api: shop.spend_month }));
 const last = cards[cards.length - 1]!;
-check('P. page: Unassigned sorts last, is muted, and reads "N pre-v2 records with no URL"', last.id === 'unassigned' && last.unassigned === 'true' && last.note === '1 pre-v2 record with no URL' && Number(last.opacity) < 1 && last.shipped === null, JSON.stringify(last));
+check('P. page: Unassigned sorts last, is muted, and reads "N pre-v2 records with no URL, <date range>"', last.id === 'unassigned' && last.unassigned === 'true' && /^1 pre-v2 record with no URL, \w{3} \d{1,2}(, \d{4})?$/.test(last.note ?? '') && Number(last.opacity) < 1 && last.shipped === null, JSON.stringify(last));
+check('P2. page: the legacy-only card\'s n/a values carry the tooltip "no reported runs; pre-v2 records only"', (await page.getAttribute('[data-testid="project-card"][data-project-id="demoqa-com"] [data-testid="shipped"]', 'title')) === 'no reported runs; pre-v2 records only' && (await page.getAttribute('[data-testid="project-card"][data-project-id="demoqa-com"] [data-testid="unresolved-findings"]', 'title')) === 'no reported runs; pre-v2 records only');
 
 await page.click('[data-testid="project-card"][data-project-id="shop-example"]');
 await page.waitForSelector('[data-testid="project-page"][data-project-id="shop-example"]');
@@ -222,6 +223,7 @@ const proj = await page.evaluate(() => ({
   notAutomated: Array.from(document.querySelectorAll('[data-testid="not-automated-row"]')).map((r) => r.textContent ?? ''),
   caption: document.querySelector('[data-testid="trends-caption"]')?.textContent ?? '',
   points: Array.from(document.querySelectorAll('[data-testid="trend-chart"]')).map((c) => ({ metric: c.getAttribute('data-metric'), pts: Array.from(c.querySelectorAll('[data-testid="trend-point"]')).map((p) => ({ run: p.getAttribute('data-run-id'), value: Number(p.getAttribute('data-value')), label: p.getAttribute('data-label') })) })),
+  axes: Array.from(document.querySelectorAll('[data-testid="trend-chart"]')).map((c) => ({ metric: c.getAttribute('data-metric'), min: c.getAttribute('data-axis-min'), max: c.getAttribute('data-axis-max') })),
   findingColor: getComputedStyle(document.documentElement).getPropertyValue('--finding').trim(),
 }));
 check('Q. project page: header with the person-set name, base URL as a new-tab link, the set environment badge; n/a-free numbers with the pre-v2 sub-line', proj.name === 'Shop Renamed' && proj.url === 'https://shop.example/' && proj.target === '_blank' && proj.env === true && proj.shipped === '7' && proj.sub === '3 pre-v2 runs, 9 scenarios explored' && proj.openFindings === '1' && /unresolved findings/.test(proj.headerText) && /\$\d+\.\d{4}$/.test(proj.spend ?? ''), JSON.stringify({ name: proj.name, url: proj.url, target: proj.target, shipped: proj.shipped, sub: proj.sub, spend: proj.spend }));
@@ -230,6 +232,7 @@ check('S. project page: the finding is one row, violet heading "Product behavior
 check('T. project page: coverage lists R1..R4 with latest classification, last covered run for covered rules, "never" for the rest, and the not-automated list with reasons', proj.ruleRows.map((r) => r.id).join(',') === 'R1,R2,R3,R4' && proj.ruleRows.filter((r) => r.status === 'covered').length === 2 && proj.ruleRows.find((r) => r.id === 'R3')?.last === 'never' && proj.notAutomated.length === 2 && /R3/.test(proj.notAutomated[0] ?? '') && /planned, dropped/.test(proj.notAutomated[0] ?? '') && /R4/.test(proj.notAutomated[1] ?? '') && /not planned/.test(proj.notAutomated[1] ?? ''), JSON.stringify({ rules: proj.ruleRows, na: proj.notAutomated }));
 const byMetric: Record<string, Array<{ run: string | null; value: number; label: string | null }>> = Object.fromEntries(proj.points.map((c) => [c.metric ?? '', c.pts]));
 const rowOf = (id: string) => rows.find((x) => x.id === id)!;
+check('U0. project page: the shipped and cost axes start at zero and the flake axis spans 0 to 100%; values stay labeled on the points', proj.axes.find((a) => a.metric === 'shipped')?.min === '0' && proj.axes.find((a) => a.metric === 'cost')?.min === '0' && proj.axes.find((a) => a.metric === 'flake')?.min === '0' && proj.axes.find((a) => a.metric === 'flake')?.max === '1' && proj.points.every((c) => c.pts.every((p) => (p.label ?? '').length > 0)), JSON.stringify(proj.axes));
 check('U. project page: three charts with one labeled point per completed run whose values equal the index rows; the caption names the 3 pre-v2 runs not charted', proj.caption === '2 completed runs; 3 pre-v2 runs not charted' && ['shipped', 'cost', 'flake'].every((m) => byMetric[m]?.length === 2) && byMetric.shipped!.every((p) => p.value === rowOf(p.run!).shipped && p.label === String(rowOf(p.run!).shipped)) && byMetric.cost!.every((p) => p.value === rowOf(p.run!).cost_total && p.label === `$${rowOf(p.run!).cost_total.toFixed(4)}`) && byMetric.flake!.every((p) => p.value === rowOf(p.run!).flake_rate && p.label === `${(rowOf(p.run!).flake_rate * 100).toFixed(1)}%`), JSON.stringify({ caption: proj.caption, points: proj.points }));
 
 // Inline edit on the page: change the status, then reload after a reindex.

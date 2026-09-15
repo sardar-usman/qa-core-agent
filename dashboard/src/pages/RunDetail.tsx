@@ -98,9 +98,12 @@ export function RunDetailPage() {
           <Fact label="started" value={fmtDate(h.started_at)} title={h.started_at ?? ''} testid="detail-started" />
           <Fact label="ended" value={fmtDate(h.ended_at)} title={h.ended_at ?? ''} testid="detail-ended" />
           <Fact label="total cost" value={usd(h.cost.total)} mono cost testid="detail-cost" sub={`planner ${usd(h.cost.planner)} · explorer ${usd(h.cost.explorer)} · critic ${usd(h.cost.critic)}${h.cost.repair ? ` · repair ${usd(h.cost.repair)}` : ''}`} />
-          <Fact label="source" value={h.source} testid="detail-source" sub={h.url ?? undefined} />
+          <Fact label="source" value={h.source} testid="detail-source" sub={h.url ? <a href={h.url} target="_blank" rel="noreferrer" className="text-accent hover:underline" data-testid="detail-site-link">{h.url}</a> : undefined} />
         </dl>
         {h.stopped_reason ? <div className="rounded-md border border-transparent bg-rework-soft px-3 py-2 text-s text-rework" data-testid="detail-stopped">stopped early: {h.stopped_reason}</div> : null}
+        {gw.lastRegenerated && gw.lastRegenerated.reportPath === detail.run.report_path ? (
+          <div className="rounded-md border border-transparent bg-pass-soft px-3 py-2 text-s text-pass" data-testid="regenerated-note">Framework regenerated at {new Date(gw.lastRegenerated.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}, {gw.lastRegenerated.fileCount} files, {(gw.lastRegenerated.sizeBytes / 1024).toFixed(1)} KB</div>
+        ) : null}
       </header>
 
       {detail.legacy ? (
@@ -243,6 +246,7 @@ function EventsSection({ status, events, live = false }: { status: 'present' | '
   return (
     <details className="rounded-lg border border-line bg-bg-1" data-testid="events-section" open={live || undefined}>
       <summary className="cursor-pointer px-4 py-3 text-m font-semibold">Events <span className="text-s font-normal text-fg-3" data-testid="events-status">{status === 'absent' ? 'no events log' : status === 'empty' ? (live ? 'waiting for the first event' : 'none recorded') : `${events!.length} ${live ? 'so far' : 'recorded'}, oldest first`}</span></summary>
+      {status === 'present' && events?.some((e) => e.type === 'transcribe') ? (() => { const t = [...events].reverse().find((e) => e.type === 'transcribe')!; return <div className="mx-4 mb-2 rounded-md bg-pass-soft px-3 py-1.5 text-s text-pass" data-testid="transcribe-pin">framework regenerated {new Date(t.t).toLocaleString()} via {String(t.source ?? 'unknown')}</div>; })() : null}
       {status === 'absent' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">No events log; this run predates event capture</div>
         : status === 'empty' ? <div className="px-4 pb-4 text-s text-fg-3" data-testid="events-note">{live ? 'No events yet' : 'No events recorded'}</div> : (
         <ol className="max-h-[420px] overflow-auto px-4 pb-4 font-mono text-s text-fg-2">
@@ -267,12 +271,12 @@ function BackLink({ projectId, projectName }: { projectId?: string; projectName?
   );
 }
 
-function Fact({ label, value, sub, title, mono, cost, testid }: { label: string; value: string; sub?: string; title?: string; mono?: boolean; cost?: boolean; testid: string }) {
+function Fact({ label, value, sub, title, mono, cost, testid }: { label: string; value: string; sub?: React.ReactNode; title?: string; mono?: boolean; cost?: boolean; testid: string }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1 p-3" title={title}>
       <dd className={`text-l font-semibold leading-none ${mono ? 'mono' : ''} ${cost ? 'text-cost' : ''}`} data-testid={testid}>{value}</dd>
       <dt className="mt-1 text-s text-fg-2">{label}</dt>
-      {sub ? <div className="mt-1 truncate text-s text-fg-3" title={sub}>{sub}</div> : null}
+      {sub ? <div className="mt-1 break-words text-s text-fg-3" data-testid={`${testid}-sub`}>{sub}</div> : null}
     </div>
   );
 }

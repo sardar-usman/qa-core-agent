@@ -53,7 +53,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
               <CardTitle>Unassigned</CardTitle>
               <CardDescription>pre-v2 records with no URL</CardDescription>
             </CardHeader>
-            <CardContent className="text-s text-fg-2" data-testid="unassigned-note">{p.legacy_runs} pre-v2 record{p.legacy_runs === 1 ? '' : 's'} with no URL</CardContent>
+            <CardContent className="text-s text-fg-2" data-testid="unassigned-note">{p.legacy_runs} pre-v2 record{p.legacy_runs === 1 ? '' : 's'} with no URL{p.legacy_first_at ? `, ${dateRange(p.legacy_first_at, p.legacy_last_at)}` : ''}</CardContent>
           </Card>
         </Link>
       ) : (
@@ -71,8 +71,8 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
                 {p.last_run ? (<><span>Last run</span><StatusBadge status={p.last_run.status} /><span>{fmtDate(p.last_run.started_at)}</span></>) : <span>No runs yet</span>}
               </div>
               <dl className="grid grid-cols-3 gap-2">
-                <Stat label="tests shipped" value={p.shipped === null ? 'n/a' : String(p.shipped)} testid="shipped" sub={p.legacy_runs ? `${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
-                <Stat label="unresolved findings" value={p.unresolved_findings === null ? 'n/a' : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} testid="unresolved-findings" />
+                <Stat label="tests shipped" value={p.shipped === null ? 'n/a' : String(p.shipped)} testid="shipped" title={p.shipped === null ? NA_TITLE : undefined} sub={p.legacy_runs ? `${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
+                <Stat label="unresolved findings" value={p.unresolved_findings === null ? 'n/a' : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} testid="unresolved-findings" title={p.unresolved_findings === null ? NA_TITLE : undefined} />
                 <Stat label="spend this month" value={usd(p.spend_month)} tone="cost" mono testid="spend-month" />
               </dl>
               <div className="flex items-center justify-between text-s text-fg-3">
@@ -130,10 +130,18 @@ function CreateProject({ onCreated }: { onCreated: () => void }) {
 
 const inputCls = 'h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg placeholder:text-fg-2 focus:outline-none focus:ring-2 focus:ring-accent';
 
-function Stat({ label, value, tone, mono, testid, sub }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string; sub?: string }) {
+const NA_TITLE = 'no reported runs; pre-v2 records only';
+
+function dateRange(first: string | null, last: string | null): string {
+  const a = fmtDate(first);
+  const b = fmtDate(last);
+  return a === b ? a : `${a} to ${b}`;
+}
+
+function Stat({ label, value, tone, mono, testid, sub, title }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string; sub?: string; title?: string }) {
   return (
     <div>
-      <dd className={`text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : ''} ${mono ? 'mono' : ''}`} data-testid={testid}>{value}</dd>
+      <dd className={`text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : ''} ${mono ? 'mono' : ''}`} data-testid={testid} title={title}>{value}</dd>
       <dt className="mt-1 text-s text-fg-2">{label}</dt>
       {sub ? <div className="mt-0.5 text-s text-fg-3" data-testid={`${testid}-sub`} title="Pre-v2 records only recorded scenarios explored, never a shipped count">{sub}</div> : null}
     </div>

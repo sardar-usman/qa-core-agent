@@ -50,11 +50,13 @@ export interface GatewayState {
   lastError: string | null;
   /** Bumped when a /transcribe finished (run_report with outcome.regenerated), so a run page re-reads its artifacts from disk. */
   regenerated: number;
+  /** The last regenerate result the gateway reported: what the run page confirms with. */
+  lastRegenerated: { reportPath: string; at: string; filename: string; fileCount: number; sizeBytes: number } | null;
 }
 
 type Listener = (s: GatewayState) => void;
 
-let state: GatewayState = { socket: 'offline', settings: [], sessionSpend: 0, runsChanged: 0, activeRun: null, live: null, lastError: null, regenerated: 0 };
+let state: GatewayState = { socket: 'offline', settings: [], sessionSpend: 0, runsChanged: 0, activeRun: null, live: null, lastError: null, regenerated: 0, lastRegenerated: null };
 const listeners = new Set<Listener>();
 let ws: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -143,7 +145,15 @@ function handleMessage(data: Record<string, unknown>): void {
     case 'run_report': {
       if (data.fromHistory) return;
       const outcome = (data.outcome as Record<string, unknown> | undefined) ?? {};
-      if (outcome.regenerated) { pendingStart = false; emit({ regenerated: state.regenerated + 1, runsChanged: state.runsChanged + 1 }); return; }
+      if (outcome.regenerated) {
+        pendingStart = false;
+        const zip = (outcome.zip as { filename?: string; fileCount?: number; sizeBytes?: number } | undefined) ?? {};
+        emit({
+          regenerated: state.regenerated + 1, runsChanged: state.runsChanged + 1,
+          lastRegenerated: { reportPath: String(outcome.reportPath ?? ''), at: typeof outcome.at === 'string' ? outcome.at : now, filename: String(zip.filename ?? ''), fileCount: Number(zip.fileCount ?? 0), sizeBytes: Number(zip.sizeBytes ?? 0) },
+        });
+        return;
+      }
       emit({ sessionSpend: state.sessionSpend + reportCost(data.report as Record<string, unknown>), runsChanged: state.runsChanged + 1 });
       if (forLive()) patchLive({ status: 'finished', report: (data.report as Record<string, unknown>) ?? null, outcome: (data.outcome as Record<string, unknown>) ?? null });
       return;
