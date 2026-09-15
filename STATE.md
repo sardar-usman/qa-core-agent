@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-15 (afternoon). Update this file at the end of every working day.
+Updated: 2026-09-15 (evening). Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -75,13 +75,15 @@ Schedule: two focused days, then the audit.
   transcribe wrote into the run folder and zipped it; now writes only the
   zip. Also found: every explore zip since the per-run layout was rooted
   at the run id, not <brand>-automation-framework/; fixed.
-- PR E2 retire legacy UI + polish: IN PROGRESS. Branch
-  dashboard/pr-e2-retire-legacy. Legacy UI removed with every legacy
-  smoke ported or retired with a reason; composer three tiers; real
-  placeholders; header cost sub-line; site URL and wordmark links; trend
-  charts anchored at zero; Unassigned card wording.
+- PR E2 retire legacy UI + polish (PR #16): MERGED Sept 15. Single-file
+  UI and /legacy route deleted; legacy smokes ported (download, brand
+  label, per-site math) or retired with reasons; composer three tiers with
+  real placeholders and a preview showing the exact command; trends
+  anchored at zero; Regenerate confirmation; Unassigned wording.
 - PR F design pass: after the $6 run, before the audit. Brief first at
   docs/dashboard-design.md, then page by page, numbers untouched.
+- Dashboard v2 code complete as of Sept 15. Next: the $6 SRS discovery
+  run on practicesoftwaretesting.com, then PR F, then the audit.
 
 Cut line if the schedule slips: the Terminals page cannot move after the
 audit, it is the only way to start a run from the new dashboard and the
