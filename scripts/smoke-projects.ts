@@ -103,13 +103,13 @@ const auth = { Authorization: `Bearer ${TOKEN}` };
 const get = async <T,>(p: string): Promise<T> => (await fetch(base + p, { headers: auth })).json() as Promise<T>;
 
 /* ─── API ─── */
-type Card = { id: string; shipped: number | null; open_findings: number | null; legacy_runs: number; legacy_explored: number; reported_runs: number; spend_month: number; spend_total: number };
+type Card = { id: string; shipped: number | null; unresolved_findings: number | null; legacy_runs: number; legacy_explored: number; reported_runs: number; spend_month: number; spend_total: number };
 const projects = (await get<{ projects: Card[] }>('/api/projects')).projects;
 const shop = projects.find((p) => p.id === 'shop-example')!;
 const demoqa = projects.find((p) => p.id === 'demoqa-com')!;
 const plain = projects.find((p) => p.id === 'plain-example')!;
-check('B. a legacy-only project reports shipped and open findings as null (unknown), with its pre-v2 runs and explored count apart', demoqa.shipped === null && demoqa.open_findings === null && demoqa.reported_runs === 0 && demoqa.legacy_runs === 2 && demoqa.legacy_explored === 5 && Math.abs(demoqa.spend_total - 1.3) < 1e-9, JSON.stringify(demoqa));
-check('C. the project with reported runs reports numbers: 7 shipped over 2 reported runs, 1 open finding, 3 pre-v2 runs (9 explored)', shop.shipped === 7 && shop.reported_runs === 2 && shop.open_findings === 1 && shop.legacy_runs === 3 && shop.legacy_explored === 9, JSON.stringify(shop));
+check('B. a legacy-only project reports shipped and unresolved findings as null (unknown), with its pre-v2 runs and explored count apart', demoqa.shipped === null && demoqa.unresolved_findings === null && demoqa.reported_runs === 0 && demoqa.legacy_runs === 2 && demoqa.legacy_explored === 5 && Math.abs(demoqa.spend_total - 1.3) < 1e-9, JSON.stringify(demoqa));
+check('C. the project with reported runs reports numbers: 7 shipped over 2 reported runs, 1 unresolved finding, 3 pre-v2 runs (9 explored)', shop.shipped === 7 && shop.reported_runs === 2 && shop.unresolved_findings === 1 && shop.legacy_runs === 3 && shop.legacy_explored === 9, JSON.stringify(shop));
 check('D. Unassigned is last in the API order', projects[projects.length - 1]?.id === 'unassigned', JSON.stringify(projects.map((p) => p.id)));
 
 type Finding = { id: string; project_id: string; scenario: string; expected: string; page_url: string; status: string; notes: string | null; first_seen_run_id: string; last_seen_run_id: string; run_ids: string[]; times_seen: number };
@@ -125,7 +125,7 @@ const reindexed = await (await fetch(`${base}/api/reindex`, { method: 'POST', he
 const after = (await get<{ findings: Finding[] }>('/api/findings?project_id=shop-example')).findings[0]!;
 check('H. status and notes survive a reindex; run references stay two', reindexed.ok && after.status === 'triaged' && after.notes === 'seen by hand; twitter opens in the same tab' && after.times_seen === 2, JSON.stringify(after));
 check('H2. the status filter accepts one value or a set', (await get<{ findings: Finding[] }>('/api/findings?status=triaged')).findings.length === 1 && (await get<{ findings: Finding[] }>('/api/findings?status=open,fixed')).findings.length === 0);
-check('I. an open or triaged finding counts as open on the project; fixed does not', (await get<{ projects: Card[] }>('/api/projects')).projects.find((p) => p.id === 'shop-example')?.open_findings === 1);
+check('I. a triaged finding counts as unresolved on the project (open and triaged count; fixed and wont-fix do not)', (await get<{ projects: Card[] }>('/api/projects')).projects.find((p) => p.id === 'shop-example')?.unresolved_findings === 1);
 
 type Cov = { srs_runs: number; rules: Array<{ rule_id: string; latest_status: string; last_covered_run_id: string | null; text: string | null; runs_reported: number; runs_covered: number }>; not_automated: Array<{ rule_id: string; reason: string; text: string | null }> };
 const cov = await get<Cov>('/api/projects/shop-example/coverage');
@@ -149,14 +149,15 @@ await page.goto(`${base}/#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="project-card"]');
 const cards = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({
   id: (el as HTMLElement).dataset.projectId, unassigned: (el as HTMLElement).dataset.unassigned ?? null, href: el.getAttribute('href'),
-  shipped: el.querySelector('[data-testid="shipped"]')?.textContent ?? null, findings: el.querySelector('[data-testid="open-findings"]')?.textContent ?? null,
+  shipped: el.querySelector('[data-testid="shipped"]')?.textContent ?? null, findings: el.querySelector('[data-testid="unresolved-findings"]')?.textContent ?? null,
   sub: el.querySelector('[data-testid="shipped-sub"]')?.textContent ?? null, spend: el.querySelector('[data-testid="spend-month"]')?.textContent ?? null,
-  note: el.querySelector('[data-testid="unassigned-note"]')?.textContent ?? null, opacity: getComputedStyle(el).opacity,
+  note: el.querySelector('[data-testid="unassigned-note"]')?.textContent ?? null, opacity: getComputedStyle(el).opacity, text: el.textContent ?? '',
 })));
 const demoCard = cards.find((c) => c.id === 'demoqa-com')!;
-check('N. page: the legacy-only card shows n/a for tests shipped and open findings with the pre-v2 sub-line; spend still shows', demoCard.shipped === 'n/a' && demoCard.findings === 'n/a' && demoCard.sub === '2 pre-v2 runs, 5 scenarios explored' && demoCard.spend !== null, JSON.stringify(demoCard));
+check('N. page: the legacy-only card shows n/a for tests shipped and unresolved findings with the pre-v2 sub-line; spend still shows', demoCard.shipped === 'n/a' && demoCard.findings === 'n/a' && demoCard.sub === '2 pre-v2 runs, 5 scenarios explored' && demoCard.spend !== null, JSON.stringify(demoCard));
 const shopCard = cards.find((c) => c.id === 'shop-example')!;
 check('O. page: a card with reported runs shows its numbers and its pre-v2 sub-line; cards open the project page', shopCard.shipped === '7' && shopCard.findings === '1' && shopCard.sub === '3 pre-v2 runs, 9 scenarios explored' && shopCard.href === '/projects/shop-example', JSON.stringify(shopCard));
+check('O2. page: the card\'s spend renders through the shared 4-decimal formatter and its label reads "unresolved findings"', shopCard.spend === `$${shop.spend_month.toFixed(4)}` && /\$\d+\.\d{4}$/.test(shopCard.spend ?? '') && /unresolved findings/.test(shopCard.text ?? ''), JSON.stringify({ spend: shopCard.spend, api: shop.spend_month }));
 const last = cards[cards.length - 1]!;
 check('P. page: Unassigned sorts last, is muted, and reads "N pre-v2 records with no URL"', last.id === 'unassigned' && last.unassigned === 'true' && last.note === '1 pre-v2 record with no URL' && Number(last.opacity) < 1 && last.shipped === null, JSON.stringify(last));
 
@@ -165,7 +166,7 @@ await page.waitForSelector('[data-testid="project-page"][data-project-id="shop-e
 await page.waitForSelector('[data-testid="trend-point"]');
 const proj = await page.evaluate(() => ({
   name: document.querySelector('[data-testid="project-name"]')?.textContent, url: document.querySelector('[data-testid="project-url"]')?.getAttribute('href'), target: document.querySelector('[data-testid="project-url"]')?.getAttribute('target'), env: !!document.querySelector('[data-testid="env-badge"]'),
-  shipped: document.querySelector('[data-testid="project-shipped"]')?.textContent, sub: document.querySelector('[data-testid="project-shipped-sub"]')?.textContent, openFindings: document.querySelector('[data-testid="project-open-findings"]')?.textContent,
+  shipped: document.querySelector('[data-testid="project-shipped"]')?.textContent, sub: document.querySelector('[data-testid="project-shipped-sub"]')?.textContent, openFindings: document.querySelector('[data-testid="project-unresolved-findings"]')?.textContent, headerText: document.querySelector('[data-testid="project-page"] > header')?.textContent ?? '', spend: document.querySelector('[data-testid="project-spend-month"]')?.textContent,
   runRows: Array.from(document.querySelectorAll('[data-testid="run-row"]')).map((r) => r.getAttribute('data-run-id')),
   runsText: document.querySelector('[data-testid="project-runs"]')?.textContent ?? '',
   findingRows: Array.from(document.querySelectorAll('[data-testid="finding-row"]')).map((r) => ({ id: r.getAttribute('data-finding-id'), status: r.getAttribute('data-status'), times: r.querySelector('[data-testid="finding-times-seen"]')?.textContent, notes: (r.querySelector('[data-testid="finding-notes"]') as HTMLTextAreaElement | null)?.value, heading: getComputedStyle(document.querySelector('[data-testid="findings-heading"]')!).color })),
@@ -176,7 +177,7 @@ const proj = await page.evaluate(() => ({
   points: Array.from(document.querySelectorAll('[data-testid="trend-chart"]')).map((c) => ({ metric: c.getAttribute('data-metric'), pts: Array.from(c.querySelectorAll('[data-testid="trend-point"]')).map((p) => ({ run: p.getAttribute('data-run-id'), value: Number(p.getAttribute('data-value')), label: p.getAttribute('data-label') })) })),
   findingColor: getComputedStyle(document.documentElement).getPropertyValue('--finding').trim(),
 }));
-check('Q. project page: header with name, base URL as a new-tab link, no environment badge when unset; n/a-free numbers with the pre-v2 sub-line', proj.name === 'shop' && proj.url === 'https://shop.example/' && proj.target === '_blank' && !proj.env && proj.shipped === '7' && proj.sub === '3 pre-v2 runs, 9 scenarios explored' && proj.openFindings === '1', JSON.stringify({ name: proj.name, url: proj.url, target: proj.target, shipped: proj.shipped, sub: proj.sub }));
+check('Q. project page: header with name, base URL as a new-tab link, no environment badge when unset; n/a-free numbers with the pre-v2 sub-line', proj.name === 'shop' && proj.url === 'https://shop.example/' && proj.target === '_blank' && !proj.env && proj.shipped === '7' && proj.sub === '3 pre-v2 runs, 9 scenarios explored' && proj.openFindings === '1' && /unresolved findings/.test(proj.headerText) && /\$\d+\.\d{4}$/.test(proj.spend ?? ''), JSON.stringify({ name: proj.name, url: proj.url, target: proj.target, shipped: proj.shipped, sub: proj.sub, spend: proj.spend }));
 check('R. project page: the runs table lists the 2 reported and 3 legacy runs, and never the finding scenario', proj.runRows.length === 5 && proj.runRows.includes(r1) && proj.runRows.includes(r2) && !/footer social links open/.test(proj.runsText), JSON.stringify(proj.runRows));
 check('S. project page: the finding is one row, violet heading "Product behavior to review", seen 2 times, status triaged with its notes', proj.findingRows.length === 1 && proj.findingRows[0]?.status === 'triaged' && proj.findingRows[0]?.times === '2' && proj.findingRows[0]?.notes === 'seen by hand; twitter opens in the same tab' && /^Product behavior to review/.test(proj.headingText), JSON.stringify(proj.findingRows));
 check('T. project page: coverage lists R1..R4 with latest classification, last covered run for covered rules, "never" for the rest, and the not-automated list with reasons', proj.ruleRows.map((r) => r.id).join(',') === 'R1,R2,R3,R4' && proj.ruleRows.filter((r) => r.status === 'covered').length === 2 && proj.ruleRows.find((r) => r.id === 'R3')?.last === 'never' && proj.notAutomated.length === 2 && /R3/.test(proj.notAutomated[0] ?? '') && /planned, dropped/.test(proj.notAutomated[0] ?? '') && /R4/.test(proj.notAutomated[1] ?? '') && /not planned/.test(proj.notAutomated[1] ?? ''), JSON.stringify({ rules: proj.ruleRows, na: proj.notAutomated }));
@@ -189,13 +190,13 @@ await page.selectOption('[data-testid="finding-status"]', 'fixed');
 await page.waitForFunction(() => document.querySelector('[data-testid="finding-row"]')?.getAttribute('data-status') === 'fixed');
 await fetch(`${base}/api/reindex`, { method: 'POST', headers: auth });
 // Before reloading, check the header re-read its count after the inline edit (no arithmetic on the page).
-check('V0. page: after the inline edit the header re-reads open findings from the API', (await page.textContent('[data-testid="project-open-findings"]')) === '0');
+check('V0. page: after the inline edit the header re-reads unresolved findings from the API', (await page.textContent('[data-testid="project-unresolved-findings"]')) === '0');
 // A full reload with the token in the hash: set the hash (a hash-only goto does not reload), then reload.
 await page.goto(`${base}/projects/shop-example#token=${TOKEN}`);
 await page.reload({ waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="finding-row"]');
-const afterEdit = await page.evaluate(() => ({ status: document.querySelector('[data-testid="finding-row"]')?.getAttribute('data-status'), open: document.querySelector('[data-testid="project-open-findings"]')?.textContent }));
-check('V. page: the inline status change persists across a reindex and a reload; a fixed finding no longer counts as open', afterEdit.status === 'fixed' && afterEdit.open === '0', JSON.stringify(afterEdit));
+const afterEdit = await page.evaluate(() => ({ status: document.querySelector('[data-testid="finding-row"]')?.getAttribute('data-status'), open: document.querySelector('[data-testid="project-unresolved-findings"]')?.textContent }));
+check('V. page: the inline status change persists across a reindex and a reload; a fixed finding does not count as unresolved', afterEdit.status === 'fixed' && afterEdit.open === '0', JSON.stringify(afterEdit));
 
 // A finding is never a scenario row or a stability row on the run page.
 await page.goto(`${base}/runs/${r2}#token=${TOKEN}`, { waitUntil: 'networkidle' });

@@ -6,7 +6,7 @@ export interface ProjectCard {
   id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null;
   runs: number; reported_runs: number;
   /** null when the project has no reported run (pre-v2 records only): unknown, never 0. */
-  shipped: number | null; legacy_runs: number; legacy_explored: number; open_findings: number | null; spend_month: number; spend_total: number;
+  shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
 }
@@ -32,9 +32,9 @@ export interface ProjectTrends {
 }
 export interface ProjectDetail {
   project: { id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null; notes: string | null };
-  summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; open_findings: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
+  summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
   trend: Array<Record<string, unknown>>;
-  open_findings: FindingRow[];
+  unresolved_findings: FindingRow[];
 }
 
 export interface RunRow {

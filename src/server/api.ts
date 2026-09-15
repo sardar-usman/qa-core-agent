@@ -15,7 +15,7 @@ import { parseGatewayCommand } from './commands.js';
  * exactly like the socket.
  *
  * Every number returned is a column the indexer copied from a run-report;
- * the aggregates (lifetime shipped, open findings, spend this month) are
+ * the aggregates (lifetime shipped, unresolved findings, spend this month) are
  * sums over those columns, so a page can never disagree with the reports.
  */
 
@@ -206,8 +206,8 @@ export interface ProjectCard {
   legacy_runs: number;
   /** Scenarios the pre-v2 records explored (their only count). */
   legacy_explored: number;
-  /** Open or triaged findings. NULL when the project has no reported run. */
-  open_findings: number | null;
+  /** Findings with status open or triaged (fixed and wont-fix excluded). NULL when the project has no reported run. */
+  unresolved_findings: number | null;
   spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   /** Rule coverage percent per run (oldest first), for the sparkline; empty without SRS runs. */
@@ -240,7 +240,7 @@ function projectCard(db: Database.Database, p: Record<string, unknown>): Project
   return {
     id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: (p.environment as string | null) ?? null, srs_path: (p.srs_path as string | null) ?? null,
     runs: agg.runs, reported_runs: reported, shipped: reported > 0 ? agg.shipped : null, legacy_runs: agg.legacy_runs ?? 0, legacy_explored: agg.legacy_explored,
-    open_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
+    unresolved_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
     coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),
   };
@@ -252,12 +252,12 @@ export function projectDetail(db: Database.Database, id: string): Record<string,
   const card = projectCard(db, p);
   const trend = db.prepare(`SELECT id AS run_id, started_at, status, shipped, planned, cost_total, flake_rate FROM runs WHERE project_id = ? ORDER BY started_at ASC, id ASC`).all(id) as Array<Record<string, unknown>>;
   const coverageByRun = new Map(card.coverage_series.map((c) => [c.run_id, c.percent]));
-  const openFindings = listFindings(db, { projectId: id, status: 'open,triaged' });
+  const unresolved = listFindings(db, { projectId: id, status: 'open,triaged' });
   return {
     project: p,
-    summary: { runs: card.runs, reported_runs: card.reported_runs, shipped: card.shipped, legacy_runs: card.legacy_runs, legacy_explored: card.legacy_explored, open_findings: card.open_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
+    summary: { runs: card.runs, reported_runs: card.reported_runs, shipped: card.shipped, legacy_runs: card.legacy_runs, legacy_explored: card.legacy_explored, unresolved_findings: card.unresolved_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
     trend: trend.map((t) => ({ ...t, coverage_percent: coverageByRun.get(String(t.run_id)) ?? null })),
-    open_findings: openFindings,
+    unresolved_findings: unresolved,
   };
 }
 

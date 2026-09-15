@@ -29,7 +29,7 @@ export function CoverageTable({ coverage }: { coverage: ProjectCoverage }) {
             <TableHead>Text</TableHead>
             <TableHead>Latest classification</TableHead>
             <TableHead>Last covered</TableHead>
-            <TableHead className="text-right">Runs covered / reported</TableHead>
+            <TableHead className="text-right">Runs covered / SRS runs</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

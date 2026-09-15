@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/EmptyState';
 import { Sparkline } from '@/components/Sparkline';
 import { StatusBadge } from '@/components/StatusBadge';
-import { fmtDate, money } from '@/lib/utils';
+import { fmtDate, usd } from '@/lib/utils';
 
 const UNASSIGNED = 'unassigned';
 
@@ -63,8 +63,8 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
               </div>
               <dl className="grid grid-cols-3 gap-2">
                 <Stat label="tests shipped" value={p.shipped === null ? 'n/a' : String(p.shipped)} testid="shipped" sub={p.legacy_runs ? `${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
-                <Stat label="open findings" value={p.open_findings === null ? 'n/a' : String(p.open_findings)} tone={p.open_findings ? 'finding' : undefined} testid="open-findings" />
-                <Stat label="spend this month" value={money(p.spend_month)} tone="cost" mono testid="spend-month" />
+                <Stat label="unresolved findings" value={p.unresolved_findings === null ? 'n/a' : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} testid="unresolved-findings" />
+                <Stat label="spend this month" value={usd(p.spend_month)} tone="cost" mono testid="spend-month" />
               </dl>
               <div className="flex items-center justify-between text-s text-fg-3">
                 <span>{p.runs} run{p.runs === 1 ? '' : 's'}</span>

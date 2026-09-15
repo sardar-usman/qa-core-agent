@@ -13,7 +13,7 @@ import { usd } from '@/lib/utils';
 const ENV_VARIANT: Record<string, 'accent' | 'rework' | 'neutral'> = { staging: 'accent', production: 'rework', other: 'neutral' };
 
 /**
- * One project: header, its runs, its open findings, rule coverage across its
+ * One project: header, its runs, its findings, rule coverage across its
  * SRS runs, and trends over its completed runs. Every number is an index row
  * column or a rule-coverage row the index copied from a run folder.
  */
@@ -57,7 +57,7 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
         </div>
         <dl className="grid gap-3 sm:grid-cols-4">
           <Fact label="tests shipped" value={s.shipped === null ? 'n/a' : String(s.shipped)} testid="project-shipped" sub={s.legacy_runs ? `${s.legacy_runs} pre-v2 run${s.legacy_runs === 1 ? '' : 's'}, ${s.legacy_explored} scenario${s.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
-          <Fact label="open findings" value={s.open_findings === null ? 'n/a' : String(s.open_findings)} tone={s.open_findings ? 'finding' : undefined} testid="project-open-findings" />
+          <Fact label="unresolved findings" value={s.unresolved_findings === null ? 'n/a' : String(s.unresolved_findings)} tone={s.unresolved_findings ? 'finding' : undefined} testid="project-unresolved-findings" />
           <Fact label="spend this month" value={usd(s.spend_month)} tone="cost" mono testid="project-spend-month" />
           <Fact label="runs" value={String(s.runs)} testid="project-runs" sub={`${s.reported_runs} with a report`} />
         </dl>
@@ -72,7 +72,7 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
         <FindingsHeading count={findings.length} />
         <FindingsTable findings={findings} showProject={false} onChange={(u) => {
           setFindings((cur) => (cur ?? []).map((f) => (f.id === u.id ? u : f)));
-          // The header's open-findings count is an index number; re-read it rather than adjusting it here.
+          // The header's unresolved-findings count is an index number; re-read it rather than adjusting it here.
           api.project(id).then((d) => setDetail(d)).catch(() => { /* the next load shows it */ });
         }} />
       </section>
