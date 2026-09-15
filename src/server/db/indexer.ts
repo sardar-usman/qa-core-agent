@@ -234,7 +234,8 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
     }
     for (const f of report.findings ?? []) {
       const id = findingKey(projectId, f.scenario, f.expected);
-      const observed = [f.messages && f.messages.length ? `the page said: ${f.messages.join(' | ')}` : 'no visible message', `stayed at ${f.url}`].join('; ');
+      // Report data only, no inference: the page's messages verbatim, or the URL at the time when it said nothing.
+      const observed = f.messages && f.messages.length ? f.messages.join(' | ') : `no message recorded; URL at the time: ${f.url}`;
       const existing = db.prepare('SELECT first_seen_run_id, last_seen_run_id FROM findings WHERE id = ?').get(id) as { first_seen_run_id: string; last_seen_run_id: string } | undefined;
       if (!existing) {
         db.prepare(`INSERT INTO findings (id, run_id, project_id, scenario, expected, observed, page_url, status, first_seen_run_id, last_seen_run_id)

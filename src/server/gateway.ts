@@ -16,6 +16,7 @@ import { listRunsFromDisk, loadReportForUi, reportForUi } from './runs.js';
 import { runExploreRequest, runTranscribeRequest, type FrameworkZip, type SrsUpload } from './run-explore.js';
 import { eventForUi, readRunEvents } from './events.js';
 import { listRunDirs } from '../agent/output-layout.js';
+import { projectSrsUploadFor } from './project-srs.js';
 import { openDatabase, DEFAULT_DB_PATH } from './db/migrate.js';
 import { indexOutput, renderIndexResult } from './db/indexer.js';
 import { createApiHandler } from './api.js';
@@ -69,6 +70,8 @@ interface IncomingMessage {
   env?: Record<string, string>;
   /** An SRS document uploaded from the dashboard (md/txt/pdf/docx). */
   srs?: { name: string; base64: string };
+  /** Use the named project's current SRS (output/<slug>/srs/); the run still gets its own copy. Ignored when `srs` is given. */
+  srs_project?: string;
   /** For get_report: the run-report.json path, relative to the project root. */
   reportPath?: string;
 }
@@ -155,7 +158,7 @@ reindex();
 // One HTTP server: REST API under /api, the built dashboard at /, the legacy
 // single-file UI at /legacy, and the WebSocket upgrade on any path (/ws for
 // the dashboard, / for the legacy UI).
-const api = createApiHandler({ db, root: ROOT, token: TOKEN, reindex, log: (line) => console.log(`  ${line}`) });
+const api = createApiHandler({ db, root: ROOT, token: TOKEN, reindex, log: (line) => console.log(`  ${line}`), gateway: { host: HOST, port: PORT } });
 const statik = createStaticHandler({ distDir: process.env.QA_CORE_DASHBOARD_DIST ?? path.join(ROOT, 'dashboard', 'dist'), legacyFile: process.env.QA_CORE_LEGACY_UI ?? path.join(ROOT, 'qa-core-ui.html') });
 const server = http.createServer(async (req, res) => {
   try {
@@ -291,7 +294,14 @@ async function dispatch(content: string, msg: IncomingMessage, ws: WebSocket): P
       }
       // An attached SRS travels with the message; the request layer saves it
       // into the run directory (run-explore.ts, saveSrsUpload).
-      await handleExplore(request, msg.model, ws, msg.srs);
+      let srsUpload = msg.srs;
+      if (!srsUpload && typeof msg.srs_project === 'string' && /^[a-z0-9-]+$/.test(msg.srs_project)) {
+        const fromProject = projectSrsUploadFor(ROOT, msg.srs_project);
+        if (!fromProject) { send(ws, { text: `✗ Project ${msg.srs_project} has no requirements document.` }); send(ws, { type: 'run_failed', error: `project ${msg.srs_project} has no SRS` }); return; }
+        srsUpload = fromProject;
+        send(ws, { text: `Note: using the project SRS ${fromProject.name} (a copy is saved into the run folder).` });
+      }
+      await handleExplore(request, msg.model, ws, srsUpload);
       return;
     }
     case 'transcribe':
