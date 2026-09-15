@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-15 (evening). Update this file at the end of every working day.
+Updated: 2026-09-16. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -82,8 +82,13 @@ Schedule: two focused days, then the audit.
   anchored at zero; Regenerate confirmation; Unassigned wording.
 - PR F design pass: after the $6 run, before the audit. Brief first at
   docs/dashboard-design.md, then page by page, numbers untouched.
-- Dashboard v2 code complete as of Sept 15. Next: the $6 SRS discovery
-  run on practicesoftwaretesting.com, then PR F, then the audit.
+- Dashboard v2 code complete as of Sept 15. Next: diagnosis report of run
+  ec8eff, then the fixes above one PR each, then the after-run, then PR F,
+  then the write-up.
+- Fix: stopped runs keep run-meta, SRS copy, repair events (PR #17):
+  MERGED Sept 16. run-meta written at start and every end; no
+  hold-and-restore, run files are never rewritten; runs.source nullable
+  (schema v6), never defaulted; repair pass emits events.
 
 Cut line if the schedule slips: the Terminals page cannot move after the
 audit, it is the only way to start a run from the new dashboard and the
@@ -91,16 +96,36 @@ demo needs it. If PR C runs long, ship a single-terminal composer in PR C
 and move the parallel-run plumbing (RunSettings, registry, concurrent
 terminals) to after the audit.
 
-Audit data: v2 run-reports on disk as of Sept 14 are 2, both single-page
-login runs, zero multi-page. Decision: one $6 SRS discovery run after PR E
-(started and, if needed, resumed from the dashboard), before PR F, so the
-design pass and the audit both have a real multi-page report.
+Audit data: the $6 run happened Sept 15 on practicesoftwaretesting.com
+(run 20260915T174318Z-ec8eff, started from the dashboard): $6.0812 spent,
+0 shipped, 10 planned, 6 dropped at the critic gate, 4 incomplete,
+stopped at the explorer share of the ceiling. Not resumed on purpose; it
+is the audit's before-run. The after-run repeats it with the same SRS and
+ceiling once the fixes below land.
 
 ## After the dashboard: the audit
 
 Structured evaluation of the engine producing an evidence report, using the
 qa-core-heal evaluation report as the template. Backlog items for it, gathered
 during the maturity pass:
+
+### From run ec8eff (ranked by cost impact)
+
+- Explorer cost per scenario: $0.85 on a heavy SPA against $0.15 on
+  saucedemo; DOM payload per step is the lever.
+- Assertion doctrine: five of six scenarios drew rework for the same
+  three patterns (vacuous visible checks, hard-coded catalogue values,
+  count-only checks); make them hard rules and gate what is statically
+  checkable.
+- Repair reserve: 15 percent of the ceiling could not fund one repair at
+  this per-scenario cost; $0.86 spent, nothing re-recorded. Reserve must
+  be sized against observed per-scenario cost or the pass declines up
+  front, loudly.
+- Stabilizer: $0.0122 spent with no attempts recorded.
+- Steps: 84 explorer calls against a documented max of 40; find which
+  limit governs and make Settings describe that one.
+- Planner rule tags: a happy login cited R10 (the wrong-password rule).
+
 - Enumerate every cap, truncation, filter, and catch in the pipeline; each is
   made loud or proven harmless (six silent-failure bugs were found this month).
 - Repair prompt: forbid capture-then-compare with no intervening action.
