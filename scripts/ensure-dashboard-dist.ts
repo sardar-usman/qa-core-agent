@@ -6,8 +6,7 @@ import { execSync } from 'node:child_process';
  * Runs before `npm run gateway`: build dashboard/dist when it is missing so
  * the gateway always has an app to serve at /. Installs the dashboard's
  * dependencies first when they are missing. A failed build is reported and
- * the gateway still starts (it serves a build hint at / and the legacy UI at
- * /legacy).
+ * the gateway still starts (it serves a build hint at /).
  */
 const root = process.cwd();
 const dashboard = path.join(root, 'dashboard');
@@ -23,5 +22,5 @@ try {
   console.log('dashboard: dist missing, building…');
   execSync('npm run build', { cwd: dashboard, stdio: 'inherit' });
 } catch (err) {
-  console.error(`dashboard: build failed (${(err as Error).message}). The gateway will serve a build hint at / and the legacy UI at /legacy.`);
+  console.error(`dashboard: build failed (${(err as Error).message}). The gateway will serve a build hint at /.`);
 }

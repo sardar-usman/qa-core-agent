@@ -247,6 +247,9 @@ export interface ProjectCard {
   legacy_runs: number;
   /** Scenarios the pre-v2 records explored (their only count). */
   legacy_explored: number;
+  /** First and last start times over the pre-v2 records; null without any. */
+  legacy_first_at: string | null;
+  legacy_last_at: string | null;
   /** Findings with status open or triaged (fixed and wont-fix excluded). NULL when the project has no reported run. */
   unresolved_findings: number | null;
   spend_month: number; spend_total: number;
@@ -270,9 +273,11 @@ function projectCard(db: Database.Database, p: Record<string, unknown>, root?: s
                           COALESCE(SUM(CASE WHEN report_path IS NOT NULL THEN shipped ELSE 0 END), 0) AS shipped,
                           SUM(CASE WHEN status = 'legacy' THEN 1 ELSE 0 END) AS legacy_runs,
                           COALESCE(SUM(CASE WHEN status = 'legacy' THEN generated ELSE 0 END), 0) AS legacy_explored,
+                          MIN(CASE WHEN status = 'legacy' THEN started_at END) AS legacy_first_at,
+                          MAX(CASE WHEN status = 'legacy' THEN started_at END) AS legacy_last_at,
                           COALESCE(SUM(cost_total), 0) AS spend_total,
                           COALESCE(SUM(CASE WHEN started_at >= ? THEN cost_total ELSE 0 END), 0) AS spend_month
-                          FROM runs WHERE project_id = ?`).get(monthStart(), id) as { runs: number; reported_runs: number | null; shipped: number; legacy_runs: number | null; legacy_explored: number; spend_total: number; spend_month: number };
+                          FROM runs WHERE project_id = ?`).get(monthStart(), id) as { runs: number; reported_runs: number | null; shipped: number; legacy_runs: number | null; legacy_explored: number; legacy_first_at: string | null; legacy_last_at: string | null; spend_total: number; spend_month: number };
   const open = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE project_id = ? AND status IN ('open', 'triaged')").get(id) as { n: number };
   const reported = agg.reported_runs ?? 0;
   const last = db.prepare('SELECT id, status, started_at, shipped, generated, cost_total FROM runs WHERE project_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(id) as ProjectCard['last_run'] | undefined;
@@ -285,6 +290,7 @@ function projectCard(db: Database.Database, p: Record<string, unknown>, root?: s
     id, name: String(p.name), base_url: (p.base_url as string | null) ?? null, environment: (p.environment as string | null) ?? null, srs_path: (p.srs_path as string | null) ?? null,
     srs: srs ? { name: srs.original_name, uploaded_at: srs.uploaded_at, path: srs.path } : null,
     runs: agg.runs, reported_runs: reported, shipped: reported > 0 ? agg.shipped : null, legacy_runs: agg.legacy_runs ?? 0, legacy_explored: agg.legacy_explored,
+    legacy_first_at: agg.legacy_first_at ?? null, legacy_last_at: agg.legacy_last_at ?? null,
     unresolved_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
     coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),

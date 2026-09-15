@@ -384,7 +384,7 @@ The migration is idempotent; the index reads legacy folders in place until you r
 
 ## Dashboard
 
-`npm run gateway` starts one process that serves the dashboard at `http://127.0.0.1:18789/`, the REST API under `/api/`, the WebSocket at `/ws`, and the legacy chat UI at `/legacy`. The dashboard is a Vite + React app in `dashboard/`; the gateway builds it on first start when `dashboard/dist` is missing.
+`npm run gateway` starts one process that serves the dashboard at `http://127.0.0.1:18789/`, the REST API under `/api/`, and the WebSocket at `/ws`. The dashboard is a Vite + React app in `dashboard/`; the gateway builds it on first start when `dashboard/dist` is missing.
 
 ```bash
 npm run dashboard:dev      # Vite dev server on :5173, proxied to the gateway
@@ -406,7 +406,7 @@ Every value in the stage view is a field of the report copied by the server; the
 
 ### Terminal
 
-`/terminal` starts a run from the dashboard. No shell: it sends QA-Core commands only (`/explore`, `/resume`, `/transcribe`, `/heal`, `/generate`, with every flag the CLI accepts). The composer form covers the URL, features, pages (`--urls`), discovery, POM or inline output, language, the stabilizer and its attempts, the cost ceiling, repair reserve, max steps and the three model overrides; it shows the exact command it will send, updated live. A raw command box sits beneath it: typing a command fills the form, editing the form rewrites the command. Both go through one parser, the gateway's own (`POST /api/command/parse`), so the form never interprets a flag itself. Start is disabled with the reason shown when the gateway already has a run in progress (naming its run id), when the URL is empty, or when the socket is not connected.
+`/terminal` starts a run from the dashboard. No shell: it sends QA-Core commands only (`/explore`, `/resume`, `/transcribe`, `/heal`, `/generate`, with every flag the CLI accepts). The composer has three tiers. The top row holds the URL, the features, the SRS attach and the Start button, with "ceiling $X.XX, stops cleanly if reached" beside Start read from the effective setting (a typed ceiling, else this tab's session override, else the gateway default). **Scope**, collapsed by default, holds pages (`--urls`), discovery, POM or inline output, language and the stabilizer. **Budget and models**, collapsed by default, holds the cost ceiling, repair reserve, max steps and the three model overrides; each shows the effective value with a "default" chip until you type one, or a "session override" chip when Settings set one. Placeholders are examples prefixed "e.g." and rendered dimmer than typed text; defaults are shown as values, never as placeholders. The command box is a read-only one-line preview of exactly what will run, with a copy button and an "edit command" toggle that opens the textarea; typing a command there fills the form, editing the form rewrites the preview. When the project SRS is checked the preview shows `--srs <project srs path>`; when a file is attached it shows the run-folder path. Both go through one parser, the gateway's own (`POST /api/command/parse`), so the form never interprets a flag itself. A usage popover lists the commands. Start is disabled with the reason shown when the gateway already has a run in progress (naming its run id), when the URL is empty, or when the socket is not connected.
 
 **Attach SRS** takes a `.md`, `.txt`, `.pdf` or `.docx` up to 2 MB (other types and larger files are refused, client and server side, with the allowed list and the cap in the message). The file is sent with the command, saved into the new run's output directory under its original name, listed by Run Detail's artifacts as kind `srs`, and passed to the run as `--srs <that path>`.
 
@@ -425,44 +425,6 @@ The project page's **Requirements document** section takes one SRS (`.md`, `.txt
 ### Live run view
 
 On start the page opens `/runs/<run id>` and feeds the same six-stage view from the gateway's WebSocket stream (`run_started`, every agent event, the closing `run_report`). Rail statuses gain pending and running while the run is in flight. The runtime's console lines collect in a collapsible log under the panels and are never used as a number. Events append to `events.jsonl` as they arrive and the events section shows them live. When `run_report` lands, every panel re-renders from the report exactly as a history view does, so the live and historical renderings of a finished run are identical. If the socket drops mid-run the page says so and offers reconnect; the run continues on the gateway, and on reconnect the page catches up from the run folder (its `events.jsonl`, the report when written), never from memory. A missing run-report is a loud 404 naming the path. Every number comes from `data/qa-core.sqlite`, an index the gateway rebuilds from `output/` on every start and refreshes after every run. Files are truth: delete the database and it is rebuilt exactly. `POST /api/reindex` (or the header button) rebuilds it on demand. Runs from before the per-run layout, which survive only as summaries in the gateway's record store (`.qa-core/sites/<host>.json`), are imported as "summary only (pre-v2)" rows with the scenarios they explored (not shipped), cost and duration, and no report or zip; project cards count tests shipped from reported runs only and show legacy runs as a separate line. With `QA_CORE_GATEWAY_TOKEN` set, every `/api` route needs `Authorization: Bearer <token>` (or `?token=`), and the app takes the token from `#token=<value>` in the page URL, in memory only.
-
-## Web UI (legacy)
-
-The chat-style UI at [`qa-core-ui.html`](./qa-core-ui.html) talks to a WebSocket gateway that bridges the OpenClaw web surface to the agent runtime.
-
-```bash
-npm run gateway              # starts ws://127.0.0.1:18789
-open qa-core-ui.html         # in your browser
-```
-
-Click **Connect** in the header. Then type a slash command:
-
-* `/explore https://...` with any CLI flag: `--features login,cart`, `--srs docs/srs.md`, `--urls /login,/cart`, `--discover`, `--lang js`, `--no-pom`, `--no-stabilize`, `--stabilize-attempts N`, `--ceiling 4`
-* `/resume output/<brand>-automation-framework/checkpoint.json [--ceiling 4]` to continue a stopped run
-* `/transcribe output/<brand>-automation-framework/run-report.json` to regenerate the framework zip without exploring
-* `/generate "user story"`
-* `/heal output/<run-id>/<name>.spec.ts`
-
-Every option the CLI accepts works in the chat the same way, and the gateway builds the same runtime options the CLI would (the parity smoke checks this). The gear in the header opens **Run settings**: the cost ceiling, repair reserve, max steps and the three model overrides (the same `QA_CORE_*` env names the CLI reads, applied to the next run only), the explore options as a form (features, pages, discover, POM, stabilizer), and an **Attach SRS** button that uploads a `.md`, `.txt`, `.pdf` or `.docx` for `--srs`. The moon button switches dark and light.
-
-### The run view
-
-When a run starts, the centre panel shows a stage rail (Discovery, Plan, Explore, Review, Verify, Summary, each with a status and a one-line stat; click one to jump to its panel) and one full-width panel per stage, updated live from the gateway's event stream. Screenshots: [dark](./docs/ui/run-view-dark.png), [light](./docs/ui/run-view-light.png).
-
-1. **Discovery**: the rung that produced the page set, pages found, the relevance-filter result, robots and rung warnings.
-2. **Plan**: per-page planner lines with cost, then every scenario with its feature, category and rule-id tags.
-3. **Explorer**: live tool calls, step count against the step budget, a cost meter against the explorer sub-ceiling, gate injections, skips with reasons, incomplete scenarios.
-4. **Critic and repair**: verdicts with reasons, a repair-pass banner (count and budget), and verdict journeys (`rework -> pass` kept, `rework -> reject` dropped).
-5. **Replay and stability**: pass or fail per scenario, the per-iteration pattern (`PPP`, `PFP`), stabilizer attempts and recoveries.
-6. **Summary**: three numbers first (tests shipped, total cost, items needing attention), then the reconciliation funnel (planned = generated + dropped + incomplete + findings + skipped; zero rows collapse into one line), the cost split, rule coverage with the considered-not-automated list and reasons, findings called out in violet as product behavior to review, and the one download button.
-
-Every number comes from the run-report or the event stream; the page never derives a count the CLI would print differently. While a run is live the panels are the primary view: the runtime's console-style lines are demoted to a collapsible log at the bottom of the run view, and the chat gets exactly one compact completion line naming the zip. Colors are semantic in both themes: green pass, amber rework, red reject or dropped, violet findings, grey incomplete or skipped. The header's gateway chip follows the live socket, and the Session chip is the cost of the runs finished in this browser session. The **view** button on any history card opens the same six panels for a past run from its run-report.
-
-### Run history, resume and regenerate
-
-The Results tab lists past runs from `output/` and `eval-results/`: URL, date, cost, scenarios shipped, and a status badge. A run that stopped with a checkpoint (cost ceiling, billing, API failure) shows **resume** with an optional higher ceiling; a completed run shows **regenerate framework**, which re-emits the zip from `run-report.json` with no browser and no model call. Both buttons send the matching slash command.
-
-Optional auth: set `QA_CORE_GATEWAY_TOKEN` in your environment. The UI accepts the token via the page URL fragment, for example `qa-core-ui.html#token=<value>`.
 
 ## MCP server (for Claude Desktop, Cursor, Cline, Continue)
 
@@ -555,7 +517,7 @@ src/
     generate.ts       # npm run generate
     heal.ts           # npm run heal (thin wrapper around the qa-core-heal package)
   server/
-    gateway.ts        # WebSocket bridge between qa-core-ui.html and the runtime
+    gateway.ts        # HTTP + WebSocket gateway: REST API, the dashboard, the run stream
   mcp/
     server.ts         # MCP server: exposes qa_explore, qa_generate, qa_heal
 docs/
@@ -570,7 +532,6 @@ scripts/
 tests/
   auth.setup.ts       # storage-state fixture for auth-gated apps
 .qa-core/             # per-host memory cache (gitignored)
-qa-core-ui.html       # web UI client
 playwright.config.ts
 .github/workflows/qa-core.yml
 ```

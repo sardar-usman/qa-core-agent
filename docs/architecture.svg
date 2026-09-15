@@ -391,7 +391,7 @@
     <line x1="20" y1="82" x2="280" y2="82" stroke="#2a2a36"/>
     <text x="20" y="104" class="stage-meta" fill="#b9a6ff">npm run gateway</text>
     <text x="20" y="122" class="stage-meta" fill="#9d9da7">→ ws://127.0.0.1:18789</text>
-    <text x="20" y="146" class="stage-meta" fill="#9d9da7">qa-core-ui.html · OpenClaw bridge</text>
+    <text x="20" y="146" class="stage-meta" fill="#9d9da7">dashboard/ (React) · OpenClaw bridge</text>
   </g>
 
   <!-- MCP Server -->

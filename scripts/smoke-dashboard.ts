@@ -1,6 +1,6 @@
 /**
  * Locks the dashboard scaffold (PR A): the gateway serves the built app at /,
- * the legacy UI at /legacy, the WebSocket at /ws, and the Projects and Runs
+ * the WebSocket at /ws, and the Projects and Runs
  * pages render exactly the numbers the API returns (which the index copied
  * from the run-reports). Boots a real gateway on a spare port against a
  * fixture output tree, with the token set, and drives it with Playwright.
@@ -72,7 +72,7 @@ const PORT = 18797;
 const TOKEN = 'dash-smoke-token';
 const gw = spawn('npx', ['tsx', path.join(repo, 'src', 'server', 'gateway.ts')], {
   cwd: root,
-  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_LEGACY_UI: path.join(repo, 'qa-core-ui.html'), QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? 'unused' },
+  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? 'unused' },
   stdio: ['ignore', 'pipe', 'pipe'],
   detached: true,
 });
@@ -93,8 +93,8 @@ check('gateway boots, indexes on start, serves http', /listening on http/.test(g
 const base = `http://127.0.0.1:${PORT}`;
 const authGet = async (p: string) => (await fetch(base + p, { headers: { Authorization: `Bearer ${TOKEN}` } })).json() as Promise<Record<string, unknown>>;
 check('/api/projects rejects a missing token on the real gateway', (await fetch(base + '/api/projects')).status === 401);
-const legacy = await (await fetch(base + '/legacy')).text();
-check('/legacy serves the single-file UI', /QA-Core/.test(legacy) && /handleGatewayPayload/.test(legacy));
+const spaFallback = await (await fetch(base + '/some/client/route')).text();
+check('an unknown route falls through to the SPA shell (the retired single-file UI is gone)', /<div id="root">/.test(spaFallback) && !/handleGatewayPayload/.test(spaFallback));
 const projects = (await authGet('/api/projects')).projects as Array<Record<string, unknown>>;
 const apiRuns = (await authGet('/api/runs')).runs as Array<Record<string, unknown>>;
 
@@ -222,4 +222,4 @@ fs.rmSync(root, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the gateway serves the dashboard at / and the legacy UI at /legacy; Projects and Runs render the index numbers, which equal the run-reports.');
+console.log('OK: the gateway serves the dashboard at /; Projects and Runs render the index numbers, which equal the run-reports.');

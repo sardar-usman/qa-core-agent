@@ -43,7 +43,7 @@ See `.env.example`. Minimum required: `ANTHROPIC_API_KEY`.
 
 ## OpenClaw integration
 
-The web UI ([`qa-core-ui.html`](../qa-core-ui.html)) talks to a WebSocket gateway at `ws://127.0.0.1:18789` (configurable). The gateway is registered in [`.openclaw/config.json`](../.openclaw/config.json) as the agent's WebSocket runner: OpenClaw routes incoming slash commands from the web/Telegram channels to the gateway, the gateway invokes the TypeScript runtime which calls Claude directly via the Anthropic SDK, and streamed events flow back to the channel.
+The web UI (the React dashboard in `dashboard/`, served by the gateway at `/`) talks to a WebSocket gateway at `ws://127.0.0.1:18789` (configurable). The gateway is registered in [`.openclaw/config.json`](../.openclaw/config.json) as the agent's WebSocket runner: OpenClaw routes incoming slash commands from the web/Telegram channels to the gateway, the gateway invokes the TypeScript runtime which calls Claude directly via the Anthropic SDK, and streamed events flow back to the channel.
 
 Start it with `npm run gateway`. Multi-agent staging (Planner → Explorer → Critic) and prompt caching are handled inside the runtime — OpenClaw sees only the chat-level conversation.
 

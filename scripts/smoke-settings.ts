@@ -43,7 +43,7 @@ if (!fs.existsSync(path.join(dist, 'index.html'))) { console.error('dashboard/di
 const PORT = 18795;
 const gw = spawn('npx', ['tsx', path.join(repo, 'src', 'server', 'gateway.ts')], {
   cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_LEGACY_UI: path.join(repo, 'qa-core-ui.html'), QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: SECRET_KEY, QA_CORE_COST_CEILING: '3', QA_CORE_EXPLORER_MODEL: 'claude-opus-4-7' },
+  env: { ...process.env, QA_CORE_GATEWAY_PORT: String(PORT), QA_CORE_GATEWAY_TOKEN: TOKEN, QA_CORE_DASHBOARD_DIST: dist, QA_CORE_DB_PATH: path.join(root, 'data', 'qa-core.sqlite'), ANTHROPIC_API_KEY: SECRET_KEY, QA_CORE_COST_CEILING: '3', QA_CORE_EXPLORER_MODEL: 'claude-opus-4-7' },
 });
 const killGw = (): void => { if (gw.pid) { try { process.kill(-gw.pid, 'SIGKILL'); } catch { /* gone */ } } };
 process.on('exit', killGw);

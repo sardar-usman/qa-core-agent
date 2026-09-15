@@ -15,7 +15,6 @@ Generated: 2026-06-10 (v2 hardening pass complete).
 | `playwright.config.ts` | Playwright runner config used by `npm test` and by the eval harness when it re-executes generated specs. Defines the chromium project and the auth-setup project. |
 | `setup.sh` | One-shot bootstrapping script. Installs deps, runs `playwright install chromium`, and copies `.env.example` to `.env` if it doesn't exist. |
 | `.env.example` | Template for the environment variables QA-Core reads at startup. Copy to `.env` and fill in `ANTHROPIC_API_KEY` at minimum. |
-| `qa-core-ui.html` | The full single-page web UI. Connects to the WebSocket gateway, sends slash commands, renders the pipeline animation, dashboard, and run history. Pure HTML/CSS/vanilla-JS — no build step. |
 | `README.md` | Public-facing README for GitHub visitors. Quick start, commands, model routing, eval table. |
 
 ---
@@ -65,12 +64,12 @@ Three thin command-line front-ends. Each parses argv, calls the appropriate `src
 
 | File | Purpose |
 |---|---|
-| `gateway.ts` | The WebSocket bridge between the static `qa-core-ui.html` and the agent runtime. Listens on `ws://127.0.0.1:18789` by default. Hands each chat message to `commands.ts`, runs explore / resume / transcribe through `run-explore.ts`, and streams structured messages back: `settings` (the env-driven run settings), `run_started`, one `event` per `AgentEvent`, `run_report` (the RunReport minus traces), `framework_zip`, and `runs` (history from `runs.ts`). Accepts per-run setting overrides (`env`) and an uploaded SRS (`srs`) on the message. |
+| `gateway.ts` | The HTTP and WebSocket gateway: the REST API, the built dashboard at `/`, and the run stream the dashboard follows. Listens on `ws://127.0.0.1:18789` by default. Hands each chat message to `commands.ts`, runs explore / resume / transcribe through `run-explore.ts`, and streams structured messages back: `settings` (the env-driven run settings), `run_started`, one `event` per `AgentEvent`, `run_report` (the RunReport minus traces), `framework_zip`, and `runs` (history from `runs.ts`). Accepts per-run setting overrides (`env`) and an uploaded SRS (`srs`) on the message. |
 | `commands.ts` | Pure parser for the dashboard's slash commands: `/explore` with every CLI flag plus a natural-language feature hint, `/resume`, `/transcribe`, `/generate`, `/heal`, `/eval`, paste hints for pasted `npm run` lines, and the usage and help texts. No I/O, so `smoke-gateway-commands` drives it offline. |
 | `run-explore.ts` | The explore run the gateway and the MCP server share: prepare (URL validation, checkpoint load + conflicts + reachability, SRS ingestion), run `explore()` through `buildExploreOptions`, emit (scaffold, zip, slim, checkpoint hold), and `runTranscribeRequest`, the one transcribe behind the CLI, the gateway's Regenerate and MCP `qa_transcribe`: it scaffolds into a temporary directory, zips it rooted at `<brand>-automation-framework/`, atomically replaces only the zip in the run directory (never writing, slimming or zipping the run's own files) and appends a `transcribe` note to events.jsonl. `withEnvOverrides` applies per-run settings to `process.env` for the run only. |
 | `api.ts` | REST API over the index (GET projects / runs / report / zip, POST reindex), token-guarded like the socket; report and zip files are served only from inside the project root. |
 | `run-detail.ts` | `buildRunDetail`: one run from its stored artifacts (run-report, events.jsonl, files present, index row) for `/api/runs/:id/detail`; per-scenario Critic verdict, repair status, replay and stability as recorded, shipped from the emitted list, findings apart; loud 404 naming the path when the report is missing; `runArtifactFile` serves files from the run directory only. |
-| `static.ts` | Serves `dashboard/dist` at `/` (SPA fallback) and the legacy `qa-core-ui.html` at `/legacy`; a build hint when dist is missing. |
+| `static.ts` | Serves `dashboard/dist` at `/` (SPA fallback); a build hint when dist is missing. |
 | `db/schema.sql` | The index schema (plan section 5): projects, runs, findings, rule_coverage, verdicts, terminals. |
 | `run-explore.ts` (SRS upload) | `validateSrsUpload` / `saveSrsUpload`: an SRS attached to a dashboard command is saved into the run directory under its original name (four types, 2 MB cap) and becomes `--srs`; held out of the framework zip and restored after slimming. |
 | `db/migrate.ts` | Versioned migrations (`schema_version`), `openDatabase`. A migration marked `rebuild` (a table other rows reference is recreated) runs with foreign keys off outside the transaction, is verified with `foreign_key_check` before commit, and turns foreign keys back on. |
@@ -115,12 +114,11 @@ These run with `npx tsx scripts/<name>.ts`. They are deterministic and fast. Eac
 | `smoke-gateway-critic.ts` | The critic parse through the gateway's `runExploreRequest` path with a fake client: the saucedemo-shaped response (a regex quoted inside a reason) parses to 3 verdicts, the per-run critic model override is applied at call time and restored, the dashboard model chip never reaches the critic, the CLI path yields byte-identical verdicts, `eventForUi` forwards `critic_done` untouched, and an unparseable response keeps its raw text. |
 | `smoke-output-layout.ts` | Per-run directories, run ids, the latest pointer, `--out` override, legacy migration (dry run, idempotence), transcribe into a run directory. |
 | `smoke-index.ts` | The SQLite index over a fixture tree: row counts, every runs row equals its report, host projects and Unassigned, findings dedupe, verdicts and coverage rows, delete-and-reindex identical. |
-| `smoke-api.ts` | REST routes: token required, responses equal the index, path validation, reindex, static serving and `/legacy`. |
+| `smoke-api.ts` | REST routes: token required, responses equal the index, path validation, reindex, static serving at `/`. |
 | `smoke-acceptance.ts` | PR A acceptance: delete the database, index again, every run under the right project with report numbers. `--real` runs it against this repo's output/. |
 | `smoke-dashboard.ts` | Boots a real gateway on a spare port over a fixture tree and drives the built dashboard: Projects cards and Runs table equal the API, filters, empty states, header from the socket, both themes; writes the docs screenshots. |
 | `smoke-run-detail.ts` | Run Detail endpoint and page: seeded verdicts (pass shipped, rework repaired, reject dropped) and one finding come back exactly as stored; the finding is never a scenario row; unknown or vanished report is a 404 naming the path; legacy returns `legacy: true` without scenarios; artifacts only from the run directory; the page renders the finding under "Product behavior to review", "No findings recorded" for a quiet run, the legacy notice, and the back link. |
 | `smoke-ui-pipeline.ts` | The live run view renders from a realistic event sequence, then from a fixture run-report: funnel counts equal the reconciliation arrays' lengths, verdict journeys match `review.repair`, the cost split sums the report's fields, rule coverage lists considered-not-automated rules with reasons; history shows Resume only with a checkpoint and Regenerate only on a completed run; both themes keep 4.5:1 contrast. |
-| `smoke-ui.ts` | `qa-core-ui.html` loads in real Chromium with zero JS console errors. Critical pipeline DOM nodes (Stability row, stats container) are present. |
 | `smoke-dashboard-math.ts` | Compares the old (buggy) vs new (fixed) per-site dashboard math against real on-disk runs. Confirms the fix produces sensible numbers, not just "different" numbers. |
 
 ---
@@ -177,7 +175,7 @@ Markdown files that describe QA-Core's commands to the OpenClaw skill router. Ea
 
 For new contributors, this is the call stack from a user pressing Enter to the final spec landing on disk:
 
-1. User types `/explore https://example.com/` in `qa-core-ui.html`.
+1. User starts `/explore https://example.com/` from the dashboard's Terminal page.
 2. UI sends a WebSocket message to `gateway.ts`.
 3. `gateway.ts` parses the slash command and calls `explore()` from `runtime.ts`.
 4. `runtime.ts` calls `installEvalShim()` (`eval-shim.ts`) on the browser context.
@@ -204,7 +202,7 @@ These are the rules anyone modifying the agent should preserve. Every smoke test
 4. **`page.evaluate` calls work under tsx.** Enforced by `eval-shim.ts` installed in every browser context. Tested by `smoke-tools.ts` and `smoke-ui.ts`.
 5. **Every scenario starts from a clean state.** `begin_scenario` clears cookies + storage. The transcribed spec emits a matching `beforeEach`. Enforced in `tools.ts`, `transcriber.ts`, and `pom.ts`.
 6. **Planner parser accepts any of the four known Haiku format variants.** Enforced in `planner.ts`. Tested by `smoke-planner-parse.ts`.
-7. **Dashboard per-site math divides by `runsWithPass`, not total runs.** Enforced in `qa-core-ui.html` (`renderDashboard`). Tested by `smoke-dashboard-math.ts`.
+7. **Dashboard per-site math divides by `runsWithPass`, not total runs.** Enforced in `src/server/runs.ts` (`sitePassRates`). Tested by `smoke-dashboard-math.ts`.
 
 ---
 

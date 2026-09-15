@@ -27,19 +27,21 @@ export function Trends({ trends }: { trends: ProjectTrends }) {
       <div className="grid gap-3 md:grid-cols-3">
         <Chart title="tests shipped" metric="shipped" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.shipped ?? 0, label: String(p.shipped ?? 0) }))} color="hsl(var(--pass))" />
         <Chart title="total cost" metric="cost" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.cost_total, label: usd(p.cost_total) }))} color="hsl(var(--cost))" />
-        <Chart title="flake rate" metric="flake" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.flake_rate ?? 0, label: p.flake_rate == null ? 'n/a' : `${(p.flake_rate * 100).toFixed(1)}%` }))} color="hsl(var(--rework))" />
+        <Chart title="flake rate" metric="flake" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.flake_rate ?? 0, label: p.flake_rate == null ? 'n/a' : `${(p.flake_rate * 100).toFixed(1)}%` }))} color="hsl(var(--rework))" fixedMax={1} />
       </div>
     </div>
   );
 }
 
-function Chart({ title, metric, points, color }: { title: string; metric: string; points: Array<{ run_id: string; at: string | null; value: number; label: string }>; color: string }) {
+function Chart({ title, metric, points, color, fixedMax }: { title: string; metric: string; points: Array<{ run_id: string; at: string | null; value: number; label: string }>; color: string; fixedMax?: number }) {
   const w = 320, h = 120, padX = 28, padTop = 22, padBottom = 26;
-  const max = Math.max(...points.map((p) => p.value), 0);
+  // The axis always starts at zero; shipped and cost scale to their maximum, flake rate spans 0 to 100%.
+  const min = 0;
+  const max = fixedMax ?? Math.max(...points.map((p) => p.value), 0);
   const x = (i: number) => points.length === 1 ? w / 2 : padX + (i / (points.length - 1)) * (w - padX * 2);
-  const y = (v: number) => max === 0 ? h - padBottom : h - padBottom - (v / max) * (h - padTop - padBottom);
+  const y = (v: number) => max === 0 ? h - padBottom : h - padBottom - ((v - min) / max) * (h - padTop - padBottom);
   return (
-    <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="trend-chart" data-metric={metric}>
+    <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="trend-chart" data-metric={metric} data-axis-min={min} data-axis-max={max}>
       <div className="text-s font-semibold text-fg">{title}</div>
       <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img" aria-label={`${title} per completed run`} className="mt-1">
         <line x1={padX} x2={w - padX} y1={h - padBottom} y2={h - padBottom} stroke="hsl(var(--line-strong))" strokeWidth="1" />

@@ -3,10 +3,10 @@ import path from 'node:path';
 import type http from 'node:http';
 
 /**
- * Static serving for the gateway: the built dashboard (dashboard/dist) at /,
- * the legacy single-file UI at /legacy. A single-page app gets index.html
- * for any path that is not a file, so client-side routes deep-link. Paths
- * are resolved inside their directory only.
+ * Static serving for the gateway: the built dashboard (dashboard/dist) at /.
+ * A single-page app gets index.html for any path that is not a file, so
+ * client-side routes deep-link. Paths are resolved inside the dist directory
+ * only.
  */
 
 const TYPES: Record<string, string> = {
@@ -18,20 +18,15 @@ const TYPES: Record<string, string> = {
 export interface StaticContext {
   /** dashboard/dist */
   distDir: string;
-  /** qa-core-ui.html */
-  legacyFile: string;
 }
 
 export function createStaticHandler(ctx: StaticContext): (req: http.IncomingMessage, res: http.ServerResponse) => boolean {
   return (req, res) => {
     const url = new URL(req.url ?? '/', 'http://local');
     if ((req.method ?? 'GET') !== 'GET' && req.method !== 'HEAD') return false;
-    if (url.pathname === '/legacy' || url.pathname === '/legacy/') {
-      return sendFile(res, ctx.legacyFile);
-    }
     if (!fs.existsSync(path.join(ctx.distDir, 'index.html'))) {
       if (url.pathname === '/' || url.pathname === '/index.html') {
-        const body = `<!doctype html><meta charset="utf-8"><title>QA-Core</title><body style="font-family:system-ui;padding:40px;max-width:640px"><h1>Dashboard not built</h1><p>Run <code>npm run dashboard:build</code> (or <code>npm run dashboard:dev</code> while developing), then reload. The legacy UI is at <a href="/legacy">/legacy</a>.</p></body>`;
+        const body = `<!doctype html><meta charset="utf-8"><title>QA-Core</title><body style="font-family:system-ui;padding:40px;max-width:640px"><h1>Dashboard not built</h1><p>Run <code>npm run dashboard:build</code> (or <code>npm run dashboard:dev</code> while developing), then reload.</p></body>`;
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(body);
         return true;

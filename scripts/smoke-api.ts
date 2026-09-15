@@ -8,7 +8,7 @@
  *     the zip streams with the right headers
  *   - report and zip paths are served only from inside the project root
  *   - POST /api/reindex re-scans and returns counts
- *   - static: /legacy serves the single-file UI, a missing dist gets a build
+ *   - static: the dashboard is served at /, a missing dist gets a build
  *     hint, a built dist serves assets with SPA fallback and blocks traversal
  * Runs on a real http server on an ephemeral port. No browser, no model.
  */
@@ -65,9 +65,7 @@ const TOKEN = 't0k3n';
 let reindexCalls = 0;
 const api = createApiHandler({ db, root, token: TOKEN, reindex: () => { reindexCalls++; return indexOutput(db, root); } });
 const distDir = path.join(root, 'dashboard', 'dist');
-const legacyFile = path.join(root, 'qa-core-ui.html');
-fs.writeFileSync(legacyFile, '<!doctype html><title>legacy</title>');
-const statik = createStaticHandler({ distDir, legacyFile });
+const statik = createStaticHandler({ distDir });
 const server = http.createServer(async (req, res) => {
   if (await api(req, res)) return;
   if (statik(req, res)) return;
@@ -142,7 +140,7 @@ check('V. POST /api/reindex re-scans and returns counts', re.status === 200 && r
 check('W. unknown /api route is 404 JSON', (await get('/api/nothing', auth)).status === 404);
 
 /* ─── static ─── */
-check('X. /legacy serves the single-file UI', (await get('/legacy')).text.includes('<title>legacy</title>'));
+check('X. without a built dist an unknown route is a plain 404 (the retired single-file page is gone; with a dist it falls back to the SPA, see AB)', (await get('/some/client/route')).status === 404);
 const hint = await get('/');
 check('Y. without a built dist, / explains how to build', hint.status === 200 && /npm run dashboard:build/.test(hint.text));
 fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
@@ -159,4 +157,4 @@ db.close();
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: every /api route needs the gateway token, responses equal the index, files are served only from inside the root, and the dashboard is static-served with /legacy alongside.');
+console.log('OK: every /api route needs the gateway token, responses equal the index, files are served only from inside the root, and the dashboard is static-served at /.');

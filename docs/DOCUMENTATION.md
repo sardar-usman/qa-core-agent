@@ -106,7 +106,7 @@ npx playwright test output/<run-id>/<name>.spec.ts
 
 ```bash
 npm run gateway                   # terminal 1
-open qa-core-ui.html              # terminal 2 (or just double-click in Finder)
+open http://127.0.0.1:18789/      # terminal 2: the dashboard
 ```
 
 Click **Connect** in the header, then type `/explore https://www.saucedemo.com/`.
@@ -702,7 +702,7 @@ See [section 15](#15-eval-harness) for details.
 
 ### 6.5 `npm run gateway`
 
-Start the WebSocket gateway that bridges `qa-core-ui.html` to the runtime.
+Start the gateway that serves the dashboard and bridges it to the runtime.
 
 ```bash
 npm run gateway
@@ -764,7 +764,7 @@ The most direct way to invoke QA-Core. All commands are exposed under `npm run <
 
 ### 7.2 Web UI + WebSocket gateway
 
-The chat-style UI at [`qa-core-ui.html`](../qa-core-ui.html) talks to a WebSocket gateway started by `npm run gateway`. The gateway parses slash commands out of incoming messages and dispatches to the runtime, streaming progress back as user-readable messages.
+The dashboard (`dashboard/`, a Vite + React app the gateway serves at `/`) talks to the WebSocket gateway started by `npm run gateway`. The gateway parses slash commands out of incoming messages and dispatches to the runtime, streaming progress back as user-readable messages.
 
 **Wire protocol:**
 
@@ -1569,7 +1569,7 @@ qa-core-agent/
 ├── .github/workflows/
 │   └── qa-core.yml                       # CI workflow
 │
-├── qa-core-ui.html                       # the web UI (single-file)
+├── dashboard/                            # the web UI (Vite + React), served by the gateway at /
 │
 ├── output/                               # generated specs land here (gitignored)
 ├── .qa-core/                             # per-host memory (gitignored)
