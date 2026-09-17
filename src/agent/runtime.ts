@@ -247,6 +247,67 @@ export function splitCeiling(
   return { explorerUsd: ceilingUsd - reserveUsd, reserveUsd, reserve };
 }
 
+/**
+ * Closeout grace at the cost ceiling, in USD above the loop's ceiling. When
+ * the ceiling trips while the scenario in progress already holds a passed
+ * assertion, the loop keeps running closing calls only (assert,
+ * assert_compare, capture, end_scenario: the same set as the step-budget
+ * CLOSEOUT_GRACE in tools.ts) until the scenario closes or the spend passes
+ * ceiling + grace. Like the ceiling itself, the grace bounds when a call may
+ * START, not its size, so the overshoot is at most one call past it. A
+ * scenario with no assertion yet is never salvaged, and begin_scenario and
+ * every action tool are refused throughout, so the grace can never start new
+ * work. Applies to the repair pass too, since it runs the same loop.
+ */
+export const COST_CLOSEOUT_GRACE_USD = 0.10;
+
+/** cacheReadTokens over every prompt token (input + cache read + cache creation); 0 when nothing was billed. */
+export function cachedInputShare(cost: Pick<RunReport['cost'], 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'>): number {
+  const total = cost.inputTokens + cost.cacheReadTokens + cost.cacheCreationTokens;
+  return total > 0 ? cost.cacheReadTokens / total : 0;
+}
+
+/**
+ * Place the prompt-cache breakpoints for one API call and return how many the
+ * request carries. Four are allowed per request; this is the whole budget:
+ *
+ *   1. the frozen SYSTEM_PROMPT block (marked at construction; caches the tool
+ *      definitions with it, since tools render before system)
+ *   2. the per-host memory block, when present (marked at construction)
+ *   3. the LAST system block when it is the plan or the repair note: stable for
+ *      the whole loop, so one marker on the last of them covers both
+ *   4. the last content block of the last message: the growing conversation.
+ *      Moved forward every call (the previous call's marker is removed), so
+ *      each call reads the whole prior history from cache and writes only the
+ *      round just appended. Earlier positions stay valid read points.
+ *
+ * Without a memory block or a plan the count is lower, never higher. The
+ * prefix is always above the model's minimum cacheable length (2048 tokens on
+ * Opus 4.7; the system prompt alone is over 10k), so the marker is never
+ * silently ignored. Exported so smoke-prompt-cache locks the placement.
+ */
+export function placeCacheBreakpoints(systemBlocks: Anthropic.TextBlockParam[], messages: Anthropic.MessageParam[]): number {
+  type Marked = { cache_control?: { type: 'ephemeral' } };
+  const mark = (b: object): void => { (b as Marked).cache_control = { type: 'ephemeral' }; };
+  const unmark = (b: object): void => { delete (b as Marked).cache_control; };
+  const last = systemBlocks[systemBlocks.length - 1];
+  if (last) mark(last);
+  for (const m of messages) {
+    if (Array.isArray(m.content)) for (const b of m.content) unmark(b);
+  }
+  const tail = messages[messages.length - 1];
+  if (tail) {
+    if (typeof tail.content === 'string') tail.content = [{ type: 'text', text: tail.content }];
+    const block = tail.content[tail.content.length - 1];
+    if (block) mark(block);
+  }
+  let count = systemBlocks.filter((b) => (b as Marked).cache_control).length;
+  for (const m of messages) {
+    if (Array.isArray(m.content)) count += m.content.filter((b) => (b as Marked).cache_control).length;
+  }
+  return count;
+}
+
 /** What the run keeps and loses when the cost ceiling stops the Explorer. */
 export interface CostCeilingSalvage {
   /** The in-progress scenario that was discarded, when there was one. */
@@ -387,6 +448,11 @@ async function repairPass(args: {
     });
     const notes: string[] = [];
     const reasons: Record<string, string> = {};
+    if (loop.closeout) {
+      notes.push(loop.closeout.closed
+        ? `"${loop.closeout.scenario}" closed under the cost closeout grace ($${loop.closeout.usd.toFixed(4)}).`
+        : `"${loop.closeout.scenario}" did not close within the cost closeout grace ($${loop.closeout.usd.toFixed(4)} spent).`);
+    }
     if (ctx.current) {
       const why = loop.endedReason === 'cost_ceiling' ? 'mid-repair when the cost ceiling hit; the in-progress work is discarded' : 'left unfinished by the repair pass; discarded';
       notes.push(`"${ctx.current.name}" was ${why}.`);
@@ -996,7 +1062,13 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       // 'other' never reaches here: the loop rethrows genuine bugs.
       stopped = stop && stop.kind !== 'other'
         ? { kind: stop.kind, reason: stop.reason }
-        : { kind: 'cost_ceiling', reason: `cost ceiling hit ($${explorerLoop.cost.usd.toFixed(4)} against the explorer share); raise QA_CORE_COST_CEILING and resume` };
+        : {
+            kind: 'cost_ceiling',
+            reason: `cost ceiling hit ($${explorerLoop.cost.usd.toFixed(4)} against the explorer share); raise QA_CORE_COST_CEILING and resume`,
+            // The closeout grace record: which scenario the grace closed (or
+            // failed to close) and what it cost, so the run page can show it.
+            ...(explorerLoop.closeout ? { closeout: explorerLoop.closeout } : {}),
+          };
     } else if (ctx.current) {
       const budgetHit = explorerLoop.endedReason === 'budget' || ctx.steps >= maxSteps;
       if (budgetHit) {
@@ -1180,6 +1252,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           cost.cacheCreationTokens += repair.cost.cacheCreationTokens;
           cost.usd += repair.cost.usd;
           cost.repairUsd = (cost.repairUsd ?? 0) + repair.cost.usd;
+          // The per-call record and the cache share cover both loops; the
+          // closeout grace spend adds up across them.
+          cost.calls = [...(cost.calls ?? []), ...(repair.cost.calls ?? [])];
+          cost.cachedInputShare = cachedInputShare(cost);
+          if (repair.cost.closeoutGraceUsd) cost.closeoutGraceUsd = (cost.closeoutGraceUsd ?? 0) + repair.cost.closeoutGraceUsd;
           steps += repair.steps;
           cpState.spend.repair += repair.cost.usd;
           // Heals carry over (no funnel impact). The repair attempt's own
@@ -1584,11 +1661,15 @@ export async function runAgentLoop(args: {
    * loses at most the scenario in progress.
    */
   onScenarioComplete?: (loopCostUsd: number) => void;
+  /** Closeout grace above maxUsd; defaults to COST_CLOSEOUT_GRACE_USD. 0 disables it. */
+  closeoutGraceUsd?: number;
 }): Promise<{
   cost: RunReport['cost'];
   endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped';
   /** Set when endedReason is 'run_stopped': why the API call could not continue. */
   stop?: StopClassification;
+  /** Set when the cost closeout grace was used: the scenario, what the grace cost, and whether it closed. */
+  closeout?: { scenario: string; usd: number; closed: boolean };
 }> {
   const { client, model, maxUsd, price, maxSteps, ctx, url, onEvent } = args;
 
@@ -1596,7 +1677,7 @@ export async function runAgentLoop(args: {
   // planned scenario is neither explored nor skipped via skip_scenario.
   ctx.plannedNames = args.plan.map((p) => p.name);
 
-  const cost = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 };
+  const cost: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, calls: [] };
 
   // Build a system prompt with three cached blocks:
   //   1. Frozen behavior rules (SYSTEM_PROMPT) — never changes, max cache value
@@ -1654,6 +1735,13 @@ export async function runAgentLoop(args: {
   const maxTurns = maxSteps + 8;
   let endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped' = 'budget';
   let stop: StopClassification | undefined;
+  // Cost closeout grace state: set when the ceiling trips with a closable
+  // scenario in progress. startUsd is the spend when the grace began.
+  const graceUsd = args.closeoutGraceUsd ?? COST_CLOSEOUT_GRACE_USD;
+  let closeout: { scenario: string; startUsd: number } | undefined;
+  const closeoutResult = (): { scenario: string; usd: number; closed: boolean } | undefined => closeout
+    ? { scenario: closeout.scenario, usd: cost.usd - closeout.startUsd, closed: ctx.scenarios.some((s) => s.name === closeout!.scenario) }
+    : undefined;
   let completedSeen = ctx.scenarios.length;
   // How many 'heal' events have already been surfaced. In-run selector
   // recoveries are recorded on ctx by resolveAndRecord (deep inside a tool
@@ -1666,16 +1754,42 @@ export async function runAgentLoop(args: {
       // Do NOT throw: aborting here used to lose every completed scenario.
       // Stop the loop cleanly instead; the caller salvages the completed
       // scenarios and runs the rest of the pipeline on them.
-      endedReason = 'cost_ceiling';
-      onEvent?.({
-        type: 'message',
-        text: `Cost ceiling reached ($${cost.usd.toFixed(3)} > $${maxUsd}); stopping the Explorer and salvaging completed scenarios.`,
-      });
-      break;
+      //
+      // Closeout grace (COST_CLOSEOUT_GRACE_USD): a scenario in progress that
+      // already holds a passed assertion is one or two cheap closing calls
+      // from shipping, so it may keep closing while the spend stays within
+      // ceiling + grace. Only the closing set runs (ctx._costCloseout, checked
+      // in runTool); a scenario with no assertion is never salvaged.
+      const closable = ctx.current != null
+        && ctx.current.steps.some((s) => s.kind === 'assert' || s.kind === 'assert_compare')
+        && graceUsd > 0
+        && cost.usd <= maxUsd + graceUsd;
+      if (!closable) {
+        endedReason = 'cost_ceiling';
+        onEvent?.({
+          type: 'message',
+          text: closeout
+            ? `Cost ceiling closeout grace exhausted ($${cost.usd.toFixed(3)} > $${maxUsd} + $${graceUsd.toFixed(2)}); "${closeout.scenario}" did not close and is discarded.`
+            : `Cost ceiling reached ($${cost.usd.toFixed(3)} > $${maxUsd}); stopping the Explorer and salvaging completed scenarios.`,
+        });
+        break;
+      }
+      if (!closeout) {
+        closeout = { scenario: ctx.current!.name, startUsd: cost.usd };
+        ctx._costCloseout = true;
+        onEvent?.({
+          type: 'message',
+          text: `Cost ceiling reached ($${cost.usd.toFixed(3)} > $${maxUsd}); "${closeout.scenario}" already holds a passed assertion, so closing calls only are allowed under the $${graceUsd.toFixed(2)} grace.`,
+        });
+      }
     }
 
     onEvent?.({ type: 'thinking_started' });
 
+    // Prompt cache: move the conversation breakpoint to the latest message so
+    // this call reads the whole prior history from cache. See
+    // placeCacheBreakpoints for the four-slot placement.
+    placeCacheBreakpoints(systemBlocks, messages);
     let response: Anthropic.Message;
     try {
       response = await client.messages.create({
@@ -1706,6 +1820,7 @@ export async function runAgentLoop(args: {
     cost.outputTokens += u.output_tokens;
     cost.cacheReadTokens += u.cache_read_input_tokens ?? 0;
     cost.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+    cost.calls!.push({ input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheCreation: u.cache_creation_input_tokens ?? 0 });
     cost.usd =
       (cost.inputTokens * price.in +
         cost.outputTokens * price.out +
@@ -1761,10 +1876,28 @@ export async function runAgentLoop(args: {
       completedSeen = ctx.scenarios.length;
       args.onScenarioComplete?.(cost.usd);
     }
+    // Under the closeout grace the ceiling has already tripped: the loop ends
+    // as a ceiling stop the moment the scenario closes (or finish ran), never
+    // as a normal finish, so the salvage bookkeeping and the checkpoint apply.
+    if (closeout && (!ctx.current || finished)) {
+      endedReason = 'cost_ceiling';
+      const r = closeoutResult()!;
+      onEvent?.({
+        type: 'message',
+        text: r.closed
+          ? `Closeout grace: "${r.scenario}" closed for $${r.usd.toFixed(4)}; stopping at the cost ceiling.`
+          : `Closeout grace: "${r.scenario}" did not close ($${r.usd.toFixed(4)} spent); stopping at the cost ceiling.`,
+      });
+      break;
+    }
     if (finished) { endedReason = 'finished'; break; }
   }
   // If the for-loop ran to completion without a break, endedReason stays
   // 'budget' — the turn cap (which tracks the step budget) was reached.
+  ctx._costCloseout = false;
+  cost.cachedInputShare = cachedInputShare(cost);
+  const closeoutOut = closeoutResult();
+  if (closeoutOut) cost.closeoutGraceUsd = closeoutOut.usd;
 
-  return { cost, endedReason, ...(stop ? { stop } : {}) };
+  return { cost, endedReason, ...(stop ? { stop } : {}), ...(closeoutOut ? { closeout: closeoutOut } : {}) };
 }

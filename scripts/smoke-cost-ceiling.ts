@@ -8,12 +8,16 @@
  *   - the summary line states: ceiling hit, N completed, M never explored
  *   - rule coverage classifies a rule cited only by never-explored scenarios
  *     as planned-not-explored, not planned-but-dropped
+ *   - closeout grace (COST_CLOSEOUT_GRACE_USD): a scenario in progress that
+ *     already holds a passed assertion may close under the grace with closing
+ *     calls only; one with no assertion is discarded at once; begin_scenario
+ *     and action tools are refused under the grace; the grace has a ceiling
  *
  * The loop is driven with a FAKE Anthropic client (a cost tracker that burns
  * the ceiling after the first turn) and a stub page. No network. No LLM.
  * No browser.
  */
-import { runAgentLoop, salvageOnCostCeiling, splitCeiling, DEFAULT_REPAIR_RESERVE } from '../src/agent/runtime.js';
+import { runAgentLoop, salvageOnCostCeiling, splitCeiling, DEFAULT_REPAIR_RESERVE, COST_CLOSEOUT_GRACE_USD } from '../src/agent/runtime.js';
 import { decideRepairPass, type ScenarioVerdict } from '../src/agent/critic.js';
 import { createContext } from '../src/agent/tools.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
@@ -280,6 +284,96 @@ check('H6. unmatched rework verdicts skip WITH a printed reason naming them',
 // No rework verdicts at all: nothing to decide, nothing to print.
 const hNone = decideRepairPass({ scenarios: liveScenarios, verdicts: [{ scenario: liveNames[0]!, verdict: 'pass', reasons: [], required_fixes: [] }], spentUsd: 1, ceilingUsd: 6 });
 check('H7. no rework verdicts -> null (no decision line needed)', hNone === null);
+
+/* ─── I. closeout grace at the cost ceiling ────────────────────────────────── */
+// Each fake call costs $0.30 (4k in, 11.2k out at Opus prices). Ceiling $0.25:
+// the first call trips it. The script says what tool each call returns.
+function scriptedClient(script: Array<Array<{ name: string; input?: object }>>): { client: Anthropic; calls: () => number } {
+  let n = 0;
+  const client = {
+    messages: {
+      create: async () => {
+        const tools = script[n] ?? [{ name: 'bogus_tool_never_touches_the_page' }];
+        n++;
+        return {
+          usage: { input_tokens: 4_000, output_tokens: 11_200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          content: tools.map((t, i) => ({ type: 'tool_use', id: `i${n}-${i}`, name: t.name, input: t.input ?? {} })),
+          stop_reason: 'tool_use',
+        };
+      },
+    },
+  } as unknown as Anthropic;
+  return { client, calls: () => n };
+}
+const withAssert = (name: string): Scenario => ({
+  name, category: 'happy', feature: 'login',
+  steps: [{ kind: 'navigate', url: 'https://shop.example/' }, { kind: 'assert', name: 'URL contains "/x"', assertion: { type: 'toHaveURL', pattern: '/x' } }],
+} as unknown as Scenario);
+const PRICE = { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 } as const;
+type LoopEvent = Parameters<NonNullable<Parameters<typeof runAgentLoop>[0]['onEvent']>>[0];
+async function closeoutRun(opts: { current: Scenario; script: Array<Array<{ name: string; input?: object }>>; graceUsd?: number }) {
+  const c = scriptedClient(opts.script);
+  const cctx = createContext(stubPage, 40);
+  cctx.current = opts.current;
+  const events: LoopEvent[] = [];
+  const loop = await runAgentLoop({
+    client: c.client, model: 'claude-opus-4-7', maxUsd: 0.25, price: PRICE, maxSteps: 40,
+    ctx: cctx, url: 'https://shop.example/', plan: [],
+    ...(opts.graceUsd !== undefined ? { closeoutGraceUsd: opts.graceUsd } : {}),
+    onEvent: (e) => { events.push(e); },
+  });
+  const texts = events.filter((e): e is Extract<LoopEvent, { type: 'message' }> => e.type === 'message').map((e) => e.text);
+  const results = events.filter((e): e is Extract<LoopEvent, { type: 'tool_result' }> => e.type === 'tool_result');
+  return { loop, ctx: cctx, calls: c.calls(), texts, results };
+}
+
+check('I0. the default grace is $0.10', COST_CLOSEOUT_GRACE_USD === 0.1);
+
+// I1: a scenario with a passed assertion closes under the grace.
+{
+  const r = await closeoutRun({ current: withAssert('closing scenario'), script: [[{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'end_scenario' }]] });
+  check('I1a. the loop allowed one closing call past the ceiling and stopped once the scenario closed', r.calls === 2 && r.loop.endedReason === 'cost_ceiling', `calls=${r.calls} ended=${r.loop.endedReason}`);
+  check('I1b. the scenario is kept as completed, nothing is left in progress', r.ctx.scenarios.some((s) => s.name === 'closing scenario') && r.ctx.current === null);
+  check('I1c. the closeout record names the scenario, closed, and costs exactly the closing call', r.loop.closeout?.scenario === 'closing scenario' && r.loop.closeout.closed === true && Math.abs(r.loop.closeout.usd - 0.3) < 1e-9, JSON.stringify(r.loop.closeout));
+  check('I1d. the grace spend is recorded on cost.closeoutGraceUsd and every call is in cost.calls', Math.abs((r.loop.cost.closeoutGraceUsd ?? 0) - 0.3) < 1e-9 && r.loop.cost.calls?.length === 2);
+  check('I1e. the console says closing calls only were allowed, then that the scenario closed', r.texts.some((t) => t.includes('closing calls only')) && r.texts.some((t) => t.includes('closed for $')), JSON.stringify(r.texts));
+  check('I1f. the closeout flag is cleared on the context after the loop', r.ctx._costCloseout === false);
+}
+
+// I2: a scenario with NO assertion is discarded at the ceiling, no grace.
+{
+  const noAssert = { name: 'mid-fill scenario', category: 'happy', steps: [{ kind: 'navigate', url: 'https://shop.example/' }] } as unknown as Scenario;
+  const r = await closeoutRun({ current: noAssert, script: [[{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'end_scenario' }]] });
+  check('I2a. no grace without an assertion: the loop stopped at the first over-ceiling check', r.calls === 1 && r.loop.endedReason === 'cost_ceiling' && r.loop.closeout === undefined, `calls=${r.calls}`);
+  check('I2b. the scenario stays in progress for the salvage path to discard', r.ctx.current?.name === 'mid-fill scenario' && r.ctx.scenarios.length === 0);
+}
+
+// I3: under the grace, begin_scenario and action tools are refused; closing still works.
+{
+  const r = await closeoutRun({
+    current: withAssert('closing scenario'),
+    script: [[{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'begin_scenario', input: { name: 'a new one', category: 'happy' } }, { name: 'click', input: { intent: 'login button', role: 'button' } }], [{ name: 'end_scenario' }]],
+    graceUsd: 0.5,
+  });
+  const refused = r.results.filter((x) => (x.name === 'begin_scenario' || x.name === 'click') && x.ok === false && /Only closing calls/.test(x.error ?? ''));
+  check('I3a. begin_scenario and click are refused under the grace with the closing-only message', refused.length === 2, JSON.stringify(r.results.map((x) => [x.name, x.ok, x.error?.slice(0, 40)])));
+  check('I3b. no new scenario started; the original closed on the next call', !r.ctx.scenarios.some((s) => s.name === 'a new one') && r.ctx.scenarios.some((s) => s.name === 'closing scenario') && r.calls === 3 && r.loop.closeout?.closed === true);
+  check('I3c. the grace spend covers both closing turns', Math.abs((r.loop.closeout?.usd ?? 0) - 0.6) < 1e-9, String(r.loop.closeout?.usd));
+}
+
+// I4: the grace has a ceiling of its own; past it the scenario is discarded.
+{
+  const r = await closeoutRun({ current: withAssert('slow to close'), script: [[{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'end_scenario' }]] });
+  check('I4a. one grace call at $0.30 exhausts a $0.10 grace: the loop stopped before the third call', r.calls === 2 && r.loop.endedReason === 'cost_ceiling', `calls=${r.calls}`);
+  check('I4b. the closeout is recorded as not closed and the scenario stays in progress for discard', r.loop.closeout?.closed === false && r.ctx.current?.name === 'slow to close' && r.ctx.scenarios.length === 0, JSON.stringify(r.loop.closeout));
+  check('I4c. the console names the exhausted grace', r.texts.some((t) => t.includes('closeout grace exhausted')), JSON.stringify(r.texts));
+}
+
+// I5: a zero grace disables the closeout entirely.
+{
+  const r = await closeoutRun({ current: withAssert('closing scenario'), script: [[{ name: 'bogus_tool_never_touches_the_page' }], [{ name: 'end_scenario' }]], graceUsd: 0 });
+  check('I5. grace 0: the old behaviour, stop at once and discard', r.calls === 1 && r.loop.closeout === undefined && r.ctx.current?.name === 'closing scenario');
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

@@ -88,6 +88,8 @@ export interface RunDetailStages {
     skipped: Array<{ scenario: string; reason: string }>; incomplete: Array<{ scenario: string; reason: string }>;
     heals: Array<{ scenario: string | null; intent: string; from: string; to: string }>;
     stopped: { kind: string; reason: string } | null;
+    cache: { calls: number; cached_share: number; input_tokens: number; cache_read_tokens: number; cache_creation_tokens: number } | null;
+    closeout: { scenario: string; usd: number; closed: boolean } | null;
   };
   review: {
     status: StageStatus; stat: string; ran: boolean; counts: { pass: number; rework: number; reject: number }; critic_usd: number;
