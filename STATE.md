@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-16. Update this file at the end of every working day.
+Updated: 2026-09-17. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -111,8 +111,17 @@ during the maturity pass:
 
 ### From run ec8eff (ranked by cost impact)
 
-- Explorer cost per scenario: $0.85 on a heavy SPA against $0.15 on
-  saucedemo; DOM payload per step is the lever.
+- FIXED (PR #18, Sept 17): the Explorer re-sent the whole conversation
+  uncached on every call; five get_dom results were paid for about 60
+  times each, $5.37 of the $6.01. Conversation history is now cached
+  (breakpoint on the latest message). Proof run saucedemo
+  20260917T124620Z-34307c: total $0.4536 against $0.6187 on Sept 14,
+  exploration $0.3391 against $0.6033 with 39 steps against 28, 95.8
+  percent of prompt tokens from cache over 32 calls. Also: closeout
+  grace at the cost ceiling.
+  Diagnosis: docs/audit/run-ec8eff-diagnosis.md (commit 85bf6ea). Fix
+  list order: cache (done), critic sees selectors + doctrine alignment +
+  lockout handling (PR 2), the rest (PR 3), then the after-run.
 - Assertion doctrine: five of six scenarios drew rework for the same
   three patterns (vacuous visible checks, hard-coded catalogue values,
   count-only checks); make them hard rules and gate what is statically
