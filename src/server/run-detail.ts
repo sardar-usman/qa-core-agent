@@ -100,6 +100,15 @@ export interface RunDetailStages {
     incomplete: Array<{ scenario: string; reason: string }>;
     heals: Array<{ scenario: string | null; intent: string; from: string; to: string }>;
     stopped: { kind: string; reason: string } | null;
+    /**
+     * cost.calls summarised: API calls made and the share of every prompt
+     * token served from the cache (cost.cachedInputShare), with the three
+     * token totals it is computed from. null when the report predates the
+     * per-call record.
+     */
+    cache: { calls: number; cached_share: number; input_tokens: number; cache_read_tokens: number; cache_creation_tokens: number } | null;
+    /** stopped.closeout: the cost closeout grace, when it was used. */
+    closeout: { scenario: string; usd: number; closed: boolean } | null;
   };
   review: {
     status: StageStatus; stat: string;
@@ -379,6 +388,12 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
     gate_broken: gateBroken, skipped, incomplete,
     heals: (report.heals ?? []).map((h) => ({ scenario: h.scenario ?? null, intent: h.intent, from: h.from, to: h.to })),
     stopped,
+    cache: Array.isArray(cost.calls)
+      ? { calls: cost.calls.length, cached_share: usd(cost.cachedInputShare), input_tokens: usd(cost.inputTokens), cache_read_tokens: usd(cost.cacheReadTokens), cache_creation_tokens: usd(cost.cacheCreationTokens) }
+      : null,
+    closeout: report.stopped?.closeout
+      ? { scenario: report.stopped.closeout.scenario, usd: usd(report.stopped.closeout.usd), closed: report.stopped.closeout.closed === true }
+      : null,
   };
 
   const review = report.review;

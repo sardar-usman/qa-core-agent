@@ -172,8 +172,10 @@ function Explore({ e }: { e: RunDetailStages['explore'] }) {
         <K label="scenarios recorded" value={e.scenarios_recorded} testid="explore-recorded" />
         <K label="explorer" value={usd(e.explorer_usd)} cost testid="explore-cost" />
         {e.repair_usd ? <K label="of which repair pass" value={usd(e.repair_usd)} cost /> : null}
+        {e.cache ? <K label="prompt tokens from cache" value={`${(e.cache.cached_share * 100).toFixed(1)}% over ${e.cache.calls} call${e.cache.calls === 1 ? '' : 's'}`} testid="explore-cache-share" /> : null}
         {e.heals.length ? <K label="recovered selectors" value={e.heals.length} testid="explore-heals-count" /> : null}
       </KV>
+      {e.closeout ? <div className="mt-2 text-s text-fg-2" data-testid="explore-closeout"><b>closeout grace</b> {e.closeout.closed ? 'closed' : 'did not close'} "{e.closeout.scenario}" for {usd(e.closeout.usd)} past the ceiling</div> : null}
       <div className="mt-1 text-s text-fg-2">The step budget and the explorer sub-ceiling are console settings, not recorded in run-report.json; steps and cost above are the report's own.</div>
       {e.stopped ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-s text-rework" data-testid="explore-stopped"><b>stopped</b> {e.stopped.reason}</div> : null}
       {e.gate_injections.length || e.gate_broken.length ? (

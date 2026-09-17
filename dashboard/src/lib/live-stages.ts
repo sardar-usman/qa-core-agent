@@ -56,6 +56,8 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
     skipped, incomplete: [],
     heals: of('heal').map((h) => ({ scenario: (h.scenario as string | undefined) ?? null, intent: String(h.intent ?? ''), from: String(h.from ?? ''), to: String(h.to ?? '') })),
     stopped: null,
+    // The per-call cache record and the closeout grace live on the report only; the live view never derives them.
+    cache: null, closeout: null,
   };
 
   // The latest critic_done for a scenario wins: a repaired scenario's second verdict replaces its first.

@@ -118,6 +118,14 @@ export interface ToolContext {
   brokenByGate: Array<{ scenario: string; reason: string; attempts: number }>;
   /** Scenarios begun but never finalized (step budget exhausted, abandoned). */
   incomplete: Array<{ scenario: string; reason: string }>;
+  /**
+   * Set by the runtime when the cost ceiling tripped while the current
+   * scenario already holds a passed assertion. While set, only the closing
+   * calls (assert, assert_compare, capture, end_scenario) and finish run;
+   * begin_scenario and every action tool are refused, so the closeout grace
+   * can finish the scenario in progress and never start new work.
+   */
+  _costCloseout: boolean;
   /** Gate: RULE 2 timeout injections applied to accepted scenarios. */
   _gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }>;
   /**
@@ -202,6 +210,7 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     _gateAttempts: new Map(),
     brokenByGate: [],
     incomplete: [],
+    _costCloseout: false,
     _gateInjectionLog: [],
     captures: new Map(),
     _assertFailures: new Map(),
@@ -1030,6 +1039,17 @@ export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolRe
     ctx.current != null && isClosingCall && ctx.steps <= ctx.maxSteps + CLOSEOUT_GRACE;
   if (ctx.steps > ctx.maxSteps && call.name !== 'finish' && !withinCloseoutGrace) {
     return { ok: false, error: `Step budget exceeded (${ctx.maxSteps}). Call finish() now.` };
+  }
+  // Cost closeout grace: the same closing set as the step grace, for the same
+  // reason. The ceiling tripped with a scenario in progress that already
+  // holds a passed assertion; the runtime lets it close instead of discarding
+  // the spent work, and nothing else may start. Rejected cheaply, before any
+  // page action runs.
+  if (ctx._costCloseout && !isClosingCall && call.name !== 'finish') {
+    return {
+      ok: false,
+      error: 'Cost ceiling reached. Only closing calls are accepted now (assert, assert_compare, capture, end_scenario) for the scenario in progress: close it with end_scenario. begin_scenario and every action tool are refused; the run stops once the scenario closes.',
+    };
   }
   // Retry-cap block. The previous scenario hit OUTCOME_RETRY_CAP and was recorded
   // as a finding. Reject everything except starting the next scenario or

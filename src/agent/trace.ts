@@ -271,7 +271,17 @@ export interface RunReport {
    * persistent API failure). The CLI keeps checkpoint.json when this is set,
    * so the run can be resumed instead of restarted.
    */
-  stopped?: { kind: 'cost_ceiling' | 'billing' | 'api'; reason: string };
+  stopped?: {
+    kind: 'cost_ceiling' | 'billing' | 'api';
+    reason: string;
+    /**
+     * Set when the cost ceiling tripped mid-scenario and the scenario already
+     * held a passed assertion, so the loop allowed closing calls only under
+     * COST_CLOSEOUT_GRACE_USD: which scenario, what the grace cost, and
+     * whether the scenario closed (kept) or the grace ran out (discarded).
+     */
+    closeout?: { scenario: string; usd: number; closed: boolean };
+  };
   /**
    * Multi-page discovery record: the rung that produced the page set, the
    * final (filtered) pages, and every warning the ladder recorded. Absent on
@@ -301,6 +311,24 @@ export interface RunReport {
      * cost split reads it from the report instead of deriving it.
      */
     repairUsd?: number;
+    /**
+     * One entry per API call of the Explorer loop and the repair pass, in
+     * order, exactly as the API billed it. The four totals above are the sums
+     * of these; the per-call view is what proves the conversation history is
+     * served from cache (cacheRead dominates input on every call past the
+     * second). A resumed run lists only the calls of the resuming process.
+     */
+    calls?: Array<{ input: number; output: number; cacheRead: number; cacheCreation: number }>;
+    /**
+     * cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreationTokens):
+     * the share of every prompt token that was served from the cache.
+     */
+    cachedInputShare?: number;
+    /**
+     * USD spent past the cost ceiling closing out a scenario under
+     * COST_CLOSEOUT_GRACE_USD (explorer plus repair pass). Included in `usd`.
+     */
+    closeoutGraceUsd?: number;
   };
   steps: number;
   startedAt: string;
