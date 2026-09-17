@@ -76,6 +76,8 @@ export interface RunDetailHeader {
 export interface RunDetailArtifact { name: string; kind: string; size: number; href: string }
 /** The server emits the first four; pending and running exist only in the live view built from events. */
 export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable' | 'pending' | 'running';
+export interface ObservedOnFailure { url: string; target: string | null; messages: string[] }
+
 export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
 /** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
 export interface RunDetailStages {
@@ -99,8 +101,16 @@ export interface RunDetailStages {
   };
   verify: {
     status: StageStatus; stat: string;
-    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null }> } | null;
-    stability: { iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null; verdicts: Array<{ name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean }> } | null;
+    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
+    stability: {
+      iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null;
+      attempts_total: number; warning: string | null;
+      verdicts: Array<{
+        name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean;
+        first_failure: { iteration: number; failed_step: number; step_kind: string; error: string; observed: ObservedOnFailure | null } | null;
+        attempts: Array<{ attempt: number; kind: string; change: string; reason: string; pattern: string | null; outcome: string }>;
+      }>;
+    } | null;
   };
   summary: {
     status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; uncovered_count: number; attention: number;

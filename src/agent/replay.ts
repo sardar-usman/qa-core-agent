@@ -4,6 +4,7 @@ import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js'
 import { generateUnique } from './unique-data.js';
 import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
+import { captureActualState } from './actual-state.js';
 
 /**
  * Reality check.
@@ -39,6 +40,19 @@ export type ReplayEvent =
   | { type: 'scenario_failed'; name: string; failedStep: number; stepKind: string; error: string }
   | { type: 'replay_done'; passed: number; failed: number; durationMs: number };
 
+/**
+ * What the page showed when a step failed on a re-run: the URL, the text at
+ * the failing step's target (assertions, compares and captures), and any
+ * visible alert / validation / toast / status text, the same reading the
+ * Explorer records on a finding. A reader can tell "Account locked" from a
+ * timing race without re-running anything.
+ */
+export interface ObservedState {
+  url: string;
+  target: string | null;
+  messages: string[];
+}
+
 export interface ReplayVerdict {
   name: string;
   passed: boolean;
@@ -48,6 +62,8 @@ export interface ReplayVerdict {
   stepKind?: TraceStep['kind'];
   /** First line of the underlying Playwright error message. */
   error?: string;
+  /** The page as it was when the step failed. Absent on a pass. */
+  observed?: ObservedState;
   durationMs: number;
 }
 
@@ -131,6 +147,7 @@ export async function replayScenarioOnce(
   let failedStep: number | undefined;
   let stepKind: TraceStep['kind'] | undefined;
   let errorMsg: string | undefined;
+  let observed: ObservedState | undefined;
 
   // Capture-and-compare values read during THIS replay run. Keyed by the
   // capture's varName; assert_compare reads back from here so it compares
@@ -149,6 +166,7 @@ export async function replayScenarioOnce(
         failedStep = j;
         stepKind = step.kind;
         errorMsg = firstLine((err as Error).message ?? String(err));
+        observed = await observeFailure(page, step);
         break;
       }
       j++;
@@ -163,8 +181,34 @@ export async function replayScenarioOnce(
     failedStep,
     stepKind,
     error: errorMsg,
+    ...(observed ? { observed } : {}),
     durationMs: Date.now() - scenarioStart,
   };
+}
+
+/**
+ * Read the page after a failed step: URL and visible messages through
+ * captureActualState (the Explorer's own finding reader), plus the text at the
+ * failing step's target when the step has one. Never throws; a target that
+ * cannot be read records null.
+ */
+export async function observeFailure(page: Page, step: TraceStep): Promise<ObservedState> {
+  const actual = await captureActualState(page);
+  const record: SelectorRecord | null = step.kind === 'assert'
+    ? ('target' in step.assertion ? step.assertion.target : null)
+    : step.kind === 'assert_compare' || step.kind === 'capture'
+      ? step.target
+      : null;
+  let target: string | null = null;
+  if (record) {
+    try {
+      const raw = await locatorFromRecord(page, record).first().textContent({ timeout: 1000 });
+      target = raw === null ? null : raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+    } catch {
+      target = null;
+    }
+  }
+  return { url: actual.url, target, messages: actual.messages };
 }
 
 /** varName -> the relation its later assert_compare uses (first one wins). */

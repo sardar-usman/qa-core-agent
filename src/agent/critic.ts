@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { Scenario, TraceStep } from './trace.js';
+import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { scenarioNameKey } from './rule-coverage.js';
+import { emitLocatorCall } from './selectors.js';
+import { ASSERTION_DOCTRINE } from './doctrine.js';
 
 /**
  * Critic — Step 3 of the multi-agent pipeline.
@@ -35,7 +37,9 @@ export interface CriticClient {
   messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> };
 }
 
-const SYSTEM = `You are the Critic, a senior QA reviewer. You will be shown test scenarios that an exploration agent recorded against a live page. Every scenario executed successfully — the actions worked. Your job is to judge whether the ASSERTIONS would catch a real regression.
+export const CRITIC_SYSTEM_PROMPT = `You are the Critic, a senior QA reviewer. You will be shown test scenarios that an exploration agent recorded against a live page. Every scenario executed successfully, the actions worked. Your job is to judge whether the ASSERTIONS would catch a real regression.
+
+Every recorded step names its target as "intent = locator", where the locator is the resolved Playwright call exactly as the emitted spec will write it: page.getByRole(...), page.getByTestId(...), page.locator("css"), with .first() when the cascade had to take the first of several matches and page.frameLocator(...) when the element lives inside a frame. The locator shown IS the locator under test. Judge it on its merits; never report a locator as unspecified, missing, or unknown.
 
 For each scenario return one JSON object:
 
@@ -61,7 +65,9 @@ Flagging rules — apply to every scenario:
 
 4. Missing outcome assertion: a scenario where the key action (submit, navigate, toggle) has no assertion on its outcome is "rework" or "reject".
 
-5. Volatile identifiers: an assertion or capture pinned to a specific catalog-item test id (a generated id like product-01JX8F2K or sku-8842) is "rework" — such ids rot when the data reseeds. The required_fix names a durable anchor instead: text content, a count, a relation between values, or a stable structural id (search-query, sort-select).
+5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape.
+
+${ASSERTION_DOCTRINE}
 
 Return a JSON array with one element per scenario in the same order as the input, then a <summary> paragraph:
 
@@ -103,7 +109,7 @@ export async function critique(opts: {
   const response = await client.messages.create({
     model,
     max_tokens: 3000,
-    system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
+    system: [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
     messages: [
       {
         role: 'user',
@@ -140,17 +146,29 @@ export function renderValueForCritic(v: string): string {
   return `${JSON.stringify(v.slice(0, VALUE_RENDER_CAP))} …[value continues, ${v.length} chars total]`;
 }
 
+/**
+ * A step target for the Critic: the intent the Explorer gave, then the
+ * resolved locator exactly as the emitter writes it (cascade level and
+ * argument, the frame chain, .first() when ambiguous). The Critic used to see
+ * the intent alone, which defaulted to "element" when the model gave none, so
+ * it reported recorded selectors as "not specified" (run 34307c, the lockout
+ * scenario) and could not apply its own volatile-id rule.
+ */
+function where(t: SelectorRecord): string {
+  return `${t.intent} = ${emitLocatorCall(t.level, t.arg, t.ambiguous === true, t.frameChain, t.filterText)}`;
+}
+
 // Exported: the repair pass renders each rework scenario's recorded steps
 // with this same compact notation so the Explorer starts from what it did.
 export function describeStep(step: TraceStep): string {
   switch (step.kind) {
     case 'navigate': return `navigate(${step.url})`;
-    case 'click':    return `click(${step.target.intent} via ${step.target.level})`;
-    case 'fill':     return `fill(${step.target.intent}, ${renderValueForCritic(step.value)})`;
-    case 'press':    return `press(${step.key} on ${step.target.intent})`;
-    case 'select_option': return `select_option(${step.target.intent}, ${step.by}=${renderValueForCritic(step.option)})`;
-    case 'set_checked':   return `set_checked(${step.target.intent}, ${step.checked ? 'check' : 'uncheck'})`;
-    case 'set_input_files': return `set_input_files(${step.target.intent}, ${step.files.length} file(s))`;
+    case 'click':    return `click(${where(step.target)})`;
+    case 'fill':     return `fill(${where(step.target)}, ${renderValueForCritic(step.value)})`;
+    case 'press':    return `press(${step.key} on ${where(step.target)})`;
+    case 'select_option': return `select_option(${where(step.target)}, ${step.by}=${renderValueForCritic(step.option)})`;
+    case 'set_checked':   return `set_checked(${where(step.target)}, ${step.checked ? 'check' : 'uncheck'})`;
+    case 'set_input_files': return `set_input_files(${where(step.target)}, ${step.files.length} file(s))`;
     case 'wait':          return `wait(${step.ms}ms)`;
     case 'stability_wait': return `stability_wait(${step.ms}ms)`;
     case 'checkpoint': return `# ${step.label}`;
@@ -159,15 +177,15 @@ export function describeStep(step: TraceStep): string {
       switch (a.type) {
         case 'toBeVisible': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} visible${t}`;
+          return `assert ${where(a.target)} visible${t}`;
         }
         case 'toHaveText': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} has text "${a.text}"${t}`;
+          return `assert ${where(a.target)} has text "${a.text}"${t}`;
         }
         case 'toContainText': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} contains "${a.text}"${t}`;
+          return `assert ${where(a.target)} contains "${a.text}"${t}`;
         }
         case 'toHaveURL':
           // Rendered as a quoted pattern string, not /pattern/: a pattern
@@ -176,30 +194,30 @@ export function describeStep(step: TraceStep): string {
           return `assert URL matches regex ${JSON.stringify(a.pattern)}`;
         case 'toBeHidden': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} hidden/absent${t}`;
+          return `assert ${where(a.target)} hidden/absent${t}`;
         }
         case 'toHaveCount':
-          return `assert ${a.target.intent} count=${a.count}`;
+          return `assert ${where(a.target)} count=${a.count}`;
         case 'toHaveAttribute': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} ${a.attribute}="${a.value}"${t}`;
+          return `assert ${where(a.target)} ${a.attribute}="${a.value}"${t}`;
         }
         case 'toHaveValue': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${a.target.intent} value="${a.value}"${t}`;
+          return `assert ${where(a.target)} value="${a.value}"${t}`;
         }
       }
     }
     case 'capture': {
-      const what = step.source === 'attribute' ? `${step.attribute} of ${step.target.intent}` : step.source === 'count' ? `count of ${step.target.intent}` : `text of ${step.target.intent}`;
+      const what = step.source === 'attribute' ? `${step.attribute} of ${where(step.target)}` : step.source === 'count' ? `count of ${where(step.target)}` : `text of ${where(step.target)}`;
       return `capture ${what} -> ${step.varName}`;
     }
     case 'assert_compare': {
       const bounds = step.bounds ? `, strictly within ${step.bounds.min}..${step.bounds.max}` : '';
-      return `assert_compare ${step.readVar} ${step.relation} vs captured ${step.varName}${bounds}`;
+      return `assert_compare ${step.readVar} ${step.relation} vs captured ${step.varName} at ${where(step.target)}${bounds}`;
     }
     case 'wait_for_state':
-      return `wait_for_state(${step.target.intent}, ${step.state})`;
+      return `wait_for_state(${where(step.target)}, ${step.state})`;
   }
 }
 

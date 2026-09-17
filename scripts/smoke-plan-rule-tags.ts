@@ -10,7 +10,8 @@
  *
  * This drives the REAL exported parsePlan, not a mirror.
  */
-import { parsePlan } from '../src/agent/planner.js';
+import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor } from '../src/agent/planner.js';
+import type { RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
 let fail = 0;
@@ -83,6 +84,23 @@ check('F4. two-bracket line has no ruleIds key', !('ruleIds' in mixed[2]!));
 /* ─── G. malformed rule brackets do not break the line ─────────────────────── */
 const junk = parsePlan('1. [login][negative][R3;R7] rejected a wrong password — fails if a wrong password is accepted');
 check('G1. an unparseable rule bracket falls through without crashing', junk.length === 1, JSON.stringify(junk));
+
+/* ─── H. lockout is state: wrong-credential negatives use a non-existent account ── */
+check('H1. the Planner SYSTEM prompt carries the credential steering verbatim', PLANNER_SYSTEM.includes(CREDENTIAL_STEERING));
+check('H2. the steering says non-existent credentials, never a real account with a wrong password, and why (lockout, re-runs)',
+  /credentials that do not exist/.test(CREDENTIAL_STEERING) && /never a real account with a wrong password/.test(CREDENTIAL_STEERING) && /lock an account after a few failed attempts/.test(CREDENTIAL_STEERING) && /re-run at least four more times/.test(CREDENTIAL_STEERING));
+check('H3. the steering names the exception: a rule that names a locked account keeps the real account', /whose point IS the lockout/.test(CREDENTIAL_STEERING) && /keeps the real account/.test(CREDENTIAL_STEERING));
+const lockMap: RequirementsMap = { features: [{ name: 'login', description: 'sign in', rules: [
+  { id: 'R2', text: 'A wrong password shows the error and the user stays on the login page.', type: 'behavior' },
+  { id: 'R4', text: 'The locked_out_user account is refused with an error stating the user has been locked out.', type: 'behavior' },
+  { id: 'R5', text: 'A blocked IP sees a captcha.', type: 'behavior' },
+] }], roles: [], truncated: false };
+const withLock = credentialSteeringFor(lockMap);
+check('H4. a lockout rule is named as keeping the real account; the wrong-password rule and a "blocked" rule are not',
+  /Lockout rules on this page: R4\./.test(withLock) && !/R2/.test(withLock) && !/R5/.test(withLock) && /keeps the real account/.test(withLock), withLock);
+const noLock = credentialSteeringFor({ features: [{ name: 'login', description: 'sign in', rules: [{ id: 'R2', text: 'A wrong password shows the error.', type: 'behavior' }] }], roles: [], truncated: false });
+check('H5. with no lockout rule the block says so and every negative uses a non-existent account', /No stated rule names a locked account/.test(noLock) && noLock.includes(CREDENTIAL_STEERING));
+check('H6. without a map the block still carries the steering', credentialSteeringFor(undefined).includes(CREDENTIAL_STEERING));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

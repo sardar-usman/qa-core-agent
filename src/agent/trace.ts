@@ -377,6 +377,8 @@ export interface RunReport {
       passed: boolean;
       failedStep?: number;
       stepKind?: TraceStep['kind'];
+      /** The page as it was when the step failed: URL, the failing target's text, visible messages. */
+      observed?: { url: string; target: string | null; messages: string[] };
       error?: string;
       durationMs: number;
     }>;
@@ -419,6 +421,11 @@ export interface RunReport {
     recovered?: number;
     /** USD cost of all Stabilizer LLM calls during this stage. */
     stabilizerCostUsd?: number;
+    /**
+     * Set when the Stabilizer spent money but no verdict records an attempt:
+     * an inconsistency the run page shows loudly instead of "none recorded".
+     */
+    warning?: string;
     verdicts: Array<{
       name: string;
       iterations: number;
@@ -428,13 +435,20 @@ export interface RunReport {
       pattern?: string;
       /** Shipped only after a Stabilizer relaxed-rule fix — excluded from strict stable. */
       relaxed?: boolean;
-      /** Stabilizer attempted recovery and gave up — reclassified broken. */
+      /** True whenever the classification is broken: the Stabilizer gave up, or never had a pass to work from. */
       gaveUp?: boolean;
+      /**
+       * Every Stabilizer attempt on this scenario, in order: what it changed
+       * and what happened. Empty when the Stabilizer did not run on it.
+       */
+      attempts?: Array<{ attempt: number; kind: string; change: string; reason: string; pattern: string | null; outcome: 'recovered' | 'still-failing' | 'gave-up' | 'crashed' }>;
       firstFailure?: {
         iteration: number;
         failedStep: number;
         stepKind: TraceStep['kind'] | 'unknown';
         error: string;
+        /** The page as it was when the step failed: URL, the failing target's text, visible messages. */
+        observed?: { url: string; target: string | null; messages: string[] };
       };
       durationMs: number;
     }>;

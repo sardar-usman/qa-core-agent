@@ -86,8 +86,8 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
   };
 
   const replayRows = [
-    ...of('replay_scenario_passed').map((r) => ({ name: String(r.name ?? ''), passed: true, failed_step: null, step_kind: null, error: null })),
-    ...of('replay_scenario_failed').map((r) => ({ name: String(r.name ?? ''), passed: false, failed_step: Number(r.failedStep ?? 0), step_kind: (r.stepKind as string | undefined) ?? null, error: (r.error as string | undefined) ?? null })),
+    ...of('replay_scenario_passed').map((r) => ({ name: String(r.name ?? ''), passed: true, failed_step: null, step_kind: null, error: null, observed: null })),
+    ...of('replay_scenario_failed').map((r) => ({ name: String(r.name ?? ''), passed: false, failed_step: Number(r.failedStep ?? 0), step_kind: (r.stepKind as string | undefined) ?? null, error: (r.error as string | undefined) ?? null, observed: null })),
   ];
   const replayDone = of('replay_done')[0];
   const patterns = new Map<string, string[]>();
@@ -107,7 +107,9 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
     stability: stabilityStarted ? {
       iterations: Number(stabilityStarted.iterations ?? 0), passed: Number(stabilityDone?.stable ?? 0), flaked: Number(stabilityDone?.flaked ?? 0), flaky: null, broken: null,
       recovered: stabilityDone ? Number(stabilityDone.recovered ?? 0) : null, flake_rate: Number(stabilityDone?.flakeRate ?? 0), stabilizer_cost_usd: stabilityDone ? Number(stabilityDone.stabilizerCostUsd ?? 0) : null,
-      verdicts: [...patterns.entries()].map(([name, p]) => ({ name, iterations: Number(stabilityStarted.iterations ?? p.length), passes: p.filter((x) => x === 'P').length, pattern: p.join('-'), classification: null, recovered: false, gave_up: false })),
+      // Attempts, observed text and the warning live on the report only; the live view never derives them.
+      attempts_total: 0, warning: null,
+      verdicts: [...patterns.entries()].map(([name, p]) => ({ name, iterations: Number(stabilityStarted.iterations ?? p.length), passes: p.filter((x) => x === 'P').length, pattern: p.join('-'), classification: null, recovered: false, gave_up: false, first_failure: null, attempts: [] })),
     } : null,
   };
 

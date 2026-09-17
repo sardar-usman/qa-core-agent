@@ -22,6 +22,7 @@ import {
 import { capVolatile } from '../src/agent/page-filter.js';
 import { isVolatilePath, type DiscoveredPage } from '../src/agent/discovery.js';
 import { VOLATILE_PAGE_GUIDANCE } from '../src/agent/planner.js';
+import { EXPLORER_SYSTEM_PROMPT } from '../src/agent/runtime.js';
 import fs from 'node:fs';
 
 let pass = 0;
@@ -162,8 +163,8 @@ check('G1. the LLM filter guidance prefers stable paths and caps volatile picks'
   /at most ONE such volatile detail page/.test(fs.readFileSync('src/agent/page-filter.ts', 'utf8')));
 check('G2. the Planner volatile-page guidance instructs the durable path',
   /DURABLE INTERACTION/.test(VOLATILE_PAGE_GUIDANCE) && /VISIBLE NAME/.test(VOLATILE_PAGE_GUIDANCE) && /Never plan a scenario that hardcodes this URL/.test(VOLATILE_PAGE_GUIDANCE));
-check('G3. the Explorer doctrine bans direct generated-id navigation',
-  /Never navigate directly to a URL that carries a generated id/.test(fs.readFileSync('src/agent/runtime.ts', 'utf8')));
+check('G3. the Explorer doctrine bans direct generated-id navigation (checked on the rendered prompt; the doctrine text lives in doctrine.ts)',
+  /Never navigate directly to a URL that carries a generated id/.test(EXPLORER_SYSTEM_PROMPT));
 check('G4. the plan text marks volatile pages for the Explorer',
   /VOLATILE generated-id URL/.test(fs.readFileSync('src/agent/runtime.ts', 'utf8')));
 

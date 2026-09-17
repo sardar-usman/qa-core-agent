@@ -84,7 +84,32 @@ export interface PlanResult {
   rejected: Array<{ scenario: PlannedScenario; reason: string }>;
 }
 
-const SYSTEM = `You are the Planner. Your job: look at a single web page and propose a focused list of test scenarios for a Playwright suite.
+/**
+ * Credentials in wrong-credential negatives. A real account with a wrong
+ * password locks after a few failed attempts on many sites, and every recorded
+ * scenario is re-run at least four more times (replay plus three stability
+ * runs) before it ships, so the account would be locked mid-verification and
+ * the test would fail for a reason that is no regression (run ec8eff: the one
+ * Critic-passed scenario died this way). Shared by the Planner SYSTEM prompt
+ * and the per-page block (credentialSteeringFor), which names the rules that
+ * are the exception.
+ */
+export const CREDENTIAL_STEERING = `Wrong-credential negatives use credentials that do not exist on the site (an invented username or email such as no-such-user-7f3k or nobody+7f3k@example.invalid, with any password), never a real account with a wrong password. Sites lock an account after a few failed attempts, and every recorded scenario is re-run at least four more times (one replay plus three stability runs) before it ships, so a real account would be locked mid-verification and the test would fail for a reason that is no regression. The one exception is a scenario whose point IS the lockout: when a stated rule names a locked or locked-out account, that scenario keeps the real account the rule names and cites the rule.`;
+
+/**
+ * The per-page credentials block: the steering above plus which stated rules
+ * on this page name a locked account (those scenarios keep the real account)
+ * or that none does. Deterministic, so smoke-plan-rule-tags locks it.
+ */
+export function credentialSteeringFor(map?: RequirementsMap): string {
+  const lockRules = (map?.features ?? []).flatMap((f) => f.rules.filter((r) => /\block(ed|s|out|ing)?\b/i.test(r.text)).map((r) => r.id));
+  const exception = lockRules.length > 0
+    ? `Lockout rules on this page: ${lockRules.join(', ')}. The scenario for each of these keeps the real account the rule names; every other wrong-credential negative uses a non-existent account.`
+    : 'No stated rule names a locked account here, so every wrong-credential negative uses a non-existent account.';
+  return `Credentials in negative scenarios: ${CREDENTIAL_STEERING}\n${exception}`;
+}
+
+export const PLANNER_SYSTEM = `You are the Planner. Your job: look at a single web page and propose a focused list of test scenarios for a Playwright suite.
 
 Constraints:
 - Propose 3-6 scenarios total.
@@ -111,6 +136,7 @@ Match the assertion to what the feature actually does:
 - If the behavior is "a value changes" (a regenerating id, a rotating token, an incrementing counter, a shuffled order), the scenario must capture the value before the action and prove it is different after. The regression it catches: the value stopped changing. Name the capture-then-compare in the scenario, e.g. "captured the button id, reloaded, the id changed".
 - If the behavior is "a value stays stable" (a stopped progress bar, a locked field, a pinned row), the scenario must prove the value did not change. The regression it catches: the value drifted when it should have held.
 - Negative scenarios assert the failure state itself (the error message, the rejected input), not a success URL.
+- ${CREDENTIAL_STEERING}
 - Happy-path success must be tied to a signal you can actually see on this page, not an assumed redirect. Do not write "lands on /dashboard" or "redirects to /login" unless the snapshot gives you real evidence the page navigates there (a link to it, a stated next step, copy that names it). If you cannot confirm where a successful submit goes, do not invent a destination URL. Assert a plausible on-page success signal instead (a success or confirmation message, the form clearing, a logged-in control appearing) and say in the rationale that the post-submit state should be reviewed. A made-up redirect makes the test impossible to pass, so the Explorer would thrash on it; an observable signal can actually go green or red. The Explorer records the real post-submit state either way, so a wrong guess surfaces as a finding instead of a silent failure.
 
 a11y category guidance — only propose an a11y scenario when one of these is verifiable from the page:
@@ -573,6 +599,9 @@ export async function plan(opts: {
     // content explicitly. The SYSTEM rule already forbids planning only around
     // chrome, but listing the real frame content here makes Haiku act on it.
     const volatileBlock = opts.volatilePage ? `\n\n${VOLATILE_PAGE_GUIDANCE}` : '';
+    // Credentials for wrong-credential negatives, with the lockout rules on
+    // this page named as the exception (see CREDENTIAL_STEERING).
+    const credentialBlock = `\n\n${credentialSteeringFor(opts.requirements)}`;
 
     const contentFrames = snapshot.frames.filter(frameHasContent);
     const iframeBlock = contentFrames.length > 0
@@ -588,7 +617,7 @@ export async function plan(opts: {
     // untouched, and it is absent entirely without a map, so the no-SRS prompt
     // stays byte-identical to the pre-SRS behaviour.
     const systemBlocks: Anthropic.TextBlockParam[] = [
-      { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
+      { type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
     ];
     if (opts.requirements) {
       systemBlocks.push({ type: 'text', text: `${renderRequirementsBlock(opts.requirements)}\n\n${RULE_PLANNING}` } as Anthropic.TextBlockParam);
@@ -601,7 +630,7 @@ export async function plan(opts: {
       messages: [
         {
           role: 'user',
-          content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}${volatileBlock}\n\nPropose scenarios.`,
+          content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}${volatileBlock}${credentialBlock}\n\nPropose scenarios.`,
         },
       ],
     });

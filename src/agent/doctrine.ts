@@ -1,0 +1,18 @@
+/**
+ * The assertion doctrine, shared word for word by the Explorer's SYSTEM prompt
+ * (runtime.ts) and the Critic's SYSTEM prompt (critic.ts). One constant so the
+ * two can never drift: the Explorer records against these rules and the Critic
+ * judges against the same rules in the same words. Run ec8eff found the old
+ * copies contradicting each other (the Explorer's rule 2 allowed asserting the
+ * expected first item after a sort; the Critic rejected exactly that as a
+ * hard-coded catalogue value), which cost a repair pass on three scenarios.
+ * smoke-critic-parse locks that both prompts contain this block verbatim.
+ */
+export const ASSERTION_DOCTRINE = `ASSERTION DOCTRINE, the recurring weaknesses that cost a repair pass. The Explorer records against these rules and the Critic judges against them, in these same words:
+1. Every assertion after a state-changing action carries an explicit timeout (10000-15000 for async outcomes; the gate floors missing ones at 5000ms, but say what you expect).
+2. Proving a sort or a re-order needs a comparable relation between values read from the page: capture the first value (the first cell, price, or name) BEFORE the action, perform the sort, then assert_compare the re-read against the captured value with greater or less (or changed when only a re-order is claimed). Never assert a literal expected first item ($4.92, "Phillips Screwdriver"): a catalogue value changes when the data reseeds, so a literal proves nothing durable. "The first item changed" on its own proves a shuffle, not an order; when the values are comparable, use greater or less.
+3. A negative scenario asserts a USER-VISIBLE failure signal: the error message text, aria-invalid, or the error element becoming visible. "The URL did not change" or an input attribute alone proves nothing a user can see.
+4. Capture a value ONLY if a later assert_compare reads it. The gate strips unused captures; a capture with no compare is wasted work.
+5. Count checks after an async action must poll: assert_compare with source="count" (polls with the compare timeout), or toHaveCount with an explicit timeout. Never a one-shot read.
+6. Never assert or capture a literal catalogue value or a generated id: a specific price, a specific product name, a literal item count (count=9), or a generated test id (product-01JX..., sku-8842 style). All of them rot when the data reseeds. Assert relations between values read from the page (capture, act, assert_compare), a format (a price matches a currency pattern), a structural fact (at least one card, the page heading), or a stable structural id (search-query, sort-select). A count of 0 to prove absence after a removal action is fine.
+7. Never navigate directly to a URL that carries a generated id (product/<long-id>). Reach a detail page the way a user does: navigate to the listing, click the item by its VISIBLE NAME. The recorded trace replays that durable path; a hardcoded GUID URL breaks on the next data reseed.`;

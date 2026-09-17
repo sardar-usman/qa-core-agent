@@ -1,6 +1,7 @@
 import { chromium, type Browser } from 'playwright';
+import type Anthropic from '@anthropic-ai/sdk';
 import type { Scenario, TraceStep } from './trace.js';
-import { replayScenarioOnce } from './replay.js';
+import { replayScenarioOnce, type ObservedState } from './replay.js';
 import {
   proposeStabilityFix,
   applyProposal,
@@ -44,6 +45,8 @@ export interface StabilityOptions {
   stabilize?: boolean;
   /** Override the model used by the Stabilizer. Defaults to claude-sonnet-4-6. */
   stabilizerModel?: string;
+  /** Test seam: a fake Anthropic client for the Stabilizer. Production callers leave it unset. */
+  stabilizerClient?: Anthropic;
   /**
    * Max number of fix attempts per flaky scenario (Tier B — multi-attempt
    * loop). Defaults to 3. Each attempt: propose a fix → re-run iterations →
@@ -98,6 +101,22 @@ export type StabilityEvent =
  */
 export type StabilityClassification = 'stable' | 'flaky' | 'broken';
 
+/**
+ * One Stabilizer attempt on a scenario: what it changed and what happened.
+ * Recorded on the verdict so the report and the run page can show the work,
+ * never "none recorded" for a stage that spent money.
+ */
+export interface StabilizerAttempt {
+  attempt: number;
+  kind: StabilizerProposal['kind'];
+  /** describeProposal(proposal): the change applied, e.g. timeout_raise(10000ms). */
+  change: string;
+  reason: string;
+  /** The re-run pattern after the change, or null when nothing was re-run (gave up, crashed). */
+  pattern: string | null;
+  outcome: 'recovered' | 'still-failing' | 'gave-up' | 'crashed';
+}
+
 export interface StabilityVerdict {
   name: string;
   iterations: number;
@@ -116,16 +135,22 @@ export interface StabilityVerdict {
    */
   relaxed?: boolean;
   /**
-   * True when the Stabilizer attempted to recover this scenario and gave up.
-   * Such scenarios are reclassified broken so the broken count includes them.
+   * True whenever the classification is broken: the Stabilizer gave up on
+   * it, or it never passed an iteration so the Stabilizer had nothing to
+   * work from. Set from the classification, never from a code path, so a
+   * broken verdict can never read as "no attempt made".
    */
   gaveUp?: boolean;
+  /** Every Stabilizer attempt on this scenario, in order. Empty when it did not run on it. */
+  attempts: StabilizerAttempt[];
   /** Earliest failing iteration, if any. Iteration numbers are 1-based. */
   firstFailure?: {
     iteration: number;
     failedStep: number;
     stepKind: TraceStep['kind'] | 'unknown';
     error: string;
+    /** The page as it was when the step failed (URL, the target's text, visible messages), so "Account locked" reads as state, not flake. */
+    observed?: ObservedState;
   };
   durationMs: number;
 }
@@ -148,6 +173,22 @@ export interface StabilityResult {
   durationMs: number;
   /** USD cost of all Stabilizer LLM calls during this stage. */
   stabilizerCostUsd: number;
+  /** Set when the Stabilizer spent money but no verdict records an attempt (see stabilizerWarningFor). */
+  warning?: string;
+}
+
+/**
+ * Cost with no attempts is an inconsistency, not "none recorded": every
+ * Stabilizer call is recorded on the verdict it worked on, so spend without a
+ * record means the record was lost. The report and the run page show this
+ * as a warning.
+ */
+export function stabilizerWarningFor(stabilizerCostUsd: number, verdicts: Array<Pick<StabilityVerdict, 'attempts'>>): string | undefined {
+  const attempts = verdicts.reduce((n, v) => n + (v.attempts ?? []).length, 0);
+  if (stabilizerCostUsd > 0 && attempts === 0) {
+    return `Stabilizer spent $${stabilizerCostUsd.toFixed(4)} but recorded no attempts on any scenario; the attempt record was lost.`;
+  }
+  return undefined;
 }
 
 const DEFAULT_ITERATIONS = 3;
@@ -184,6 +225,8 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
       // Set when the Stabilizer attempted recovery and gave up — these are
       // reclassified broken so the broken count includes them.
       let gaveUp = false;
+      // Every Stabilizer attempt on this scenario, recorded as it happens.
+      const attempts: StabilizerAttempt[] = [];
 
       // Stage 5b — Stabilizer. Multi-attempt loop (Tier B). When the
       // scenario is flaky (passed at least once), try up to maxAttempts
@@ -223,6 +266,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
               },
               previousAttempts: history,
               model: opts.stabilizerModel,
+              ...(opts.stabilizerClient ? { client: opts.stabilizerClient } : {}),
             });
             proposalForCatch = proposal;
             proposalCost = costUsd;
@@ -243,6 +287,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
               // "gave up after N attempts" summary counts the proposal the
               // run just printed as "attempt 1" instead of reporting 0.
               history.push({ proposal, pattern: latestPattern });
+              attempts.push({ attempt, kind: proposal.kind, change: describeProposal(proposal), reason: proposal.reason, pattern: null, outcome: 'gave-up' });
               // 'broken' overrides the classification — this is a spec defect,
               // not a timing race. Don't re-run; mark it broken and drop it.
               if (proposal.kind === 'broken') classification = 'broken';
@@ -269,6 +314,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
                 winningStrategy: describeProposal(proposal),
               });
               recovered.push(scenario);
+              attempts.push({ attempt, kind: proposal.kind, change: describeProposal(proposal), reason: proposal.reason, pattern: latestPattern, outcome: 'recovered' });
               recoveredHere = true;
               relaxed = true;
               break;
@@ -277,6 +323,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
             // Still failing — record this attempt and try again with the
             // LLM aware of what was tried.
             history.push({ proposal, pattern: latestPattern });
+            attempts.push({ attempt, kind: proposal.kind, change: describeProposal(proposal), reason: proposal.reason, pattern: latestPattern, outcome: 'still-failing' });
             if (reRun.firstFailure) latestFailure = reRun.firstFailure;
             opts.onEvent?.({
               type: 'stabilize_attempt_failed',
@@ -301,6 +348,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
               proposal: proposalForCatch ?? { kind: 'none', reason: `crash: ${reason}` },
               pattern: latestPattern,
             });
+            attempts.push({ attempt, kind: proposalForCatch?.kind ?? 'none', change: proposalForCatch ? describeProposal(proposalForCatch) : 'crash', reason: `stabilizer threw: ${reason}`, pattern: null, outcome: 'crashed' });
             break; // crashes are usually deterministic — don't loop on them
           }
         }
@@ -322,10 +370,8 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
           //
           // The 'broken' proposal case above already set classification='broken'
           // directly (a declared spec defect); leave that as-is.
-          if (classification !== 'broken') {
-            classification = 'broken';
-            gaveUp = true;
-          }
+          classification = 'broken';
+          gaveUp = true;
           opts.onEvent?.({
             type: 'stabilize_unfixed',
             name: scenario.name,
@@ -336,6 +382,10 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
         }
       }
 
+      // gaveUp follows the classification: a broken scenario is one the
+      // Stabilizer gave up on, or one that never passed an iteration so it
+      // had nothing to work from. Either way "broken" and "gave up" agree.
+      if (classification === 'broken') gaveUp = true;
       verdicts.push({
         name: scenario.name,
         iterations,
@@ -345,6 +395,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
         pattern: outcomes.join('-'),
         relaxed: relaxed || undefined,
         gaveUp: gaveUp || undefined,
+        attempts,
         firstFailure,
         durationMs: Date.now() - scenarioStart,
       });
@@ -386,6 +437,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
     flakeRate,
     durationMs,
     stabilizerCostUsd,
+    ...(stabilizerWarningFor(stabilizerCostUsd, verdicts) ? { warning: stabilizerWarningFor(stabilizerCostUsd, verdicts) } : {}),
   };
 }
 
@@ -425,7 +477,7 @@ async function runIterations(
       const stepKind = result.stepKind ?? 'unknown';
       const error = result.error ?? 'unknown error';
       if (!firstFailure) {
-        firstFailure = { iteration: i + 1, failedStep, stepKind, error };
+        firstFailure = { iteration: i + 1, failedStep, stepKind, error, ...(result.observed ? { observed: result.observed } : {}) };
       }
       opts.onEvent?.({
         type: 'iteration_failed',
