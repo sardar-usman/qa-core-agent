@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-17. Update this file at the end of every working day.
+Updated: 2026-09-17 (evening). Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -120,12 +120,18 @@ during the maturity pass:
   percent of prompt tokens from cache over 32 calls. Also: closeout
   grace at the cost ceiling.
   Diagnosis: docs/audit/run-ec8eff-diagnosis.md (commit 85bf6ea). Fix
-  list order: cache (done), critic sees selectors + doctrine alignment +
-  lockout handling (PR 2), the rest (PR 3), then the after-run.
-- Assertion doctrine: five of six scenarios drew rework for the same
-  three patterns (vacuous visible checks, hard-coded catalogue values,
-  count-only checks); make them hard rules and gate what is statically
-  checkable.
+  list order: cache (done), critic + doctrine + lockout (done), the rest
+  (PR 3), then the after-run.
+- FIXED (PR #19, Sept 17): the Critic never saw selectors (describeStep
+  rendered the intent only) and the Explorer and Critic prompts carried
+  contradictory doctrine. describeStep now renders intent = locator as
+  the emitter writes it; one ASSERTION_DOCTRINE constant
+  (src/agent/doctrine.ts) is interpolated into both prompts; wrong
+  credential negatives use non-existent accounts; replay records
+  observed text on failure; every Stabilizer attempt is recorded and
+  broken means gaveUp. Proof run saucedemo 20260917T163041Z-0ebfe7:
+  4 of 4 shipped, 4 of 4 rules, 0 rework, $0.3437 (Sept 14 baseline
+  $0.6187 for the same 4).
 - Repair reserve: 15 percent of the ceiling could not fund one repair at
   this per-scenario cost; $0.86 spent, nothing re-recorded. Reserve must
   be sized against observed per-scenario cost or the pass declines up
