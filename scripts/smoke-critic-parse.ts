@@ -12,7 +12,9 @@
  *
  * Pure in-code fixtures. No network. No LLM. No browser.
  */
-import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson } from '../src/agent/critic.js';
+import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson, CRITIC_SYSTEM_PROMPT } from '../src/agent/critic.js';
+import { EXPLORER_SYSTEM_PROMPT } from '../src/agent/runtime.js';
+import { ASSERTION_DOCTRINE } from '../src/agent/doctrine.js';
 import type { TraceStep } from '../src/agent/trace.js';
 import { attachRuleIds, computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
@@ -202,6 +204,50 @@ check('K6. a response cut off mid-array salvages the complete verdicts and drops
 check('K7. toHaveURL renders as a quoted regex string (no /pattern// artefact)',
   describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }) === 'assert URL matches regex "saucedemo\\\\.com/"',
   describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }));
+
+/* ─── L. the Critic sees selectors ─────────────────────────────────────────── */
+// Live evidence: saucedemo run 20260917T124620Z-34307c, the locked_out_user
+// scenario drew rework for "the locator for this marker is not specified"
+// while the trace held css ".inventory_list". describeStep rendered the intent
+// alone (which defaulted to "element" when the model gave none). Every target
+// now renders as "intent = locator", the locator exactly as the emitter writes it.
+const l1 = describeStep({ kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login' }, intent: 'login button' } });
+check('L1. a role selector renders as the emitter writes it, next to the intent',
+  l1 === 'click(login button = page.getByRole("button", {"name":"Login"}))', l1);
+const l2 = describeStep({ kind: 'capture', varName: 'cap_first', source: 'text', intent: 'first product name', target: { level: 'css', arg: 'a[data-test^="product-"] h5', intent: 'first product name', ambiguous: true } });
+check('L2. an ambiguous css selector renders .first(), as the spec will',
+  l2 === 'capture text of first product name = page.locator("a[data-test^=\\"product-\\"] h5").first() -> cap_first', l2);
+const l3 = describeStep({ kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '.inventory_list', intent: 'inventory page marker (should be absent)' }, count: 0, timeout: 5000 } });
+check('L3. the live shape: the count assertion names its css locator',
+  l3 === 'assert inventory page marker (should be absent) = page.locator(".inventory_list") count=0', l3);
+const l4 = describeStep({ kind: 'assert', name: 'h', assertion: { type: 'toHaveText', target: { level: 'role', arg: { role: 'heading', name: 'Sample Heading' }, intent: 'frame heading', frameChain: ['iframe#frame1'] }, text: 'Sample Heading', timeout: 5000 } });
+check('L4. a frame chain renders page.frameLocator(...) before the level call',
+  l4.includes('frame heading = page.frameLocator("iframe#frame1").getByRole("heading", {"name":"Sample Heading"})'), l4);
+const l5 = describeStep({ kind: 'assert', name: 'v', assertion: { type: 'toBeVisible', target: { level: 'css', arg: '[data-test="no-results"]', intent: 'element' }, timeout: 5393 } });
+check('L5. the default "element" intent never renders bare: the locator follows it',
+  l5.startsWith('assert element = page.locator("[data-test=\\"no-results\\"]") visible') && !/assert element visible/.test(l5), l5);
+const l6 = describeStep({ kind: 'assert_compare', varName: 'cap_x', readVar: 'cap_x_now', relation: 'less', source: 'count', intent: 'product cards', target: { level: 'css', arg: '.card', intent: 'product cards' } });
+check('L6. assert_compare names the locator it re-reads', l6.includes('at product cards = page.locator(".card")'), l6);
+// The Critic prompt fixture (the gateway smoke's login trace shape) rendered
+// through describeStep: no line may carry a bare "element".
+const fixtureLines = [
+  describeStep({ kind: 'fill', target: { level: 'placeholder', arg: 'Username', intent: 'username input' }, value: 'standard_user' }),
+  describeStep({ kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login' }, intent: 'login button' } }),
+  describeStep({ kind: 'assert', name: 'e', assertion: { type: 'toContainText', target: { level: 'text', arg: 'Username is required', intent: 'element' }, text: 'Username is required', timeout: 10000 } }),
+];
+check('L7. no rendered fixture line carries a bare "element" (each locator is spelled out)',
+  fixtureLines.every((l) => !/\belement (visible|contains|has text|count=|hidden)/.test(l)) && fixtureLines.every((l) => l.includes('page.')), JSON.stringify(fixtureLines));
+check('L8. the Critic prompt states that the locator shown is the locator under test', CRITIC_SYSTEM_PROMPT.includes('intent = locator') && CRITIC_SYSTEM_PROMPT.includes('never report a locator as unspecified'));
+
+/* ─── M. doctrine and Critic agree, word for word ──────────────────────────── */
+check('M1. the Explorer prompt contains the shared doctrine block verbatim', EXPLORER_SYSTEM_PROMPT.includes(ASSERTION_DOCTRINE));
+check('M2. the Critic prompt contains the SAME doctrine block verbatim', CRITIC_SYSTEM_PROMPT.includes(ASSERTION_DOCTRINE));
+check('M3. doctrine rule 2 requires capture-then-compare and forbids a literal expected first item',
+  /2\. Proving a sort[^\n]*capture the first value[^\n]*assert_compare[^\n]*Never assert a literal expected first item/.test(ASSERTION_DOCTRINE) && !ASSERTION_DOCTRINE.includes('assert the known expected first item'));
+check('M4. doctrine rule 6 forbids literal catalogue values, not only test ids',
+  /6\. Never assert or capture a literal catalogue value or a generated id/.test(ASSERTION_DOCTRINE) && !/Prefer text content, counts/.test(ASSERTION_DOCTRINE));
+check('M5. neither prompt keeps the old contradictory copy of the doctrine', !EXPLORER_SYSTEM_PROMPT.includes('the five weaknesses the Critic rejects every run') && !CRITIC_SYSTEM_PROMPT.includes('Volatile identifiers: an assertion or capture pinned to a specific catalog-item test id'));
+check('M6. the Critic flagging rule on volatile values points at doctrine rules 2 and 6', /5\. Volatile values:[^\n]*Doctrine rules 2 and 6/.test(CRITIC_SYSTEM_PROMPT));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

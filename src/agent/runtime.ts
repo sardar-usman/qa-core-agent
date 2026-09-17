@@ -27,6 +27,7 @@ import {
   type StopClassification,
 } from './checkpoint.js';
 import { installEvalShim } from './eval-shim.js';
+import { ASSERTION_DOCTRINE } from './doctrine.js';
 import type { CascadeLevel } from './selectors.js';
 import { writeCsv } from './csv.js';
 
@@ -41,7 +42,7 @@ import { writeCsv } from './csv.js';
  * because the generated spec is a transcription of a session that ran.
  */
 
-const SYSTEM_PROMPT = `You are QA-Core, an autonomous QA agent that generates Playwright tests by exploring a web application like an experienced tester would.
+export const EXPLORER_SYSTEM_PROMPT = `You are QA-Core, an autonomous QA agent that generates Playwright tests by exploring a web application like an experienced tester would.
 
 You will be given a URL. Your job:
 
@@ -99,14 +100,7 @@ ASSERTION RULES — apply before every end_scenario:
 
 9. Unverified success signals. A happy-path assertion is only as good as the signal it checks. If the plan says "lands on /auth/login" or "redirects to /dashboard" but you submit and the page stays put, the redirect was assumed, not real. Do NOT re-fill the whole form and resubmit again and again hoping it works the next time. After one honest retry, stop. Look at what the page ACTUALLY did: read the URL with get_dom, look for a visible success or error message, a toast, an inline validation error. Then assert the real signal you can see (the confirmation message, the cleared form, the error that explains the rejection). If the expected outcome genuinely did not occur, that is a real finding, not something to retry: the system records what the page did. Once a scenario is recorded as a finding, do NOT re-attempt that same flow with different data. Move on to the OTHER planned scenarios (the negative and edge cases) first, so a single expensive happy path does not starve them. Come back to re-attempt the flow only if every other scenario is already done and budget remains. Never burn the budget thrashing one scenario on a success signal that may be wrong. Do NOT call wait() to let the page settle after a submit; wait() is rejected inside a scenario. Use wait_for_text for the state you expect, or assert with a timeout and let Playwright poll. To just re-read the page, call get_dom.
 
-ASSERTION DOCTRINE — the five weaknesses the Critic rejects every run. Violating one costs a repair pass:
-1. Every assertion after a state-changing action carries an explicit timeout (10000-15000 for async outcomes; the gate floors missing ones at 5000ms, but say what you expect).
-2. Proving a sort needs a comparable relation: capture the first value, sort, assert_compare greater/less against the re-read — or assert the known expected first item. "The first item changed" proves a shuffle, not an order.
-3. A negative scenario asserts a USER-VISIBLE failure signal: the error message text, aria-invalid, or the error element becoming visible. "The URL did not change" or an input attribute alone proves nothing a user can see.
-4. Capture a value ONLY if a later assert_compare reads it. The gate strips unused captures; a capture with no compare is wasted work.
-5. Count checks after an async action must poll: assert_compare with source="count" (polls with the compare timeout), or toHaveCount with an explicit timeout. Never a one-shot read.
-6. Never assert or capture a specific catalog-item test id (product-01JX..., sku-8842 style generated ids): they rot when the data reseeds. Prefer text content, counts, relations between values, or stable structural ids (search-query, sort-select).
-7. Never navigate directly to a URL that carries a generated id (product/<long-id>). Reach a detail page the way a user does: navigate to the listing, click the item by its VISIBLE NAME. The recorded trace replays that durable path; a hardcoded GUID URL breaks on the next data reseed.
+${ASSERTION_DOCTRINE}
 
 Assertion economy:
 - One strong, specific assertion (an exact error string, the destination URL, a concrete element count) is worth more than several weak ones.
@@ -271,7 +265,7 @@ export function cachedInputShare(cost: Pick<RunReport['cost'], 'inputTokens' | '
  * Place the prompt-cache breakpoints for one API call and return how many the
  * request carries. Four are allowed per request; this is the whole budget:
  *
- *   1. the frozen SYSTEM_PROMPT block (marked at construction; caches the tool
+ *   1. the frozen EXPLORER_SYSTEM_PROMPT block (marked at construction; caches the tool
  *      definitions with it, since tools render before system)
  *   2. the per-host memory block, when present (marked at construction)
  *   3. the LAST system block when it is the plan or the repair note: stable for
@@ -1461,7 +1455,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         flakeRate: s.flakeRate,
         durationMs: s.durationMs,
         verdicts: s.verdicts,
+        // Stabilizer spend with no attempt recorded is an inconsistency, never
+        // shown as "none recorded": the report carries the warning.
+        ...(s.warning ? { warning: s.warning } : {}),
       };
+      if (s.warning) opts.onEvent?.({ type: 'message', text: `WARNING: ${s.warning}` });
     } catch (err) {
       opts.onEvent?.({ type: 'message', text: `Stability skipped: ${(err as Error).message}` });
       stabilityInfo = {
@@ -1680,7 +1678,7 @@ export async function runAgentLoop(args: {
   const cost: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, calls: [] };
 
   // Build a system prompt with three cached blocks:
-  //   1. Frozen behavior rules (SYSTEM_PROMPT) — never changes, max cache value
+  //   1. Frozen behavior rules (EXPLORER_SYSTEM_PROMPT), never changes, max cache value
   //   2. Site memory — changes per host, still cacheable per host
   //   3. Plan — changes per run, but stable through the loop
   const memoryBlock = renderMemoryBlock(url);
@@ -1711,7 +1709,7 @@ export async function runAgentLoop(args: {
     : null;
 
   const systemBlocks: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
+    { type: 'text', text: EXPLORER_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
   ];
   if (memoryBlock) {
     systemBlocks.push({ type: 'text', text: memoryBlock, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam);

@@ -75,6 +75,9 @@ export type StageStatus = 'done' | 'warning' | 'attention' | 'not-applicable';
  * The one arithmetic step is the subtraction invariant 47 allows:
  * explorer = cost.usd minus cost.repairUsd (repair is included in usd).
  */
+/** The page as it was when a re-run step failed: URL, the failing target's text, visible messages. */
+export interface ObservedOnFailure { url: string; target: string | null; messages: string[] }
+
 export interface RunDetailStages {
   discovery: {
     status: StageStatus; stat: string;
@@ -123,10 +126,18 @@ export interface RunDetailStages {
   };
   verify: {
     status: StageStatus; stat: string;
-    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null }> } | null;
+    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
     stability: {
       iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null;
-      verdicts: Array<{ name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean }>;
+      /** Sum of every verdict's attempts; the page says "none recorded" only when this is 0 AND the stabilizer cost is 0. */
+      attempts_total: number;
+      /** report.stability.warning: stabilizer spend with no attempt recorded. */
+      warning: string | null;
+      verdicts: Array<{
+        name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean;
+        first_failure: { iteration: number; failed_step: number; step_kind: string; error: string; observed: ObservedOnFailure | null } | null;
+        attempts: Array<{ attempt: number; kind: string; change: string; reason: string; pattern: string | null; outcome: string }>;
+      }>;
     } | null;
   };
   summary: {
@@ -353,6 +364,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
 }
 
 const usd = (v: number | undefined | null): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+const observedOf = (o: { url: string; target: string | null; messages: string[] } | undefined): ObservedOnFailure | null => o ? { url: o.url, target: o.target ?? null, messages: o.messages ?? [] } : null;
 const plural = (n: number, one: string, many = one + 's'): string => `${n} ${n === 1 ? one : many}`;
 
 /** The six stages, read off the report. See RunDetailStages. */
@@ -413,10 +425,16 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const verify: RunDetailStages['verify'] = {
     status: !rep && !stab ? 'not-applicable' : (rep?.failed ?? 0) > 0 || (stab?.flaked ?? 0) > 0 ? 'warning' : 'done',
     stat: stab ? `${stab.passed} stable / ${stab.flaked} flaky` : rep ? `${rep.passed} passed replay / ${rep.failed} dropped` : 'replay skipped',
-    replay: rep ? { passed: rep.passed, failed: rep.failed, duration_ms: rep.durationMs, verdicts: rep.verdicts.map((v) => ({ name: v.name, passed: v.passed, failed_step: v.failedStep ?? null, step_kind: v.stepKind ?? null, error: v.error ?? null })) } : null,
+    replay: rep ? { passed: rep.passed, failed: rep.failed, duration_ms: rep.durationMs, verdicts: rep.verdicts.map((v) => ({ name: v.name, passed: v.passed, failed_step: v.failedStep ?? null, step_kind: v.stepKind ?? null, error: v.error ?? null, observed: observedOf(v.observed) })) } : null,
     stability: stab ? {
       iterations: stab.iterations, passed: stab.passed, flaked: stab.flaked, flaky: stab.flaky ?? null, broken: stab.broken ?? null, recovered: stab.recovered ?? null, flake_rate: stab.flakeRate, stabilizer_cost_usd: stab.stabilizerCostUsd ?? null,
-      verdicts: stab.verdicts.map((v) => ({ name: v.name, iterations: v.iterations, passes: v.passes, pattern: v.pattern ?? null, classification: v.classification ?? (v.stable ? 'stable' : null), recovered: v.relaxed === true, gave_up: v.gaveUp === true })),
+      attempts_total: stab.verdicts.reduce((n, v) => n + (v.attempts ?? []).length, 0),
+      warning: stab.warning ?? null,
+      verdicts: stab.verdicts.map((v) => ({
+        name: v.name, iterations: v.iterations, passes: v.passes, pattern: v.pattern ?? null, classification: v.classification ?? (v.stable ? 'stable' : null), recovered: v.relaxed === true, gave_up: v.gaveUp === true,
+        first_failure: v.firstFailure ? { iteration: v.firstFailure.iteration, failed_step: v.firstFailure.failedStep, step_kind: String(v.firstFailure.stepKind), error: v.firstFailure.error, observed: observedOf(v.firstFailure.observed) } : null,
+        attempts: (v.attempts ?? []).map((a) => ({ attempt: a.attempt, kind: a.kind, change: a.change, reason: a.reason, pattern: a.pattern ?? null, outcome: a.outcome })),
+      })),
     } : null,
   };
 

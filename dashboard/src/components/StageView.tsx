@@ -283,6 +283,7 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
                 <span className={x.passed ? 'text-pass' : 'text-reject'}>{x.passed ? 'pass' : 'fail'}</span>
                 <span className="text-fg">{x.name}</span>
                 {!x.passed ? <span className="text-fg-2">step {(x.failed_step ?? 0) + 1} {x.step_kind ?? ''}{x.error ? `: ${x.error}` : ''}</span> : null}
+                {!x.passed && x.observed?.target ? <span className="text-fg-2" data-testid="replay-observed">saw: {x.observed.target}</span> : null}
               </li>
             ))}
           </ul>
@@ -299,13 +300,20 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
                 <span className="text-fg">{x.name}</span>
                 <span className={`mono ${x.gave_up ? 'text-reject' : x.recovered ? 'text-pass' : x.classification === 'flaky' ? 'text-rework' : 'text-fg-2'}`} data-testid="stability-pattern">{x.pattern ?? `${x.passes}/${x.iterations}`}</span>
                 <Badge variant={x.gave_up ? 'reject' : x.recovered ? 'pass' : x.classification === 'stable' ? 'pass' : x.classification === 'flaky' ? 'rework' : 'neutral'}>{x.gave_up ? 'broken' : x.recovered ? 'recovered' : x.classification ?? 'unknown'}</Badge>
+                {x.first_failure ? <span className="basis-full text-fg-2" data-testid="stability-failure">iteration {x.first_failure.iteration} step {x.first_failure.failed_step + 1} {x.first_failure.step_kind}: {x.first_failure.error}{x.first_failure.observed?.target ? ` · saw: ${x.first_failure.observed.target}` : ''}</span> : null}
+                {x.attempts.length ? (
+                  <ul className="basis-full pl-3" data-testid="stability-attempts-list">
+                    {x.attempts.map((a) => <li key={a.attempt} className="text-fg-2" data-testid="stability-attempt">attempt {a.attempt}: {a.change}, {a.outcome}{a.pattern ? ` (${a.pattern})` : ''}, {a.reason}</li>)}
+                  </ul>
+                ) : null}
               </li>
             ))}
           </ul>
           <KV>
-            <K label="stabilizer attempts" value={(v.stability.recovered ?? 0) + v.stability.verdicts.filter((x) => x.gave_up).length ? `${v.stability.recovered ?? 0} recovered, ${v.stability.verdicts.filter((x) => x.gave_up).length} gave up` : 'none recorded'} testid="stabilizer-attempts" />
+            <K label="stabilizer attempts" value={v.stability.attempts_total > 0 ? `${v.stability.attempts_total} across ${v.stability.verdicts.filter((x) => x.attempts.length > 0).length} scenario${v.stability.verdicts.filter((x) => x.attempts.length > 0).length === 1 ? '' : 's'}, ${v.stability.recovered ?? 0} recovered, ${v.stability.verdicts.filter((x) => x.gave_up).length} broken` : (v.stability.stabilizer_cost_usd ?? 0) > 0 ? 'NONE RECORDED despite spend' : 'none recorded'} testid="stabilizer-attempts" />
             <K label="stabilizer cost" value={usd(v.stability.stabilizer_cost_usd ?? 0)} cost testid="stabilizer-cost" />
           </KV>
+          {v.stability.warning ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-s text-rework" data-testid="stabilizer-warning"><b>warning</b> {v.stability.warning}</div> : null}
         </>
       ) : <Empty>Stability did not run on this run.</Empty>}
     </>
