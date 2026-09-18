@@ -24,7 +24,10 @@ import {
   CRAWL_PAGE_CAP,
   type FetchLike,
   type RenderedLinkCollector,
+  waitForAnchors,
 } from '../src/agent/discovery.js';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
@@ -253,6 +256,44 @@ const map: RequirementsMap = {
   const { collect, calls } = fakeCollector({ [`${ORIGIN}/`]: ['/x'] });
   const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn, crawlDelayMs: 0, collectRendered: collect });
   check('K1. disallow-all yields entry-only with the browser rung untouched', r.method === 'entry' && calls.length === 0, `${r.method} calls=${calls.length}`);
+}
+
+/* ─── I. a SPA whose anchors render after the shell is crawled by the browser rung ── */
+// Live evidence: on practicesoftwaretesting.com the product anchors render
+// after the settle poll returns, so the crawl never saw them. The rendered
+// collector now waits for the anchor count to stop growing.
+{
+  const fakePage = (counts: number[]) => { let i = 0; return { evaluate: async () => counts[Math.min(i++, counts.length - 1)]! }; };
+  const grown = await waitForAnchors(fakePage([0, 0, 3, 9, 9, 9]), 3000);
+  check('I1. waitForAnchors returns once the anchor count has held for two polls', grown === 9, String(grown));
+  const t0 = Date.now();
+  const none = await waitForAnchors(fakePage([0]), 600);
+  check('I2. a page with no anchors returns 0 at the cap, never hangs', none === 0 && Date.now() - t0 < 1500 && Date.now() - t0 >= 500);
+}
+{
+  // A local SPA: the shell has a heading and an input (so the settle poll is
+  // satisfied at once) and renders its links 500ms later. robots.txt and
+  // sitemap.xml are 404, so the ladder walks down to the browser crawl.
+  // The anchors are built with createElement so the raw HTML carries no
+  // "href=" text at all: the plain fetch crawl must see a bare shell.
+  const shell = (title: string): string => `<!doctype html><html><body><h1>${title}</h1><input id="q"><div id="links"></div><script>setTimeout(function(){var d=document.getElementById('links');['/login','/cart','/product/01ABCDEFGHJKMNPQRSTVWXYZ01'].forEach(function(p){var a=document.createElement('a');a.setAttribute('h'+'ref',p);a.textContent=p;d.appendChild(a);});},500)</script></body></html>`;
+  const server = http.createServer((req, res) => {
+    const url = req.url ?? '/';
+    if (url === '/robots.txt' || url === '/sitemap.xml') { res.writeHead(404); res.end(''); return; }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(shell(url));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const r = await discoverPages({ entryUrl: `${base}/`, crawlDelayMs: 0 });
+    const paths = r.pages.map((p) => new URL(p.url).pathname).sort();
+    check('I3. the fetch crawl saw the bare shell and fell through', r.warnings.some((w) => w.startsWith('crawl:') && w.includes('no additional same-origin pages')), JSON.stringify(r.warnings));
+    check('I4. the browser rung crawled the late-rendered anchors', r.method === 'browser-crawl' && paths.includes('/login') && paths.includes('/cart'), JSON.stringify({ method: r.method, paths }));
+    check('I5. the generated-id product page is found and tagged volatile', r.pages.some((p) => p.url.includes('/product/') && p.volatile === true), JSON.stringify(r.pages));
+  } finally {
+    server.close();
+  }
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

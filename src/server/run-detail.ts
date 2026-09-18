@@ -80,6 +80,8 @@ export interface ObservedOnFailure { url: string; target: string | null; message
 
 export interface RunDetailStages {
   discovery: {
+    /** report.discovery.candidates: every page the rung found before the filter (empty on older reports). */
+    candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
     status: StageStatus; stat: string;
     method: string | null;
     pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
@@ -376,8 +378,8 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
 
   const disc = report.discovery;
   const discovery: RunDetailStages['discovery'] = disc
-    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), warnings: disc.warnings ?? [] }
-    : { status: 'not-applicable', stat: 'single page', method: null, pages: [], warnings: [] };
+    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), candidates: (disc.candidates ?? []).map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), warnings: disc.warnings ?? [] }
+    : { status: 'not-applicable', stat: 'single page', method: null, pages: [], candidates: [], warnings: [] };
 
   const pageCounts = new Map<string | null, number>();
   for (const p of plan) pageCounts.set(p.pageUrl ?? null, (pageCounts.get(p.pageUrl ?? null) ?? 0) + 1);

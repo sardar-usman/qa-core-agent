@@ -15,7 +15,8 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason } from '../src/agent/gate.js';
+import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -374,6 +375,41 @@ const r5Used = runGate(r5UsedSc);
 check('BR. RULE 5 — a capture read by assert_compare is kept',
   r5UsedSc.steps.some((s) => s.kind === 'capture') && !r5Used.injections.some((i) => i.detail.includes('unused capture')),
   JSON.stringify(r5UsedSc.steps.map((s) => s.kind)));
+
+/* ─── RULE 6: no generated id embedded in a selector ─────────────────────── */
+// Run ec8eff's filter scenario selected [data-test="category-01M2K06AWQJ6XZEYHJEKD7E8JV"],
+// a catalogue key that changes on the next reseed, and the gate let it through
+// because any [data-*] selector counted as stable.
+const ulidCheckbox: TraceStep = { kind: 'set_checked', target: { level: 'css', arg: '[data-test="category-01M2K06AWQJ6XZEYHJEKD7E8JV"]', intent: 'first category checkbox' }, checked: true };
+const r6a = runGate(makeScenario([NAV, ulidCheckbox, ASSERT_ROLE]));
+check('R6A. a css selector embedding a ulid is rejected under RULE 6', r6a.violations.some((v) => v.rule === 6), JSON.stringify(r6a.violations));
+check('R6B. the reason names the fragment and steers to role, label, an id-free testid or a table path',
+  /embeds the generated id "01M2K06AWQJ6XZEYHJEKD7E8JV"/.test(r6a.violations[0]?.detail ?? '') && /role, label, or a testid that carries no id, or by a table-scoped path/.test(r6a.violations[0]?.detail ?? ''), r6a.violations[0]?.detail);
+const testidUlid: TraceStep = { kind: 'click', target: { level: 'testid', arg: 'product-01JX8F2K9ABCDEF12345678', intent: 'product card' } };
+check('R6C. a testid carrying a generated id is rejected too (any level, any step)', runGate(makeScenario([NAV, testidUlid, ASSERT_ROLE])).violations.some((v) => v.rule === 6));
+const uuidAssert: TraceStep = { kind: 'assert', name: 'row', assertion: { type: 'toBeVisible', target: { level: 'css', arg: '[data-test="row-3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c"]', intent: 'order row' }, timeout: 10000 } };
+const r6d = runGate(makeScenario([NAV, CLICK_ROLE, uuidAssert]));
+check('R6D. a uuid inside an assertion selector is rejected with the uuid named', r6d.violations.some((v) => v.rule === 6 && v.detail.includes('3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c')), JSON.stringify(r6d.violations));
+const hexCapture: TraceStep = { kind: 'capture', varName: 'cap_x', source: 'text', intent: 'price', target: { level: 'css', arg: '#price-507f1f77bcf86cd799439011', intent: 'price' } };
+const hexCompare: TraceStep = { kind: 'assert_compare', varName: 'cap_x', readVar: 'cap_x_now', relation: 'changed', source: 'text', intent: 'price', target: { level: 'css', arg: '#price-507f1f77bcf86cd799439011', intent: 'price' } };
+check('R6E. a mongo-style hex id on a capture and compare is rejected', runGate(makeScenario([NAV, hexCapture, CLICK_ROLE, hexCompare])).violations.filter((v) => v.rule === 6).length === 2);
+const cleanTestid: TraceStep = { kind: 'set_checked', target: { level: 'css', arg: '[data-test="inventory-item-name"]', intent: 'name box' }, checked: true };
+const longClass: TraceStep = { kind: 'click', target: { level: 'css', arg: '.inventory_item_description_container', intent: 'card body' } };
+const tablePath: TraceStep = { kind: 'capture', varName: 'cap_c', source: 'text', intent: 'cell', target: { level: 'css', arg: '#table2 tbody tr:nth-child(1) td:nth-child(2)', intent: 'first cell' } };
+const tableCompare: TraceStep = { kind: 'assert_compare', varName: 'cap_c', readVar: 'cap_c_now', relation: 'changed', source: 'text', intent: 'cell', target: { level: 'css', arg: '#table2 tbody tr:nth-child(1) td:nth-child(2)', intent: 'first cell' } };
+const r6f = runGate(makeScenario([NAV, cleanTestid, longClass, tablePath, CLICK_ROLE, tableCompare, ASSERT_ROLE]));
+check('R6F. an id-free testid, a long class with no digits, a role, and a table-scoped path pass RULE 6', !r6f.violations.some((v) => v.rule === 6), JSON.stringify(r6f.violations));
+check('R6G. the shared label and drop reason exist for rule 6', gateRuleLabel(6) === 'RULE 6 (generated id in selector)' && gateBrokenReason(6) === 'selector embeds a generated id');
+check('R6H. generatedIdFragment: ulid, uuid, hex found; ordinary ids and dates not', generatedIdFragment('category-01M2K06AWQJ6XZEYHJEKD7E8JV') === '01M2K06AWQJ6XZEYHJEKD7E8JV' && generatedIdFragment('a 3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c b') === '3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c' && generatedIdFragment('#507f1f77bcf86cd799439011') === '507f1f77bcf86cd799439011' && generatedIdFragment('[data-test="login-submit"]') === null && generatedIdFragment('order-2026-09-17-1234') === null && generatedIdFragment('.inventory_item_description_container') === null);
+
+/* ─── RULE 2 keeps the model's toHaveCount timeout; only a missing or low one is floored ── */
+const countKept: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3, timeout: 15000 } };
+const rKept = runGate(makeScenario([NAV, CLICK_ROLE, countKept]));
+check('R2K. a toHaveCount recorded with the model\'s 15000ms keeps it (no injection)', rKept.violations.length === 0 && !rKept.injections.some((i) => i.assertionType === 'toHaveCount') && (rKept as unknown as { injections: unknown[] }).injections !== undefined);
+const countLow: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3, timeout: 3000 } };
+const scLow = makeScenario([NAV, CLICK_ROLE, countLow]);
+const rLow = runGate(scLow);
+check('R2L. a toHaveCount recorded below the floor is raised to 5000 and logged', rLow.injections.some((i) => i.assertionType === 'toHaveCount' && /was 3000/.test(i.detail)) && (scLow.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(rLow.injections));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

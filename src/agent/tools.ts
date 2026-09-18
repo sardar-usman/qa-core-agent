@@ -8,7 +8,7 @@ export { recoverResolve, type ResolveInput };
 import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation } from './trace.js';
 import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
-import { runGate } from './gate.js';
+import { runGate, gateRuleLabel, gateBrokenReason } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { scenarioNameKey } from './rule-coverage.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
@@ -108,6 +108,15 @@ export interface ToolContext {
    * lengthen the window, never shorten it.
    */
   lastActionAt: number;
+  /**
+   * Milliseconds the page was being driven or observed since the last
+   * state-changing action: the action's own duration plus every later tool
+   * call's. This is what an adaptive timeout measures. The model's latency
+   * between calls is NOT in it, so a slow think or a failed 15 s wait_for_text
+   * on a wrong expectation can no longer inflate a recorded timeout to 40 s
+   * (run ec8eff, the sort scenario).
+   */
+  _pageMsSinceAction: number;
   /** Rolling capture for the current scenario; flushed onto it at end_scenario. */
   consoleErrors: Array<{ kind: 'error' | 'warning'; text: string }>;
   networkErrors: Array<{ status: number; url: string }>;
@@ -206,6 +215,7 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     steps: 0,
     maxSteps,
     lastActionAt: Date.now(),
+    _pageMsSinceAction: 0,
     consoleErrors: [],
     networkErrors: [],
     _gateAttempts: new Map(),
@@ -1012,7 +1022,25 @@ async function isolateState(page: Page): Promise<void> {
   } catch { /* about:blank or no origin yet */ }
 }
 
+/** Tools that change page state; the page-settle clock restarts at each. */
+const ACTION_TOOLS = new Set(['navigate', 'click', 'fill', 'press', 'select_option', 'set_checked', 'set_input_files']);
+
+/**
+ * Run one tool call and keep the page-settle clock: an action restarts it with
+ * the action's own duration, every other call adds its own. Only time spent
+ * inside a tool counts, never the model's thinking between calls.
+ */
 export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolResult> {
+  const startedAt = Date.now();
+  try {
+    return await runToolInner(ctx, call);
+  } finally {
+    const spent = Date.now() - startedAt;
+    ctx._pageMsSinceAction = ACTION_TOOLS.has(call.name) ? spent : ctx._pageMsSinceAction + spent;
+  }
+}
+
+async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResult> {
   ctx.steps++;
   // finish() is the clean exit and must ALWAYS be allowed through. If the step
   // budget also blocks finish, the model is told "call finish() now" but every
@@ -1488,14 +1516,10 @@ export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolRe
           ctx._gateAttempts.set(scenarioName, attempts);
           ctx.current = null; // abandon — Explorer can call begin_scenario again
           const firstV = gateResult.violations[0]!;
-          const ruleLabel = firstV.rule === 1 ? 'RULE 1 (no hard sleeps)' : firstV.rule === 3 ? 'RULE 3 (no CSS on animated elements)' : 'RULE 4 (intermediate value on animated element)';
+          const ruleLabel = gateRuleLabel(firstV.rule);
           const details = gateResult.violations.map((v) => v.detail).join('; ');
           if (attempts >= 2) {
-            const reason = firstV.rule === 1
-              ? 'could not generate without hard sleep'
-              : firstV.rule === 3
-                ? 'unstable locator on dynamic element'
-                : 'intermediate value assertion on animated element';
+            const reason = gateBrokenReason(firstV.rule);
             ctx.brokenByGate.push({ scenario: scenarioName, reason, attempts });
             return {
               ok: false,
@@ -1590,11 +1614,7 @@ export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolRe
               const scenarioName = ctx.current.name;
               const attempts = (ctx._gateAttempts.get(scenarioName) ?? 0) + 1;
               const firstV = gateResult.violations[0]!;
-              const reason = firstV.rule === 1
-                ? 'could not generate without hard sleep'
-                : firstV.rule === 3
-                  ? 'unstable locator on dynamic element'
-                  : 'intermediate value assertion on animated element';
+              const reason = gateBrokenReason(firstV.rule);
               ctx.brokenByGate.push({ scenario: scenarioName, reason, attempts });
               dropped = 1;
             } else {
@@ -1626,15 +1646,16 @@ export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolRe
 }
 
 /**
- * Observed settle duration for an async assertion: from the triggering action
- * to the moment the target state was confirmed. Anchored to the last
- * state-changing action (ctx.lastActionAt), falling back to the local probe
- * start when that is somehow later. The action always precedes the probe, so
- * this never returns LESS than `now - t0` — it only widens the window to cover
- * an animation that was already running when the assertion was issued.
+ * Observed settle duration for an async assertion: the page time since the
+ * last state-changing action (the action's own duration plus every later tool
+ * call's, kept by runTool) plus this probe's own elapsed time. Page time only:
+ * the model's latency between calls is never counted, so the recorded timeout
+ * reflects how long the page took, not how long the model thought (the sort
+ * scenario of run ec8eff recorded 40 s that were mostly a failed wait and
+ * thinking). Exported for smoke-compare-poll.
  */
-function observedSettleMs(ctx: ToolContext, probeStart: number): number {
-  return Date.now() - Math.min(probeStart, ctx.lastActionAt);
+export function observedSettleMs(ctx: Pick<ToolContext, '_pageMsSinceAction'>, probeStart: number): number {
+  return ctx._pageMsSinceAction + (Date.now() - probeStart);
 }
 
 /**
@@ -1763,8 +1784,10 @@ async function executeAssertion(
         name: `${record.intent} count is ${input.count}`,
         // Strip the ambiguity marker so the transcribed spec also omits .first()
         // for this specific assertion. baseLocator already does the right thing
-        // in replay.ts when ambiguous=false.
-        assertion: { type: 'toHaveCount', target: { ...record, ambiguous: undefined }, count: input.count },
+        // in replay.ts when ambiguous=false. The timeout the model passed is
+        // recorded (the gate floors it at 5000ms); it used to be dropped, so
+        // every count check shipped with the floor whatever the model asked.
+        assertion: { type: 'toHaveCount', target: { ...record, ambiguous: undefined }, count: input.count, ...(input.timeout ? { timeout: input.timeout } : {}) },
       });
       return { ok: true };
     }

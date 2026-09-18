@@ -44,6 +44,53 @@ export function capVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
   });
 }
 
+/**
+ * Path tokens that plainly name a feature. A candidate whose path segment
+ * equals or starts with one of a feature's tokens is kept BEFORE the model
+ * pick, tagged with that feature: a page called /auth/register serves the
+ * registration feature whatever Haiku thinks of it (run ec8eff dropped it).
+ */
+export const FEATURE_PATH_TOKENS: Record<string, string[]> = {
+  login: ['login', 'signin', 'sign-in', 'auth'],
+  registration: ['register', 'registration', 'signup', 'sign-up'],
+  register: ['register', 'registration', 'signup', 'sign-up'],
+  cart: ['cart', 'basket', 'checkout'],
+  checkout: ['checkout', 'cart'],
+  product: ['product', 'products', 'item', 'items'],
+  catalogue: ['catalogue', 'catalog', 'category', 'products', 'shop'],
+  catalog: ['catalogue', 'catalog', 'category', 'products', 'shop'],
+  contact: ['contact'],
+  search: ['search'],
+  account: ['account', 'profile'],
+};
+
+/** The tokens that plainly name a feature: the map's entry, or the feature name itself. */
+function tokensFor(feature: string): string[] {
+  const key = feature.trim().toLowerCase();
+  return FEATURE_PATH_TOKENS[key] ?? [key];
+}
+
+/**
+ * Candidates whose path plainly matches a feature name, each tagged with the
+ * feature. Exported so the smoke locks it.
+ */
+export function plainFeatureMatches(pages: DiscoveredPage[], features?: string[]): DiscoveredPage[] {
+  const names = (features ?? []).map((f) => f.trim()).filter((f) => f.length > 0);
+  if (names.length === 0) return [];
+  const out: DiscoveredPage[] = [];
+  for (const p of pages) {
+    let segments: string[];
+    try {
+      segments = new URL(p.url).pathname.toLowerCase().split('/').filter(Boolean);
+    } catch {
+      continue;
+    }
+    const feature = names.find((f) => tokensFor(f).some((tok) => segments.some((seg) => seg === tok || seg.startsWith(`${tok}-`) || seg.startsWith(`${tok}_`))));
+    if (feature && !out.some((o) => o.url === p.url)) out.push({ ...p, feature: p.feature ?? feature });
+  }
+  return out;
+}
+
 const HAIKU_MODEL = 'claude-haiku-4-5';
 const PRICE = { in: 1.0, out: 5.0 };
 
@@ -119,17 +166,26 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
     // still applies: three generated-id detail pages are one template.
     return { pages: capVolatile(opts.pages), method: 'passthrough', costUsd: 0 };
   }
+  // Plain feature matches are kept before any pick and never trimmed: the
+  // model chooses only among the rest, for the room left under the cap.
+  const kept = plainFeatureMatches(opts.pages, opts.features);
+  const keptUrls = new Set(kept.map((p) => p.url));
+  const rest = opts.pages.filter((p) => !keptUrls.has(p.url));
+  const room = Math.max(0, cap - kept.length);
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return { pages: fallbackFilter(opts.pages, cap), method: 'fallback', costUsd: 0 };
+    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0 };
+  }
+  if (room === 0) {
+    return { pages: capVolatile(kept), method: 'fallback', costUsd: 0 };
   }
 
   try {
     const client = new Anthropic({ apiKey });
     const features = (opts.features ?? []).filter((f) => f.trim().length > 0);
     const featureBlock = features.length > 0
-      ? `FEATURES (pick the most relevant page per feature, cap ${cap} total):\n${features.map((f) => `- ${f}`).join('\n')}`
-      : `No feature list. Pick up to ${cap} pages that look like distinct features.`;
+      ? `FEATURES (pick the most relevant page per feature, cap ${room} total):\n${features.map((f) => `- ${f}`).join('\n')}`
+      : `No feature list. Pick up to ${room} pages that look like distinct features.`;
     const response = await client.messages.create({
       model: opts.model ?? HAIKU_MODEL,
       max_tokens: 1024,
@@ -137,7 +193,7 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
       messages: [
         {
           role: 'user',
-          content: `${featureBlock}\n\nDiscovered URLs:\n${opts.pages.map((p) => p.url).join('\n')}`,
+          content: `${featureBlock}\n\nDiscovered URLs:\n${rest.map((p) => p.url).join('\n')}`,
         },
       ],
     });
@@ -149,13 +205,13 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
     const u = response.usage;
     const costUsd = (u.input_tokens * PRICE.in + u.output_tokens * PRICE.out) / 1_000_000;
 
-    const picked = parsePickResponse(text, opts.pages, cap);
+    const picked = parsePickResponse(text, rest, room);
     if (picked.length === 0) {
-      return { pages: fallbackFilter(opts.pages, cap), method: 'fallback', costUsd };
+      return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd };
     }
-    return { pages: capVolatile(picked), method: 'llm', costUsd };
+    return { pages: capVolatile([...kept, ...picked]), method: 'llm', costUsd };
   } catch {
-    return { pages: fallbackFilter(opts.pages, cap), method: 'fallback', costUsd: 0 };
+    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0 };
   }
 }
 

@@ -264,3 +264,24 @@ export function renderDerivation(derivation: FeatureDerivation[]): string[] {
     return `${d.feature}: ${d.scenariosPlanned} scenario(s) planned · ${d.rulesCited}/${d.rulesTotal} rules cited · skipped: ${skippedText}`;
   });
 }
+
+/**
+ * Words that mark a rule as stating a rejection: the outcome a negative
+ * scenario verifies and a happy one cannot. Run ec8eff's happy login cited
+ * R10 ("a wrong password shows an error"), which coverage would have counted
+ * as verified by a test that never sends a wrong password.
+ */
+export const REJECTION_RULE_RE = /\b(error|errors|reject|rejects|rejected|rejection|invalid|required|locked|lockout|locks)\b/i;
+
+/**
+ * Why a scenario of this category cannot verify a rule with this text, or
+ * null when the citation is plausible. A happy scenario may not cite a
+ * rejection rule; a negative scenario may not cite a rule that states no
+ * rejection. Edge and a11y scenarios are not judged here.
+ */
+export function citationMismatchReason(category: string, ruleText: string): string | null {
+  const rejection = REJECTION_RULE_RE.test(ruleText);
+  if (category === 'happy' && rejection) return 'a happy scenario cannot verify a rule that states a rejection';
+  if (category === 'negative' && !rejection) return 'a negative scenario cannot verify a rule that states no rejection';
+  return null;
+}

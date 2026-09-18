@@ -52,7 +52,7 @@ export function SettingsPage() {
           <tbody>
             {settings.run_settings.map((s) => (
               <tr key={s.name} className="border-t border-line/60" data-testid="run-setting" data-name={s.name}>
-                <td className="py-2 pr-3"><div className="font-semibold text-fg">{s.label}</div><div className="mono text-fg-3">{s.name}</div></td>
+                <td className="py-2 pr-3"><div className="font-semibold text-fg">{s.label}</div><div className="mono text-fg-3">{s.name}</div>{s.help ? <div className="mt-1 max-w-xl text-fg-2" data-testid="setting-help">{s.help}</div> : null}</td>
                 <td className="py-2 pr-3"><span className="mono text-fg" data-testid="setting-default">{s.value}</span> <span className="text-fg-3">{s.fromEnv ? 'from env' : 'built-in default'}</span></td>
                 <td className="py-2 pr-3">
                   <div className="flex items-center gap-2">

@@ -28,8 +28,8 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
   const finished = run.status !== 'running';
 
   const discovery: RunDetailStages['discovery'] = !discoveryActive
-    ? { status: 'not-applicable', stat: 'single page', method: null, pages: [], warnings: [] }
-    : { status: planStarted || finished ? 'done' : 'running', stat: planStarted || finished ? 'pages in the report' : 'discovering', method: null, pages: [], warnings: [] };
+    ? { status: 'not-applicable', stat: 'single page', method: null, pages: [], candidates: [], warnings: [] }
+    : { status: planStarted || finished ? 'done' : 'running', stat: planStarted || finished ? 'pages in the report' : 'discovering', method: null, pages: [], candidates: [], warnings: [] };
 
   const planScenarios = Array.isArray(planDone?.scenarios) ? (planDone!.scenarios as Array<Record<string, unknown>>) : [];
   const plan: RunDetailStages['plan'] = {

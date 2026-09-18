@@ -556,13 +556,20 @@ export interface RepairDecision<S> {
 export function decideRepairPass<S extends { name: string }>(opts: {
   scenarios: S[];
   verdicts: ScenarioVerdict[];
-  spentUsd: number;
-  ceilingUsd: number;
+  /** The stated repair reserve (ceiling times the reserve fraction): the whole of it is offered. */
+  reserveUsd: number;
+  /** What the Explorer spent recording the scenarios under review, for the per-scenario figure. */
+  explorerUsd: number;
+  /** How many scenarios the Explorer recorded, for the per-scenario figure. */
+  recorded: number;
 }): RepairDecision<S> | null {
   const reworkVerdicts = opts.verdicts.filter((v) => v.verdict === 'rework');
   if (reworkVerdicts.length === 0) return null;
   const { rework } = splitGate(opts.scenarios, opts.verdicts);
-  const budgetUsd = opts.ceilingUsd - opts.spentUsd;
+  // The pass is offered the full stated reserve. It used to get the reserve
+  // minus the planner and critic spend (run ec8eff: $0.81 of a $0.90 reserve),
+  // which is not what the console promised at run start.
+  const budgetUsd = opts.reserveUsd;
   if (rework.length === 0) {
     return {
       run: false,
@@ -576,14 +583,22 @@ export function decideRepairPass<S extends { name: string }>(opts: {
       run: false,
       rework,
       budgetUsd,
-      line: `repair pass skipped: no budget remaining ($${budgetUsd.toFixed(4)} of the total ceiling left); ${rework.length} rework scenario(s) dropped.`,
+      line: `repair pass skipped: no reserve ($${budgetUsd.toFixed(4)}); ${rework.length} rework scenario(s) dropped.`,
     };
   }
+  // The per-scenario figure a reader needs to judge the reserve: what one
+  // recorded scenario cost the Explorer this run, and how many of the rework
+  // scenarios the reserve funds at that price.
+  const perScenario = opts.recorded > 0 ? opts.explorerUsd / opts.recorded : null;
+  const funds = perScenario && perScenario > 0 ? Math.floor(budgetUsd / perScenario) : null;
+  const observed = perScenario === null
+    ? 'no per-scenario explorer cost observed'
+    : `explorer cost this run $${perScenario.toFixed(4)} per recorded scenario, so the reserve funds about ${Math.min(funds ?? 0, rework.length)} of ${rework.length}`;
   return {
     run: true,
     rework,
     budgetUsd,
-    line: `repair pass: ${rework.length} scenario(s), budget $${budgetUsd.toFixed(2)}`,
+    line: `repair pass: ${rework.length} scenario(s), budget $${budgetUsd.toFixed(2)} (the stated reserve); ${observed}`,
   };
 }
 

@@ -290,6 +290,8 @@ export interface RunReport {
   discovery?: {
     method: string;
     pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
+    /** Every page the winning rung found before the relevance filter (also written to discovery.json). */
+    candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
     warnings: string[];
   };
   scenarios: Scenario[];
