@@ -1097,6 +1097,12 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
         case 'less':
           lines.push(`await expect.poll(async () => Number(${readRhs}), ${pollOpts}).toBeLessThan(Number(${step.varName}));`);
           break;
+        case 'before':
+          lines.push(`await expect.poll(async () => String(${readRhs}).localeCompare(${step.varName}), ${pollOpts}).toBeLessThan(0); // sorts before the captured value`);
+          break;
+        case 'after':
+          lines.push(`await expect.poll(async () => String(${readRhs}).localeCompare(${step.varName}), ${pollOpts}).toBeGreaterThan(0); // sorts after the captured value`);
+          break;
       }
       return lines;
     }

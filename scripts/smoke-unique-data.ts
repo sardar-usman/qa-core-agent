@@ -26,6 +26,10 @@ import os from 'node:os';
 import { scaffold, frameworkDirName } from '../src/agent/scaffold.js';
 import { transcribe } from '../src/agent/transcriber.js';
 import { detectUniqueField, generateUnique } from '../src/agent/unique-data.js';
+import { chromium } from 'playwright';
+import { createContext, runTool } from '../src/agent/tools.js';
+import { installEvalShim } from '../src/agent/eval-shim.js';
+import { scenarioNameKey } from '../src/agent/rule-coverage.js';
 import type { RunReport, TraceStep } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -162,6 +166,79 @@ check('E1. inline spec defines uniqueEmail and uniquePassword locally (self-cont
 check('E2. inline spec calls uniqueEmail() and uniquePassword()', /uniqueEmail\(\)/.test(inlineSpec) && /uniquePassword\(\)/.test(inlineSpec));
 check('E3. inline spec drops the happy-path literal email and password', !inlineSpec.includes(LITERAL_HAPPY_EMAIL) && !inlineSpec.includes(LITERAL_HAPPY_PASSWORD));
 check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE_EMAIL));
+
+/* ─── D. wrong-credential negatives never spend a real account (enforced at the tool) ── */
+// Run f3b41e: the Explorer typed the real demo account into the wrong-password
+// negative; the replays then found it locked. The password fill in a negative
+// login scenario now rewrites a known real identifier to a generated one.
+{
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const bctx = await browser.newContext(); await installEvalShim(bctx); const page = await bctx.newPage();
+    const loginHtml = '<!doctype html><html><body><h3>Login</h3><form><input data-test="email" id="email" placeholder="Email"><input data-test="password" id="password" type="password" placeholder="Password"><button data-test="login-submit">Login</button></form></body></html>';
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    const KNOWN = 'customer@practicesoftwaretesting.com';
+    const tctx = createContext(page, 60);
+    tctx.knownAccounts = new Set([KNOWN]);
+    tctx.lockoutScenarioKeys = new Set([scenarioNameKey('rejected the locked_out_user account')]);
+
+    // D1: a negative login scenario typing the known account.
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'rejected login with a wrong password', category: 'negative', feature: 'login' } });
+    await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: KNOWN } });
+    const pw = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrongPassword!' } });
+    const emailStep = tctx.current?.steps.find((st) => st.kind === 'fill' && st.target.intent === 'email input');
+    const onPage = await page.inputValue('#email');
+    check('D1. the password fill rewrote the known identifier to a generated non-existent e-mail, on the page and on the step',
+      pw.ok === true && (pw.data as { identifierOverridden?: { from: string; to: string } }).identifierOverridden?.from === KNOWN && emailStep?.kind === 'fill' && emailStep.value !== KNOWN && /@/.test(emailStep.value) && onPage === emailStep.value,
+      JSON.stringify({ pw, emailStep, onPage }));
+    check('D2. the step records the override the way unique data does (generate email, override marker)', emailStep?.kind === 'fill' && emailStep.generate === 'email' && emailStep.override === 'non-existent-account');
+    check('D3. the password fill itself keeps the wrong password literally', tctx.current?.steps.some((st) => st.kind === 'fill' && st.target.intent === 'password input' && st.value === 'wrongPassword!') === true);
+    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
+    await runTool(tctx, { name: 'end_scenario', input: {} });
+
+    // D4: the lockout scenario is exempt and keeps the real account.
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'rejected the locked_out_user account', category: 'negative', feature: 'login' } });
+    await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: KNOWN } });
+    const pwExempt = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrong' } });
+    check('D4. a scenario whose rule names a locked account keeps the real identifier', pwExempt.ok === true && !(pwExempt.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === KNOWN) === true);
+    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
+    await runTool(tctx, { name: 'end_scenario', input: {} });
+
+    // D5: a happy login keeps the real account; D6: an unknown identifier is untouched.
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'logged in with valid credentials', category: 'happy', feature: 'login' } });
+    await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: KNOWN } });
+    const pwHappy = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'welcome01' } });
+    check('D5. a happy login keeps the real account', pwHappy.ok === true && !(pwHappy.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === KNOWN) === true);
+    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
+    await runTool(tctx, { name: 'end_scenario', input: {} });
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'rejected an unknown e-mail', category: 'negative', feature: 'login' } });
+    await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'nobody@example.invalid' } });
+    const pwUnknown = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'x' } });
+    check('D6. an identifier that is not a known account is left alone', pwUnknown.ok === true && !(pwUnknown.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === 'nobody@example.invalid') === true);
+    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
+    await runTool(tctx, { name: 'end_scenario', input: {} });
+
+    // D7: with no SRS at all, the account a happy login in this run signed in with is known.
+    const fresh = createContext(page, 60);
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    await runTool(fresh, { name: 'begin_scenario', input: { name: 'logged in with valid credentials', category: 'happy', feature: 'login' } });
+    await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });
+    await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'secret_sauce' } });
+    await runTool(fresh, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
+    await runTool(fresh, { name: 'end_scenario', input: {} });
+    await page.setContent(loginHtml, { waitUntil: 'load' });
+    await runTool(fresh, { name: 'begin_scenario', input: { name: 'rejected a wrong password with the mismatch error', category: 'negative', feature: 'login' } });
+    await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });
+    const pwLearned = await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrong_password' } });
+    const learnedStep = fresh.current?.steps.find((st) => st.kind === 'fill' && st.target.intent === 'username input');
+    check('D7. an account learned from this run\'s happy login is rewritten in the negative (a username gets a token)', (pwLearned.data as { identifierOverridden?: { from: string } }).identifierOverridden?.from === 'standard_user' && learnedStep?.kind === 'fill' && learnedStep.generate === 'token' && learnedStep.value !== 'standard_user', JSON.stringify({ pwLearned, learnedStep }));
+  } finally {
+    await browser.close();
+  }
+}
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 

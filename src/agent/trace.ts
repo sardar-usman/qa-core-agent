@@ -24,6 +24,13 @@ export type TraceStep =
        * concrete value used during exploration (a valid example).
        */
       generate?: GenerateKind;
+      /**
+       * Set when the tool rewrote the value the model typed because it named a
+       * real account in a wrong-credential negative (the account would be
+       * locked by the re-runs). `generate` carries the kind; `value` is the
+       * generated identifier actually filled.
+       */
+      override?: 'non-existent-account';
     }
   | {
       kind: 'press';
@@ -161,7 +168,12 @@ export type CaptureSource = 'attribute' | 'text' | 'count';
  *  - greater / less: numeric comparison (e.g. a count that went up)
  *  - absent: the captured value no longer matches any element
  */
-export type CompareRelation = 'changed' | 'unchanged' | 'equal' | 'greater' | 'less' | 'absent';
+/**
+ * greater / less compare numbers; before / after compare text in locale order
+ * (a name sort: the new first cell sorts before the old one); changed, equal,
+ * unchanged and absent are exact.
+ */
+export type CompareRelation = 'changed' | 'unchanged' | 'equal' | 'greater' | 'less' | 'before' | 'after' | 'absent';
 
 export interface SelectorRecord {
   level: CascadeLevel;
