@@ -10,6 +10,7 @@ import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason } from './gate.js';
 import { captureActualState } from './actual-state.js';
+import { parseNumber, noNumberMessage } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import {
@@ -440,13 +441,16 @@ export const TOOL_DEFS = [
       'MANDATORY: when an element exposes a semantic ARIA state attribute (aria-valuenow, aria-checked, aria-selected, aria-expanded, aria-pressed), assert that attribute with toHaveAttribute, NOT the displayed text. ' +
       'A progress bar at completion is toHaveAttribute("aria-valuenow", "100"), never toHaveText("100%"). Text is a fallback only when no semantic attribute exists. ' +
       'To prove something is ABSENT (an error cleared, an item deleted, a permission-denied element missing), use toBeHidden, or toHaveCount with count 0. These do NOT require the element to exist — pass the css/testid/role/label/text hint for what should be gone. ' +
-      'To assert the CURRENT value of a form field (an input you filled, a textarea, a select), use toHaveValue with the expected value, NOT toHaveAttribute("value", ...). Typed text lives on the value PROPERTY, so toHaveAttribute reads empty; toHaveValue reads the property.',
+      'To assert the CURRENT value of a form field (an input you filled, a textarea, a select), use toHaveValue with the expected value, NOT toHaveAttribute("value", ...). Typed text lives on the value PROPERTY, so toHaveAttribute reads empty; toHaveValue reads the property. ' +
+      'FORMAT instead of literal: toHaveText, toContainText and toHaveAttribute take `regex` (a regex source such as "^\\$\\d+\\.\\d{2}$" for a price, "^\\S+ \\S+$" for a name-shaped string, "\\S" for non-empty) in place of text/value; the element must MATCH it. Use this for catalogue data (a price is rendered, a name is present) where a literal would rot. ' +
+      'MINIMUM count: toHaveCount with `atLeast` (e.g. atLeast: 1) proves at least that many elements and polls; it never pins the catalogue count. ' +
+      'CHECKED state: toBeChecked asserts a checkbox or radio is checked (pass checked: false for not checked).',
     input_schema: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          enum: ['toBeVisible', 'toBeHidden', 'toHaveText', 'toContainText', 'toHaveURL', 'toHaveCount', 'toHaveAttribute', 'toHaveValue'],
+          enum: ['toBeVisible', 'toBeHidden', 'toHaveText', 'toContainText', 'toHaveURL', 'toHaveCount', 'toHaveAttribute', 'toHaveValue', 'toBeChecked'],
         },
         intent: { type: 'string' },
         role: { type: 'string' },
@@ -458,6 +462,9 @@ export const TOOL_DEFS = [
         count: { type: 'number', description: 'Expected match count for toHaveCount. Use 0 to assert the selector matches nothing (absence).' },
         attribute: { type: 'string', description: 'Attribute name for toHaveAttribute (e.g. aria-valuenow, role, aria-label).' },
         value: { type: 'string', description: 'Expected value: the attribute value for toHaveAttribute, or the form-field value for toHaveValue.' },
+        regex: { type: 'string', description: 'Regex source the text (toHaveText, toContainText) or the attribute (toHaveAttribute) must match, instead of a literal text/value. Recorded as a pattern, emitted as a RegExp.' },
+        atLeast: { type: 'number', description: 'toHaveCount minimum: pass at least this many matching elements (polled). Use atLeast: 1 for "at least one card".' },
+        checked: { type: 'boolean', description: 'toBeChecked: true (default) for checked, false for not checked.' },
         timeout: { type: 'number', description: 'Assertion timeout in ms. Use 15000 for any assertion that depends on animation or async state.' },
       },
       required: ['type'],
@@ -491,7 +498,9 @@ export const TOOL_DEFS = [
     description:
       'Assert how a value changed relative to one you captured earlier in this scenario. The captured value is the REAL value read from the page, never a literal you invent. ' +
       'relation="changed" (the value is now different, e.g. a regenerated id), "unchanged"/"equal" (it held), "greater"/"less" (numeric move, e.g. a count went up), "before"/"after" (text order: after a name sort the new first cell sorts before the captured one), or "absent" (the OLD value no longer matches any element). ' +
-      'For every relation except "absent", pass the SAME element hints you captured from so it re-reads the same place. For "absent" the captured value itself becomes the selector (e.g. the old id), so no element hint is needed. ' +
+      'With NO element hints it re-reads the element you captured from. With hints (css / testid / role / label / text) it re-reads THAT element instead, so you can compare two different elements: capture the listing name, click through, assert_compare {name, relation:"equal", css:"h1"} against the detail heading; capture the first price after a sort, then assert_compare {relation:"greater", css:"<second card price>"}. For "absent" the captured value itself becomes the selector (e.g. the old id), so no element hint is needed. ' +
+      '"greater" and "less" parse the first number out of formatted text ("$1,299.00" compares as 1299, "42%" as 42) and fail loudly when a side holds no number. ' +
+      'A compare of equal/unchanged on the SAME element with no action since the capture is rejected as circular: act first, or use changed. ' +
       'Use this after capture + an action to prove the feature actually did something. A test that cannot tell the value changed is worthless.',
     input_schema: {
       type: 'object',
@@ -977,13 +986,20 @@ function absenceLocator(page: Page, entry: CaptureEntry) {
   return page.getByText(entry.value, { exact: true });
 }
 
-async function readBySource(page: Page, entry: CaptureEntry): Promise<string> {
+/**
+ * Read a compare value the way the capture did (count, attribute or text), off
+ * `target`: the capture's own element, or the element the compare named. A
+ * read is bounded by the compare poll so an element absent from the page
+ * (the listing card on the detail page, run 5e4394) cannot wait 30 s.
+ */
+async function readBySource(page: Page, entry: CaptureEntry, target: SelectorRecord): Promise<string> {
   if (entry.source === 'count') {
-    return String(await baseLocator(page, entry.target).count());
+    return String(await baseLocator(page, target).count());
   }
-  const loc = baseLocator(page, entry.target).first();
-  if (entry.source === 'attribute') return (await loc.getAttribute(entry.attribute!))?.trim() ?? '';
-  return (await loc.textContent())?.trim() ?? '';
+  const loc = baseLocator(page, target).first();
+  const opts = { timeout: 1000 };
+  if (entry.source === 'attribute') return (await loc.getAttribute(entry.attribute!, opts))?.trim() ?? '';
+  return (await loc.textContent(opts))?.trim() ?? '';
 }
 
 function relationHolds(relation: CompareRelation, captured: string, current: string): boolean {
@@ -991,10 +1007,16 @@ function relationHolds(relation: CompareRelation, captured: string, current: str
     case 'changed': return current !== captured;
     case 'unchanged':
     case 'equal': return current === captured;
-    case 'greater':
-      return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) > Number(captured);
-    case 'less':
-      return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) < Number(captured);
+    // Numbers are parsed out of formatted text ($48.41, 1,299.00, 42%). A side
+    // with no number never holds; the handler reports which side and why.
+    case 'greater': {
+      const a = parseNumber(current); const b = parseNumber(captured);
+      return a !== null && b !== null && a > b;
+    }
+    case 'less': {
+      const a = parseNumber(current); const b = parseNumber(captured);
+      return a !== null && b !== null && a < b;
+    }
     // Text order, for a name sort: the re-read sorts before / after the captured value.
     case 'before': return current.localeCompare(captured) < 0;
     case 'after': return current.localeCompare(captured) > 0;
@@ -1013,15 +1035,39 @@ async function pollRelation(
   entry: CaptureEntry,
   relation: CompareRelation,
   budgetMs: number,
+  target: SelectorRecord = entry.target,
 ): Promise<{ held: boolean; current: string }> {
   const deadline = Date.now() + budgetMs;
   let current = '';
   for (;;) {
-    current = await readBySource(page, entry);
-    if (relationHolds(relation, entry.value, current)) return { held: true, current };
+    try {
+      current = await readBySource(page, entry, target);
+      if (relationHolds(relation, entry.value, current)) return { held: true, current };
+    } catch {
+      // The element is not there yet (or not at all): keep polling to the deadline.
+      current = '';
+    }
     if (Date.now() >= deadline) return { held: false, current };
     await new Promise((r) => setTimeout(r, 200));
   }
+}
+
+/** Steps that change page state: the only things that make an unchanged / equal compare falsifiable. */
+const STATE_CHANGING_KINDS = new Set<TraceStep['kind']>(['click', 'fill', 'press', 'navigate', 'select_option', 'set_checked', 'set_input_files', 'stability_wait']);
+
+/**
+ * True when nothing that could change the page sits between the capture of
+ * `varName` and now. An equal / unchanged compare on the same element then
+ * compares a value to itself (invariant 17 at the tool): it can never go red.
+ */
+function noActionSinceCapture(steps: TraceStep[], varName: string): boolean {
+  let idx = -1;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const st = steps[i]!;
+    if (st.kind === 'capture' && st.varName === varName) { idx = i; break; }
+  }
+  if (idx < 0) return true;
+  return !steps.slice(idx + 1).some((st) => STATE_CHANGING_KINDS.has(st.kind));
 }
 
 async function isolateState(page: Page): Promise<void> {
@@ -1338,6 +1384,39 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (!['changed', 'unchanged', 'equal', 'greater', 'less', 'before', 'after', 'absent'].includes(relation)) {
           return { ok: false, error: 'assert_compare relation must be changed, unchanged, equal, greater, less, before, after, or absent.' };
         }
+        if (!ctx.current) return { ok: false, error: 'No scenario in progress, call begin_scenario first.' };
+        // The element to re-read. With hints, resolve them through the same
+        // cascade the capture used and compare against THAT element (the
+        // detail heading against the captured listing name); without hints,
+        // the capture's own element. Run 5e4394 passed hints to compare two
+        // elements eight times and the handler ignored them every time.
+        const hintKeys = ['role', 'label', 'testid', 'css', 'text'] as const;
+        const hasHints = relation !== 'absent' && hintKeys.some((k) => typeof call.input[k] === 'string' && String(call.input[k]).trim());
+        let readTarget: SelectorRecord | undefined;
+        if (hasHints) {
+          const hints = {
+            intent: String(call.input.intent ?? 're-read element'),
+            role: call.input.role as string | undefined,
+            label: call.input.label as string | undefined,
+            testid: call.input.testid as string | undefined,
+            css: call.input.css as string | undefined,
+            text: call.input.text as string | undefined,
+          };
+          const candidate = entry.source === 'count'
+            ? recordFromHints(hints)
+            : (await resolveAndRecord(ctx, hints)).record;
+          // Hints that resolve to the capture's own element are the old
+          // "same place" usage: no readTarget, same rules as before.
+          if (!sameHints(candidate, entry.target) && !(candidate.elementKey && candidate.elementKey === entry.target.elementKey)) {
+            readTarget = candidate;
+          }
+        }
+        if ((relation === 'equal' || relation === 'unchanged') && !readTarget && noActionSinceCapture(ctx.current.steps, entry.varName)) {
+          return { ok: false, error: `assert_compare(${relation}) compares a value to itself; act first, or use changed. Nothing between the capture of "${name}" and this compare could have changed the page, so the check can never fail. Perform the action (click, fill, navigate, sort) before comparing, or compare against a DIFFERENT element by passing its hints.` };
+        }
+        if ((relation === 'greater' || relation === 'less') && parseNumber(entry.value) === null) {
+          return { ok: false, error: `assert_compare(${relation}): ${noNumberMessage(entry.value)} (the captured "${name}"). Capture an element whose text holds a number, or use changed / before / after for text.` };
+        }
         const readVar = claimIdent(ctx, entry.varName + '_now');
 
         if (relation === 'absent') {
@@ -1353,8 +1432,11 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         } else {
           // Re-read the same element the same way, polling briefly so an async
           // update has time to land, then verify the relation live.
-          const ok = await pollRelation(ctx.page, entry, relation, 5000);
+          const ok = await pollRelation(ctx.page, entry, relation, 5000, readTarget ?? entry.target);
           if (!ok.held) {
+            if ((relation === 'greater' || relation === 'less') && parseNumber(ok.current) === null) {
+              return { ok: false, error: `assert_compare(${relation}): ${noNumberMessage(ok.current)} at ${(readTarget ?? entry.target).intent}; captured "${entry.value}". The re-read element holds no number.` };
+            }
             return { ok: false, error: `assert_compare(${relation}): captured "${entry.value}", now "${ok.current}" — relation does not hold.` };
           }
         }
@@ -1369,6 +1451,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           intent: entry.target.intent,
           readVar,
           bounds,
+          ...(readTarget ? { readTarget } : {}),
         });
         return { ok: true, data: { name, relation } };
       }
@@ -1532,7 +1615,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           return { ok: false, error: 'Scenario has no assertions. Add at least one assert, assert_compare, or assert_freeze before end_scenario.' };
         }
 
-        const gateResult = runGate(ctx.current);
+        const gateResult = runGate(ctx.current, { knownNames: knownAccountNames(ctx) });
 
         if (gateResult.violations.length > 0) {
           const scenarioName = ctx.current.name;
@@ -1635,7 +1718,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (ctx.current) {
           const hasAssert = ctx.current.steps.some((s) => s.kind === 'assert' || s.kind === 'assert_compare');
           if (hasAssert) {
-            const gateResult = runGate(ctx.current);
+            const gateResult = runGate(ctx.current, { knownNames: knownAccountNames(ctx) });
             if (gateResult.violations.length > 0) {
               // No retry at finish time — mark immediately BROKEN
               const scenarioName = ctx.current.name;
@@ -1742,6 +1825,12 @@ async function executeAssertion(
     count?: number;
     attribute?: string;
     value?: string;
+    /** Regex source for toHaveText / toContainText / toHaveAttribute (a format, not a literal). */
+    regex?: string;
+    /** toHaveCount minimum (count >= atLeast), polled. */
+    atLeast?: number;
+    /** toBeChecked expected state; defaults to true. */
+    checked?: boolean;
     timeout?: number;
   },
 ): Promise<ToolResult> {
@@ -1766,16 +1855,47 @@ async function executeAssertion(
     }
     case 'toHaveText':
     case 'toContainText': {
-      if (input.text == null) return { ok: false, error: `${input.type} needs text.` };
-      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const pattern = regexSource(input.regex);
+      if (pattern instanceof Error) return { ok: false, error: pattern.message };
+      if (input.text == null && !pattern) return { ok: false, error: `${input.type} needs text, or regex for a format.` };
+      // A `text` hint is a locator hint on every other assertion; with a regex
+      // it must not double as one, or the element would be looked up by the
+      // pattern source. The pattern form locates by the other hints only.
+      const hints = pattern ? { ...input, text: undefined } : input;
+      const { record, loc } = await resolveAndRecord(ctx, { ...hints, intent: input.intent ?? 'element' });
       const t0 = Date.now();
-      if (input.type === 'toHaveText') await expect(loc).toHaveText(input.text, probe);
-      else await expect(loc).toContainText(input.text, probe);
+      if (pattern) {
+        // A format assertion: the same RegExp the emitted spec passes.
+        if (input.type === 'toHaveText') await expect(loc).toHaveText(new RegExp(pattern), probe);
+        else await expect(loc).toContainText(new RegExp(pattern), probe);
+      } else if (input.type === 'toHaveText') await expect(loc).toHaveText(input.text!, probe);
+      else await expect(loc).toContainText(input.text!, probe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
-        name: `${record.intent} ${input.type === 'toHaveText' ? 'has text' : 'contains'} "${input.text}"`,
-        assertion: { type: input.type, target: record, text: input.text, timeout: observed },
+        name: pattern
+          ? `${record.intent} ${input.type === 'toHaveText' ? 'has text' : 'contains text'} matching /${pattern}/`
+          : `${record.intent} ${input.type === 'toHaveText' ? 'has text' : 'contains'} "${input.text}"`,
+        assertion: pattern
+          ? { type: input.type, target: record, text: '', pattern, timeout: observed }
+          : { type: input.type, target: record, text: input.text!, timeout: observed },
+      });
+      return { ok: true };
+    }
+    case 'toBeChecked': {
+      // The checked PROPERTY of a checkbox or radio (a filter toggle, a consent
+      // box), the state Playwright's toBeChecked reads. checked: false asserts
+      // NOT checked. Never toHaveAttribute("checked", ...): the attribute is
+      // the default, the property is the state.
+      const checked = input.checked !== false;
+      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const t0 = Date.now();
+      await expect(loc).toBeChecked({ checked, ...probe });
+      const observed = recordedTimeout(ctx, input.timeout, t0);
+      pushStep(ctx, {
+        kind: 'assert',
+        name: `${record.intent} is ${checked ? 'checked' : 'not checked'}`,
+        assertion: { type: 'toBeChecked', target: record, checked, timeout: observed },
       });
       return { ok: true };
     }
@@ -1795,7 +1915,24 @@ async function executeAssertion(
       return { ok: true };
     }
     case 'toHaveCount': {
-      if (input.count == null) return { ok: false, error: 'toHaveCount needs count.' };
+      if (input.atLeast != null) {
+        // Minimum form: at least N matches, polled. "At least one card" is a
+        // structural fact that survives a reseed; the exact count does not.
+        const minimum = Math.max(0, Math.round(Number(input.atLeast)));
+        if (!Number.isFinite(minimum)) return { ok: false, error: 'toHaveCount atLeast must be a number.' };
+        const record = recordFromHints({ ...input, intent: input.intent ?? 'elements' });
+        const countLoc = baseLocator(ctx.page, record);
+        const t0 = Date.now();
+        await expect.poll(async () => countLoc.count(), probe).toBeGreaterThanOrEqual(minimum);
+        const observed = recordedTimeout(ctx, input.timeout, t0);
+        pushStep(ctx, {
+          kind: 'assert',
+          name: `${record.intent} count is at least ${minimum}`,
+          assertion: { type: 'toHaveCount', target: { ...record, ambiguous: undefined }, count: minimum, atLeast: true, timeout: observed },
+        });
+        return { ok: true };
+      }
+      if (input.count == null) return { ok: false, error: 'toHaveCount needs count (or atLeast for a minimum).' };
       // Absence form (count 0): build the locator from hints WITHOUT resolving,
       // because the whole point is that nothing matches. Wait for it to settle
       // and record an adaptive timeout so a just-removed element is honored.
@@ -1847,15 +1984,20 @@ async function executeAssertion(
     }
     case 'toHaveAttribute': {
       if (input.attribute == null) return { ok: false, error: 'toHaveAttribute needs attribute.' };
-      if (input.value == null) return { ok: false, error: 'toHaveAttribute needs value.' };
+      const pattern = regexSource(input.regex);
+      if (pattern instanceof Error) return { ok: false, error: pattern.message };
+      if (input.value == null && !pattern) return { ok: false, error: 'toHaveAttribute needs value, or regex for a format.' };
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
       const t0 = Date.now();
-      await expect(loc).toHaveAttribute(input.attribute, input.value, probe);
+      if (pattern) await expect(loc).toHaveAttribute(input.attribute, new RegExp(pattern), probe);
+      else await expect(loc).toHaveAttribute(input.attribute, input.value!, probe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
-        name: `${record.intent} has ${input.attribute}="${input.value}"`,
-        assertion: { type: 'toHaveAttribute', target: record, attribute: input.attribute, value: input.value, timeout: observed },
+        name: pattern ? `${record.intent} has ${input.attribute} matching /${pattern}/` : `${record.intent} has ${input.attribute}="${input.value}"`,
+        assertion: pattern
+          ? { type: 'toHaveAttribute', target: record, attribute: input.attribute, value: '', pattern, timeout: observed }
+          : { type: 'toHaveAttribute', target: record, attribute: input.attribute, value: input.value!, timeout: observed },
       });
       return { ok: true };
     }
@@ -1890,6 +2032,21 @@ async function executeAssertion(
 type AssertionInput = Parameters<typeof executeAssertion>[1];
 
 /**
+ * The regex source the model passed, validated. A model that writes the
+ * pattern with slashes ("/\\S+/", run 5e4394 in the repair pass) gets the
+ * slashes stripped; an invalid source is an error naming it, never a literal.
+ */
+function regexSource(raw: string | undefined): string | undefined | Error {
+  if (raw == null) return undefined;
+  let src = String(raw).trim();
+  if (!src) return undefined;
+  const slashed = /^\/(.+)\/[a-z]*$/s.exec(src);
+  if (slashed) src = slashed[1]!;
+  try { new RegExp(src); } catch (e) { return new Error(`regex ${JSON.stringify(raw)} is not a valid pattern: ${(e as Error).message}`); }
+  return src;
+}
+
+/**
  * Identifies "the same assertion" for retry-cap counting. Two assert calls with
  * the same type + expected value + target hint are the same check, so a failing
  * happy-path "land on /auth/login" counts up across re-submits even when the
@@ -1903,6 +2060,9 @@ function assertionSignature(input: AssertionInput): string {
     input.attribute ?? '',
     input.value ?? '',
     input.count == null ? '' : String(input.count),
+    input.regex ?? '',
+    input.atLeast == null ? '' : `>=${input.atLeast}`,
+    input.checked == null ? '' : String(input.checked),
     input.testid ?? input.role ?? input.label ?? input.css ?? input.intent ?? '',
   ].join('|');
 }
@@ -1912,13 +2072,14 @@ function describeAssertion(input: AssertionInput): string {
   const who = input.intent ?? 'the element';
   switch (input.type) {
     case 'toHaveURL': return `the URL to contain "${input.pattern}"`;
-    case 'toHaveText': return `${who} to have text "${input.text}"`;
-    case 'toContainText': return `${who} to contain "${input.text}"`;
-    case 'toHaveAttribute': return `${who} to have ${input.attribute}="${input.value}"`;
+    case 'toHaveText': return input.regex ? `${who} to have text matching /${input.regex}/` : `${who} to have text "${input.text}"`;
+    case 'toContainText': return input.regex ? `${who} to contain text matching /${input.regex}/` : `${who} to contain "${input.text}"`;
+    case 'toHaveAttribute': return input.regex ? `${who} to have ${input.attribute} matching /${input.regex}/` : `${who} to have ${input.attribute}="${input.value}"`;
     case 'toHaveValue': return `${who} to have value "${input.value}"`;
     case 'toBeVisible': return `${who} to be visible`;
     case 'toBeHidden': return `${who} to be hidden`;
-    case 'toHaveCount': return `${who} to match ${input.count} element(s)`;
+    case 'toBeChecked': return `${who} to be ${input.checked === false ? 'not checked' : 'checked'}`;
+    case 'toHaveCount': return input.atLeast != null ? `${who} to match at least ${input.atLeast} element(s)` : `${who} to match ${input.count} element(s)`;
     default: return `assertion ${input.type}`;
   }
 }
@@ -1939,15 +2100,21 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
   // applies the same rule again on the recorded trace).
   if (ctx.current && (input.type === 'toHaveText' || input.type === 'toContainText' || input.type === 'toHaveValue' || input.type === 'toHaveCount')) {
     const record = recordFromHints({ ...(input as object), intent: input.intent ?? 'element' });
+    const r7Pattern = regexSource(input.regex);
+    if (r7Pattern instanceof Error) return { ok: false, error: r7Pattern.message };
     const shape = input.type === 'toHaveCount'
-      ? { type: 'toHaveCount' as const, target: record, count: Number(input.count ?? 0) }
+      ? (input.atLeast != null
+        ? { type: 'toHaveCount' as const, target: record, count: Number(input.atLeast), atLeast: true }
+        : { type: 'toHaveCount' as const, target: record, count: Number(input.count ?? 0) })
       : input.type === 'toHaveValue'
         ? { type: 'toHaveValue' as const, target: record, value: String(input.value ?? '') }
-        : { type: input.type, target: record, text: String(input.text ?? '') };
+        : typeof r7Pattern === 'string'
+          ? { type: input.type, target: record, text: '', pattern: r7Pattern }
+          : { type: input.type, target: record, text: String(input.text ?? '') };
     // A toHaveValue on a field this scenario filled reads the fill, so it is
     // test data; resolve the element key the same way the handler does.
     const filledHere = input.type === 'toHaveValue' && ctx.current.steps.some((st) => st.kind === 'fill' && sameHints(st.target, record));
-    const r7 = filledHere ? null : catalogueLiteralReason(shape as Assertion, ctx.current.steps);
+    const r7 = filledHere ? null : catalogueLiteralReason(shape as Assertion, ctx.current.steps, knownAccountNames(ctx));
     if (r7) {
       return { ok: false, error: `RULE 7 (literal catalogue value) rejected this assertion: ${r7}.` };
     }
@@ -2103,6 +2270,11 @@ function sameHints(a: SelectorRecord, b: SelectorRecord): boolean {
 const PASSWORD_FIELD_RE = /pass[\s_-]?word|\bpasswd\b|\bpwd\b/i;
 const LOGIN_FLOW_RE = /log[\s_-]?in|sign[\s_-]?in|\bauth\b|credential|password/i;
 const IDENTIFIER_FIELD_RE = /e[\s_-]?mail|user[\s_-]?name|\blogin\b|account|identifier|\buser\b/i;
+
+/** Every account identifier this run knows, for gate RULE 7's literal-account check: the SRS-named ones plus the happy logins so far. */
+export function knownAccountNames(ctx: ToolContext): string[] {
+  return [...ctx.knownAccounts, ...accountsFromHappyLogins(ctx)];
+}
 
 /** Identifiers real accounts signed in with earlier in this run (happy login scenarios). */
 function accountsFromHappyLogins(ctx: ToolContext): string[] {

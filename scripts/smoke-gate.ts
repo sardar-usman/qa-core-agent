@@ -455,6 +455,46 @@ check('R7D. a price literal is rejected on any non-message target', runGate(make
 check('R7E. the shared label and drop reason exist for rule 7', gateRuleLabel(7) === 'RULE 7 (literal catalogue value)' && gateBrokenReason(7) === 'literal catalogue value asserted');
 check('R7F. catalogueLiteralReason is null for a filled field value and for a row cell count of 1', catalogueLiteralReason(searchValue.assertion, [searchFill]) === null && catalogueLiteralReason(count1.assertion, []) === null);
 
+/* ─── RULE 7: a pattern is a format, a minimum of one is structural, an account name is a literal ── */
+// Run 5e4394: the repair tried toHaveText "/\\S+/" on a card (rejected as a
+// literal), the Critic asked for a name-shaped pattern instead of "Jane Doe",
+// and count=9 was the only count form. A recorded pattern passes; atLeast 1
+// passes; a literal account name is rejected on any target.
+const cardPrice: SelectorRecord = { level: 'css', arg: 'a.card .card-footer', intent: 'first card price' };
+const cardName: SelectorRecord = { level: 'css', arg: 'a.card h5', intent: 'first card name' };
+check('R7P1. a price PATTERN on a product card is allowed (a format assertion)',
+  catalogueLiteralReason({ type: 'toHaveText', target: cardPrice, text: '', pattern: '^\\$\\d+\\.\\d{2}$' }, []) === null);
+check('R7P2. a non-empty PATTERN on a card name is allowed',
+  catalogueLiteralReason({ type: 'toContainText', target: cardName, text: '', pattern: '\\S' }, []) === null);
+check('R7P3. a literal on the same card target is still rejected',
+  /catalogue data/.test(catalogueLiteralReason({ type: 'toHaveText', target: cardName, text: 'Sheet Sander' }, []) ?? ''));
+check('R7P4. toHaveCount atLeast 1 on product cards is allowed (structural "at least one")',
+  catalogueLiteralReason({ type: 'toHaveCount', target: { level: 'css', arg: 'a.card', intent: 'product cards' }, count: 1, atLeast: true }, []) === null);
+check('R7P5. toHaveCount atLeast 9 on product cards is still a literal catalogue count',
+  /literal catalogue count/.test(catalogueLiteralReason({ type: 'toHaveCount', target: { level: 'css', arg: 'a.card', intent: 'product cards' }, count: 9, atLeast: true }, []) ?? ''));
+check('R7P6. the RULE 7 steer names the pattern and minimum forms',
+  /assert with regex/.test(catalogueLiteralReason({ type: 'toHaveText', target: cardName, text: 'Sheet Sander' }, []) ?? '') && /atLeast 1/.test(catalogueLiteralReason({ type: 'toHaveText', target: cardName, text: 'Sheet Sander' }, []) ?? ''));
+const loginFills: TraceStep[] = [
+  { kind: 'fill', target: { level: 'testid', arg: 'email', intent: 'email input' }, value: 'customer@practicesoftwaretesting.com' },
+  { kind: 'fill', target: { level: 'testid', arg: 'password', intent: 'password input' }, value: 'welcome01' },
+  { kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login' }, intent: 'login button' } },
+];
+const navMenu: SelectorRecord = { level: 'testid', arg: 'nav-menu', intent: 'user menu' };
+const janeDoe = catalogueLiteralReason({ type: 'toHaveText', target: navMenu, text: 'Jane Doe' }, loginFills);
+check('R7A1. "Jane Doe" on the user menu after a login is a literal account name', /user\'s name shown after login|account/.test(janeDoe ?? '') && /name-shaped pattern/.test(janeDoe ?? ''), janeDoe ?? 'null');
+const typedName = catalogueLiteralReason({ type: 'toContainText', target: { level: 'role', arg: { role: 'alert' }, intent: 'welcome banner' }, text: 'customer@practicesoftwaretesting.com' }, loginFills);
+check('R7A2. the identifier typed into the email field is a literal account value on any target', /typed into email input/.test(typedName ?? '') && /name-shaped pattern/.test(typedName ?? ''), typedName ?? 'null');
+const known = catalogueLiteralReason({ type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'admin@practicesoftwaretesting.com' }, [], ['admin@practicesoftwaretesting.com']);
+check('R7A3. an account the SRS names is a literal account value', /SRS names/.test(known ?? ''), known ?? 'null');
+check('R7A4. a name-shaped literal WITHOUT a login in the scenario is not an account name (a heading stays allowed)',
+  catalogueLiteralReason({ type: 'toHaveText', target: { level: 'testid', arg: 'page-title', intent: 'page heading' }, text: 'Hand Tools' }, []) === null);
+check('R7A5. a message literal after login that is not a name is still allowed',
+  catalogueLiteralReason({ type: 'toContainText', target: { level: 'role', arg: { role: 'alert' }, intent: 'alert' }, text: 'Thanks for your message' }, loginFills) === null);
+check('R7A6. a name-shaped pattern on the user menu is allowed',
+  catalogueLiteralReason({ type: 'toHaveText', target: navMenu, text: '', pattern: '^\\S+ \\S+$' }, loginFills) === null);
+check('R7A7. runGate passes known names through to RULE 7',
+  runGate(makeScenario([NAV, ...loginFills, { kind: 'assert', name: 'g', assertion: { type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'Admin User' } }]), { knownNames: ['Admin User'] }).violations.some((v) => v.rule === 7 && /SRS names/.test(v.detail)));
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
 console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms, all timeout-bearing types), RULE 4 (intermediate value), RULE 5 (unused captures stripped), assert_freeze counting.');

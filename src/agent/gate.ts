@@ -103,7 +103,7 @@ const TABLE_ROLE_RE = /\[\s*role\s*[~|^$*]?=\s*["']?(row|cell|columnheader|rowhe
  * object is abandoned (never pushed to ctx.scenarios), so the mutation is
  * harmless.
  */
-export function runGate(scenario: Scenario): GateResult {
+export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string> } = {}): GateResult {
   const violations: GateViolation[] = [];
 
   for (let i = 0; i < scenario.steps.length; i++) {
@@ -125,8 +125,8 @@ export function runGate(scenario: Scenario): GateResult {
     // id is the catalogue row's key; it changes on the next reseed and the
     // locator goes with it. Role, label, an id-free testid or a table path
     // survive a reseed.
-    const target6 = targetOf(step);
-    if (target6) {
+    for (const target6 of [targetOf(step), step.kind === 'assert_compare' ? step.readTarget ?? null : null]) {
+      if (!target6) continue;
       const text6 = selectorText(target6);
       const fragment = generatedIdFragment(text6);
       if (fragment) {
@@ -140,7 +140,7 @@ export function runGate(scenario: Scenario): GateResult {
 
     // RULE 7: no literal catalogue value (see catalogueLiteralReason).
     if (step.kind === 'assert') {
-      const r7 = catalogueLiteralReason(step.assertion, scenario.steps.slice(0, i));
+      const r7 = catalogueLiteralReason(step.assertion, scenario.steps.slice(0, i), opts.knownNames);
       if (r7) violations.push({ rule: 7, stepIndex: i, detail: `step ${i + 1}: ${r7}` });
     }
 
@@ -149,8 +149,11 @@ export function runGate(scenario: Scenario): GateResult {
     // allowed — they remain unique even as the value animates. Capture-and-
     // compare reads the same element twice, so a fragile selector that drifts
     // between reads would silently compare two different elements.
-    if ((step.kind === 'capture' || step.kind === 'assert_compare') && step.target.level === 'css') {
-      const sel = String(step.target.arg);
+    // The compare's own re-read element (readTarget) is held to the same rule.
+    const compareTargets = step.kind === 'capture' ? [step.target] : step.kind === 'assert_compare' ? [step.target, ...(step.readTarget ? [step.readTarget] : [])] : [];
+    for (const ct of compareTargets) {
+      if (ct.level !== 'css') continue;
+      const sel = String(ct.arg);
       // Table-context exception: inside a table, a positional address (row 1,
       // column 1) is stable and correct — that cell HAS no role or id of its own
       // because its content changes by design when you sort. Position is exactly
@@ -193,7 +196,7 @@ export function runGate(scenario: Scenario): GateResult {
     // verify the animation stopped.
     if (step.kind === 'assert') {
       const a = step.assertion;
-      if ((a.type === 'toHaveText' || a.type === 'toContainText') && 'target' in a && 'text' in a) {
+      if ((a.type === 'toHaveText' || a.type === 'toContainText') && 'target' in a && 'text' in a && !a.pattern) {
         const text = (a as { text: string }).text.trim();
         if (looksLikeIntermediateValue(text)) {
           const intent = (a as { target: SelectorRecord }).target.intent;
@@ -449,9 +452,12 @@ function targetWords(t: SelectorRecord): string {
  * model filled itself are never catalogue data. Exported so tools.ts applies
  * it at assert time and smoke-gate locks it.
  */
-export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[]): string | null {
-  const steer = 'capture the value, act, assert_compare (changed, greater, less, before, after) or assert a heading, a message, a format, or count 0 or 1';
+export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], knownNames?: Iterable<string>): string | null {
+  const steer = 'capture the value, act, assert_compare (changed, greater, less, before, after) or assert a heading, a message, a format (assert with regex), toHaveCount with atLeast 1, or count 0 or 1';
   if (a.type === 'toHaveCount') {
+    // A minimum of one is the structural "at least one card" doctrine rule 6
+    // names; a higher minimum on a catalogue target still pins the count.
+    if (a.atLeast && a.count <= 1) return null;
     // A count of form controls, messages or headings is structural, not
     // catalogue data (three checkboxes in a form); a count of cards or rows is.
     const countWords = targetWords(a.target);
@@ -460,8 +466,17 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[]): s
     return null;
   }
   if (a.type !== 'toHaveText' && a.type !== 'toContainText' && a.type !== 'toHaveValue') return null;
+  // A pattern is a format assertion (a price is rendered, a name-shaped
+  // string is present): exactly the durable shape rule 6 asks for.
+  if (a.type !== 'toHaveValue' && a.pattern) return null;
   const literal = a.type === 'toHaveValue' ? a.value : a.text;
   const words = targetWords(a.target);
+  // A literal account or user name (run 5e4394: "Jane Doe" pinned after
+  // login) rots when the test account changes, on any target.
+  if (a.type !== 'toHaveValue') {
+    const account = accountLiteralReason(literal, a.target, priorSteps, knownNames);
+    if (account) return account;
+  }
   if (a.type === 'toHaveValue') {
     // A value the model filled itself is test data, not catalogue data.
     const filled = priorSteps.some((s) => s.kind === 'fill' && sameElement(s.target, a.target));
@@ -473,6 +488,41 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[]): s
   const exempt = NON_CATALOGUE_RE.test(words) && !strongCatalogue;
   if (!exempt && PRICE_LITERAL_RE.test(literal)) return `${JSON.stringify(literal)} is a price literal, catalogue data that changes when the data reseeds; ${steer}`;
   if (!exempt && CATALOGUE_TARGET_RE.test(words)) return `${JSON.stringify(literal)} on ${words.trim()} is catalogue data that changes when the data reseeds; ${steer}`;
+  return null;
+}
+
+// Fields whose typed value names an account: a username, an email, a display name.
+const ACCOUNT_FIELD_RE = /user|e[\s_-]?mail|\bname\b|log[\s_-]?in|account|profile|nick|display|first|last/i;
+// Targets that show the signed-in user: a greeting, a user menu, an avatar label.
+const ACCOUNT_TARGET_RE = /user|account|profile|greeting|welcome|nav-menu|\bmenu\b|avatar|\bname\b|signed|logged/i;
+const PASSWORD_FIELD_RE = /pass[\s_-]?word|\bpasswd\b|\bpwd\b/i;
+// "Jane Doe", "Mary-Ann O'Neil": two or more capitalised words.
+const NAME_SHAPED_RE = /^[A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+)+$/u;
+
+/**
+ * Why a text literal is an account or user name, or null. Three signals: the
+ * literal equals an account the run knows (the SRS-named ones, the happy
+ * logins), it equals a value typed into a credential or profile field earlier
+ * in the scenario, or it is a name-shaped string on a signed-in-user target
+ * after a password fill. The steer is a name-shaped pattern, never the name.
+ */
+function accountLiteralReason(literal: string, target: SelectorRecord, priorSteps: TraceStep[], knownNames?: Iterable<string>): string | null {
+  const lit = literal.trim();
+  if (!lit) return null;
+  const low = lit.toLowerCase();
+  const steer = 'assert a name-shaped pattern (assert with regex, for example "^\\S+ \\S+$" or "\\S") instead of the account\'s literal name';
+  for (const n of knownNames ?? []) {
+    if (String(n).trim().toLowerCase() === low) return `${JSON.stringify(lit)} is an account this run signed in with or the SRS names; ${steer}`;
+  }
+  for (const s of priorSteps) {
+    if (s.kind !== 'fill' || !s.value.trim()) continue;
+    if (!ACCOUNT_FIELD_RE.test(`${s.target.intent} ${selectorText(s.target)}`)) continue;
+    if (s.value.trim().toLowerCase() === low) return `${JSON.stringify(lit)} is the value typed into ${s.target.intent}, a credential or profile field; ${steer}`;
+  }
+  const loggedIn = priorSteps.some((s) => s.kind === 'fill' && PASSWORD_FIELD_RE.test(`${s.target.intent} ${selectorText(s.target)}`));
+  if (loggedIn && NAME_SHAPED_RE.test(lit) && ACCOUNT_TARGET_RE.test(targetWords(target))) {
+    return `${JSON.stringify(lit)} is a user's name shown after login, a literal account value; ${steer}`;
+  }
   return null;
 }
 

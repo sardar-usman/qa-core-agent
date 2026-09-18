@@ -157,6 +157,46 @@ await runTool(tcMove, { name: 'begin_scenario', input: { name: 'bar still moving
 const afMove = await runTool(tcMove, { name: 'assert_freeze', input: { intent: 'bar', css: '#progressBar', attribute: 'aria-valuenow', waitMs: 400 } });
 check('S. assert_freeze(aria-valuenow) on a STILL-MOVING bar FAILS (not frozen)', afMove.ok === false && /not frozen|changed/.test(afMove.error ?? ''));
 
+/* ─── H. format and state assertions: pattern text, pattern attribute, checked ─ */
+// Run 5e4394: the Critic asked for a price format, a non-empty src and a
+// checked filter in seven verdicts, and the assert tool had no form for any
+// of them; the repair tried toHaveText "/\\S+/" and RULE 7 rejected it as a
+// literal. A regex source is now recorded as a pattern, RULE 7 treats it as a
+// format, and toBeChecked reads the checked property.
+const cardHtml = `
+<!doctype html><html><body>
+<a class="card" href="#"><img class="card-img-top" src="assets/img/products/sander.avif" alt=""><h5>Sheet Sander</h5><span class="card-footer">$58.48</span></a>
+<label><input type="checkbox" id="eco" checked> Eco-friendly</label>
+</body></html>`;
+await page.setContent(cardHtml, { waitUntil: 'load' });
+const tcFmt = createContext(page, 50);
+await runTool(tcFmt, { name: 'begin_scenario', input: { name: 'products show a price, an image and a name', category: 'happy', feature: 'catalogue' } });
+const literalPrice = await runTool(tcFmt, { name: 'assert', input: { type: 'toHaveText', intent: 'first card price', css: 'a.card .card-footer', text: '$58.48' } });
+check('X1. a literal price on a product card is still RULE 7 rejected', literalPrice.ok === false && /RULE 7/.test(literalPrice.error ?? ''), JSON.stringify(literalPrice));
+const patternPrice = await runTool(tcFmt, { name: 'assert', input: { type: 'toHaveText', intent: 'first card price', css: 'a.card .card-footer', regex: '^\\$\\d+\\.\\d{2}$', timeout: 5000 } });
+check('X2. a price PATTERN on the same target passes RULE 7 and the live probe', patternPrice.ok === true, JSON.stringify(patternPrice));
+const slashed = await runTool(tcFmt, { name: 'assert', input: { type: 'toHaveText', intent: 'first card name', css: 'a.card h5', regex: '/\\S+/' } });
+check('X3. a regex written with slashes ("/\\S+/") is accepted with the slashes stripped', slashed.ok === true, JSON.stringify(slashed));
+const badRegex = await runTool(tcFmt, { name: 'assert', input: { type: 'toHaveText', intent: 'first card name', css: 'a.card h5', regex: '(' } });
+check('X4. an invalid regex source is an error naming it, never a literal', badRegex.ok === false && /not a valid pattern/.test(badRegex.error ?? ''), JSON.stringify(badRegex));
+const srcPattern = await runTool(tcFmt, { name: 'assert', input: { type: 'toHaveAttribute', intent: 'first card image', css: 'a.card img', attribute: 'src', regex: 'products/', timeout: 5000 } });
+check('X5. toHaveAttribute with a pattern matches a non-empty src', srcPattern.ok === true, JSON.stringify(srcPattern));
+const checkedOk = await runTool(tcFmt, { name: 'assert', input: { type: 'toBeChecked', intent: 'eco-friendly filter', css: '#eco', timeout: 5000 } });
+check('X6. toBeChecked passes on a checked checkbox', checkedOk.ok === true, JSON.stringify(checkedOk));
+const notCheckedFails = await runTool(tcFmt, { name: 'assert', input: { type: 'toBeChecked', intent: 'eco-friendly filter', css: '#eco', checked: false } });
+check('X7. toBeChecked(checked: false) FAILS while the box is checked', notCheckedFails.ok === false, JSON.stringify(notCheckedFails));
+await runTool(tcFmt, { name: 'set_checked', input: { intent: 'eco-friendly filter', css: '#eco', checked: false } });
+const notChecked = await runTool(tcFmt, { name: 'assert', input: { type: 'toBeChecked', intent: 'eco-friendly filter', css: '#eco', checked: false, timeout: 5000 } });
+check('X8. toBeChecked(checked: false) passes after unchecking', notChecked.ok === true, JSON.stringify(notChecked));
+const fmtSteps = tcFmt.current!.steps;
+const patStep = fmtSteps.find((st) => st.kind === 'assert' && st.assertion.type === 'toHaveText' && st.assertion.pattern);
+check('X9. the recorded text assertion carries the pattern source and an empty literal',
+  !!patStep && patStep.kind === 'assert' && patStep.assertion.type === 'toHaveText' && patStep.assertion.pattern === '^\\$\\d+\\.\\d{2}$' && patStep.assertion.text === '', JSON.stringify(patStep));
+const chkStep = fmtSteps.find((st) => st.kind === 'assert' && st.assertion.type === 'toBeChecked' && st.assertion.checked === false);
+check('X10. the recorded checked assertion carries checked: false', !!chkStep, JSON.stringify(fmtSteps.filter((st) => st.kind === 'assert' && st.assertion.type === 'toBeChecked')));
+const endFmt = await runTool(tcFmt, { name: 'end_scenario', input: {} });
+check('X11. the gate accepts the pattern assertions at end_scenario (RULE 7 treats a pattern as a format)', endFmt.ok === true, JSON.stringify(endFmt));
+
 await browser.close();
 
 /* ─── G. the emitted spec uses getAttribute + numeric bounds, not text ───── */
@@ -166,6 +206,7 @@ const report: RunReport = {
   scenarios: [
     { name: 'bar completes', category: 'happy', feature: 'progressbar', steps: tc.current!.steps },
     { name: 'bar stops', category: 'negative', feature: 'progressbar', steps: tcStop.current!.steps },
+    tcFmt.scenarios[0]!,
   ],
   cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
   cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
@@ -180,7 +221,10 @@ check('T. spec asserts aria-valuenow via toHaveAttribute', /toHaveAttribute\(\s*
 check('U. spec does NOT assert toHaveText("100%") on the bar', !/toHaveText\(\s*['"]100%['"]\s*\)/.test(spec));
 check('V. spec polls the attribute read and asserts the value held', /getAttribute\(['"]aria-valuenow['"]\)/.test(spec) && /await expect\.poll\(async \(\) => .+, \{ timeout: \d+ \}\)\.toBe\(cap_\w+\)/.test(spec));
 check('W. spec asserts the frozen value is strictly within range', /toBeGreaterThan\(\w+Min\)/.test(spec) && /toBeLessThan\(\w+Max\)/.test(spec));
+check('X12. the spec carries the price pattern as a RegExp literal, never a quoted string', /\.toHaveText\(\/\^\\\$\\d\+\\\.\\d\{2\}\$\/, \{ timeout: \d+ \}\)/.test(spec) && !/toHaveText\(""/.test(spec), spec.split('\n').filter((l) => /toHaveText\(\//.test(l)).join(' | '));
+check('X13. the spec carries the src pattern as a RegExp literal on toHaveAttribute', /toHaveAttribute\("src", \/products\\\/\/, \{ timeout: \d+ \}\)/.test(spec), spec.split('\n').filter((l) => /toHaveAttribute\("src"/.test(l)).join(' | '));
+check('X14. the spec emits toBeChecked() and toBeChecked({ checked: false })', /\.toBeChecked\(\{ timeout: \d+ \}\)/.test(spec) && /\.toBeChecked\(\{ checked: false, timeout: \d+ \}\)/.test(spec), spec.split('\n').filter((l) => /toBeChecked/.test(l)).join(' | '));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: ARIA value/state attributes are asserted instead of text; the stop freeze compares two attribute reads and proves the value is strictly inside its range.');
+console.log('OK: ARIA value/state attributes are asserted instead of text; the stop freeze compares two attribute reads and proves the value is strictly inside its range; pattern text and attributes pass RULE 7 and ship as RegExp literals; toBeChecked reads the checked property.');

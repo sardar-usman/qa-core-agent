@@ -229,6 +229,19 @@ check('L5. the default "element" intent never renders bare: the locator follows 
   l5.startsWith('assert element = page.locator("[data-test=\\"no-results\\"]") visible') && !/assert element visible/.test(l5), l5);
 const l6 = describeStep({ kind: 'assert_compare', varName: 'cap_x', readVar: 'cap_x_now', relation: 'less', source: 'count', intent: 'product cards', target: { level: 'css', arg: '.card', intent: 'product cards' } });
 check('L6. assert_compare names the locator it re-reads', l6.includes('at product cards = page.locator(".card")'), l6);
+// Run 5e4394: the Critic asked for a timeout on five compares because the line
+// did not say the re-read polls. It now ends in the replay poll, and a compare
+// that re-reads a second element names that element too.
+check('L6a. assert_compare shows the poll timeout replay and the emitted spec use', l6.endsWith('[polls 10000ms]'), l6);
+const l6b = describeStep({ kind: 'assert_compare', varName: 'cap_name', readVar: 'cap_name_now', relation: 'equal', source: 'text', intent: 'first card name', target: { level: 'css', arg: 'a.card h5', intent: 'first card name' }, readTarget: { level: 'css', arg: 'h1', intent: 'detail heading' } });
+check('L6b. a cross-element compare names the element it re-reads', l6b.includes('re-read at detail heading = page.locator("h1")') && l6b.includes('at first card name = page.locator("a.card h5")'), l6b);
+const l6c = describeStep({ kind: 'assert', name: 'p', assertion: { type: 'toHaveText', target: { level: 'css', arg: 'a.card .card-footer', intent: 'first card price' }, text: '', pattern: '^\\$\\d+\\.\\d{2}$', timeout: 5000 } });
+check('L6c. a pattern assertion renders as "matching /.../", never as an empty literal', l6c.includes('has text matching /^\\$\\d+\\.\\d{2}$/') && !l6c.includes('has text ""'), l6c);
+const l6d = describeStep({ kind: 'assert', name: 'c', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'a.card', intent: 'product cards' }, count: 1, atLeast: true, timeout: 5000 } });
+check('L6d. a minimum count renders as count>=N', l6d.includes('count>=1'), l6d);
+const l6e = describeStep({ kind: 'assert', name: 'k', assertion: { type: 'toBeChecked', target: { level: 'css', arg: '#eco', intent: 'eco filter' }, checked: true, timeout: 5000 } });
+check('L6e. a checked assertion renders its state', l6e.includes('eco filter = page.locator("#eco") checked'), l6e);
+check('L6f. the Critic prompt says a compare line polls and never needs a timeout, and names the tool forms', CRITIC_SYSTEM_PROMPT.includes('[polls Nms]') && CRITIC_SYSTEM_PROMPT.includes('toHaveCount with atLeast') && CRITIC_SYSTEM_PROMPT.includes('toBeChecked'));
 // The Critic prompt fixture (the gateway smoke's login trace shape) rendered
 // through describeStep: no line may carry a bare "element".
 const fixtureLines = [
