@@ -1205,6 +1205,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       } else {
         const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
         review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        for (const w of c.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
         if (c.unreviewed.length > 0) {
           opts.onEvent?.({
             type: 'message',
@@ -1314,6 +1315,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
             secondVerdicts = c2.verdicts;
+            for (const w of c2.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
             if (c2.unreviewed.length > 0) {
               opts.onEvent?.({ type: 'message', text: `WARNING: the Critic returned no verdict for ${c2.unreviewed.length} repaired scenario(s); held as rework: ${c2.unreviewed.map((n) => `"${n}"`).join(', ')}` });
             }

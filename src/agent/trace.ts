@@ -362,7 +362,7 @@ export interface RunReport {
      * The critic's response text, kept ONLY when zero verdicts parsed from it,
      * so the failure can be diagnosed from the report instead of guessed at.
      */
-    rawResponse?: string;
+    rawResponse?: string | string[];
     /**
      * Verdict history for scenarios that went through the single repair pass:
      * rework -> pass (kept) or rework -> rework/reject/not-re-recorded

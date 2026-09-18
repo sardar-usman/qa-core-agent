@@ -31,8 +31,14 @@ export interface CriticResult {
    * unreviewed; the runtime prints a warning naming them.
    */
   unreviewed: string[];
-  /** The critic's response text, verbatim. Kept on the report when nothing parsed. */
-  raw: string;
+  /**
+   * The critic's response text, verbatim. An array when the first call
+   * yielded no verdicts and the call was retried once (both responses, in
+   * order). Kept on the report when nothing parsed.
+   */
+  raw: string | string[];
+  /** Lines for the run log: the one retry, and whether it recovered. */
+  warnings: string[];
 }
 
 /**
@@ -97,7 +103,7 @@ export async function critique(opts: {
   client?: CriticClient;
 }): Promise<CriticResult> {
   if (opts.scenarios.length === 0) {
-    return { verdicts: [], summary: 'No scenarios recorded, nothing to review.', costUsd: 0, raw: '', unreviewed: [] };
+    return { verdicts: [], summary: 'No scenarios recorded, nothing to review.', costUsd: 0, raw: '', unreviewed: [], warnings: [] };
   }
 
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
@@ -112,28 +118,52 @@ export async function critique(opts: {
     return `${i + 1}. [${s.category}] ${s.name}\n      ${steps}`;
   }).join('\n\n');
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: criticMaxTokens(opts.scenarios.length),
-    system: [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
-    messages: [
-      {
-        role: 'user',
-        content: `URL: ${opts.url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`,
-      },
-    ],
-  });
+  const ask = async (): Promise<{ text: string; costUsd: number }> => {
+    const response = await client.messages.create({
+      model,
+      max_tokens: criticMaxTokens(opts.scenarios.length),
+      system: [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
+      messages: [
+        {
+          role: 'user',
+          content: `URL: ${opts.url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`,
+        },
+      ],
+    });
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    const u = response.usage;
+    return { text, costUsd: (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000 };
+  };
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  // One retry on a zero-verdict response, with the same input. A response
+  // nothing can parse is usually a one-off (a refusal preamble, a format
+  // slip); a second call is far cheaper than holding every scenario as
+  // rework and spending the repair reserve on it. Both responses are kept.
+  const first = await ask();
+  let text = first.text;
+  let costUsd = first.costUsd;
+  let raw: string | string[] = first.text;
+  const warnings: string[] = [];
+  let parsed = parseVerdicts(text);
+  if (parsed.length === 0) {
+    const second = await ask();
+    costUsd += second.costUsd;
+    raw = [first.text, second.text];
+    const retryParsed = parseVerdicts(second.text);
+    if (retryParsed.length > 0) {
+      text = second.text;
+      parsed = retryParsed;
+      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned ${retryParsed.length} verdict(s).`);
+    } else {
+      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned none, so every scenario is held as rework. Both responses are kept on review.rawResponse.`);
+    }
+  }
 
-  const u = response.usage;
-  const costUsd = (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000;
-
-  const completed = completeVerdicts(opts.scenarios, parseVerdicts(text));
-  return { verdicts: completed.verdicts, summary: parseSummary(text), costUsd, raw: text, unreviewed: completed.unreviewed };
+  const completed = completeVerdicts(opts.scenarios, parsed);
+  return { verdicts: completed.verdicts, summary: parseSummary(text), costUsd, raw, unreviewed: completed.unreviewed, warnings };
 }
 
 /** Output budget per verdict object (reasons and required_fixes included) and for the summary block. */
