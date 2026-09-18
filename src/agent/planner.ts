@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { chromium, type Frame, type Page } from 'playwright';
 import { installEvalShim } from './eval-shim.js';
 import { renderRequirementsBlock, type RequirementsMap } from './requirements.js';
-import { citationMismatchReason } from './rule-coverage.js';
+import { citationMismatchReason, scenarioNameKey } from './rule-coverage.js';
 
 /**
  * Planner — Step 1 of the multi-agent pipeline.
@@ -992,4 +992,41 @@ export function knownAccountIdentifiers(map?: RequirementsMap): string[] {
     for (const m of t.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gi) ?? []) out.add(m.toLowerCase());
   }
   return [...out];
+}
+
+/**
+ * Scenario names unique across pages. Per-page planning can produce the same
+ * name twice (run f3b41e: "rejected wrong password and stayed on login page"
+ * on two pages), and skip_scenario, verdict matching and the funnel all key
+ * on the name, so the second one was unreachable and the funnel lost a
+ * scenario. A duplicate gets the page's feature appended when that tells the
+ * two apart, else the page's path, then a counter. Exported for
+ * smoke-plan-enforcement.
+ */
+export function uniqueScenarioNames(
+  existing: PlannedScenario[],
+  incoming: PlannedScenario[],
+  page: { url: string; feature?: string },
+): { scenarios: PlannedScenario[]; renames: Array<{ from: string; to: string }> } {
+  const taken = new Map<string, PlannedScenario>();
+  for (const s of existing) taken.set(scenarioNameKey(s.name), s);
+  const renames: Array<{ from: string; to: string }> = [];
+  const out: PlannedScenario[] = [];
+  let pathTag = '';
+  try { pathTag = new URL(page.url).pathname.replace(/^\/+|\/+$/g, ''); } catch { pathTag = ''; }
+  for (const s of incoming) {
+    const key = scenarioNameKey(s.name);
+    const clash = taken.get(key);
+    if (!clash) { taken.set(key, s); out.push(s); continue; }
+    const featureTag = page.feature && page.feature !== clash.feature ? page.feature : '';
+    const tag = featureTag || pathTag || 'page 2';
+    let name = `${s.name} (${tag})`;
+    let n = 2;
+    while (taken.has(scenarioNameKey(name))) { name = `${s.name} (${tag} ${n})`; n++; }
+    const renamed = { ...s, name };
+    taken.set(scenarioNameKey(name), renamed);
+    renames.push({ from: s.name, to: name });
+    out.push(renamed);
+  }
+  return { scenarios: out, renames };
 }

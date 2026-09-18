@@ -96,7 +96,8 @@ export interface RunDetailStages {
   };
   explore: {
     status: StageStatus; stat: string;
-    steps: number; scenarios_recorded: number;
+    /** recorded = reconciliation.generated + dropped at critic, replay and stability; shipped = report.scenarios.length. */
+    steps: number; scenarios_recorded: number; scenarios_shipped: number;
     /** cost.usd: the Explorer loop including the repair pass. */
     explorer_usd: number; repair_usd: number;
     gate_injections: Array<{ scenario: string; step_index: number; assertion_type: string; detail: string }>;
@@ -393,10 +394,17 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const incomplete = (report.incomplete ?? []).map((i) => ({ scenario: i.scenario, reason: i.reason }));
   const skipped = (report.skipped ?? []).map((s) => ({ scenario: s.scenario, reason: s.reason }));
   const gateBroken = (report.gate?.broken ?? []).map((b) => ({ scenario: b.scenario, reason: b.reason, attempts: b.attempts }));
+  // What the Explorer recorded: the shipped ones plus everything a later
+  // stage dropped. The stat used to read the shipped count under "recorded"
+  // (run f3b41e: "1 recorded" for 15 recorded).
+  const recAll = report.reconciliation;
+  const recordedCount = recAll
+    ? (recAll.generated ?? 0) + (recAll.dropped ?? []).filter((d) => d.stage === 'critic' || d.stage === 'replay' || d.stage === 'stability').length
+    : shipped.length;
   const explore: RunDetailStages['explore'] = {
     status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
-    stat: `${shipped.length} recorded · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(4)}`,
-    steps: report.steps ?? 0, scenarios_recorded: shipped.length,
+    stat: `${recordedCount} recorded · ${shipped.length} shipped · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(4)}`,
+    steps: report.steps ?? 0, scenarios_recorded: recordedCount, scenarios_shipped: shipped.length,
     explorer_usd: usd(cost.usd), repair_usd: usd(cost.repairUsd),
     gate_injections: (report.gate?.injections ?? []).map((g) => ({ scenario: g.scenario, step_index: g.stepIndex, assertion_type: g.assertionType, detail: g.detail })),
     gate_broken: gateBroken, skipped, incomplete,

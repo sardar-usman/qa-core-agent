@@ -84,7 +84,7 @@ export interface RunDetailStages {
   discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; warnings: string[] };
   plan: { status: StageStatus; stat: string; planner_usd: number; scenarios: Array<{ name: string; feature: string | null; category: string | null; rule_ids: string[]; page_url: string | null }>; pages: Array<{ url: string | null; count: number }> };
   explore: {
-    status: StageStatus; stat: string; steps: number; scenarios_recorded: number; explorer_usd: number; repair_usd: number;
+    status: StageStatus; stat: string; steps: number; scenarios_recorded: number; scenarios_shipped: number; explorer_usd: number; repair_usd: number;
     gate_injections: Array<{ scenario: string; step_index: number; assertion_type: string; detail: string }>;
     gate_broken: Array<{ scenario: string; reason: string; attempts: number }>;
     skipped: Array<{ scenario: string; reason: string }>; incomplete: Array<{ scenario: string; reason: string }>;

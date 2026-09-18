@@ -184,6 +184,7 @@ function Explore({ e }: { e: RunDetailStages['explore'] }) {
       <KV>
         <K label="steps" value={e.steps} testid="explore-steps" />
         <K label="scenarios recorded" value={e.scenarios_recorded} testid="explore-recorded" />
+        <K label="shipped" value={e.scenarios_shipped} testid="explore-shipped" />
         <K label="explorer" value={usd(e.explorer_usd)} cost testid="explore-cost" />
         {e.repair_usd ? <K label="of which repair pass" value={usd(e.repair_usd)} cost /> : null}
         {e.cache ? <K label="prompt tokens from cache" value={`${(e.cache.cached_share * 100).toFixed(1)}% over ${e.cache.calls} call${e.cache.calls === 1 ? '' : 's'}`} testid="explore-cache-share" /> : null}

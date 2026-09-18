@@ -10,7 +10,7 @@ import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason } from './gate.js';
 import { captureActualState } from './actual-state.js';
-import { scenarioNameKey } from './rule-coverage.js';
+import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import {
   chooseStateAssertion,
@@ -613,12 +613,10 @@ function unexploredPlanned(ctx: ToolContext): string[] {
     ...ctx.skipped.map((s) => s.scenario),
     ...(ctx.current ? [ctx.current.name] : []),
   ];
-  const begunKeys = begun.map(scenarioNameKey).filter((k) => k.length > 0);
-  return ctx.plannedNames.filter((planned) => {
-    const k = scenarioNameKey(planned);
-    if (!k) return false;
-    return !begunKeys.some((b) => b === k || b.includes(k) || k.includes(b));
-  });
+  // Exact key first, containment second, each planned name claimed once, so
+  // a suffixed duplicate is not hidden by its base name.
+  const claimed = claimPlanned(ctx.plannedNames, begun);
+  return ctx.plannedNames.filter((planned) => scenarioNameKey(planned).length > 0 && !claimed.has(planned));
 }
 
 function pushStep(ctx: ToolContext, step: TraceStep): void {
@@ -1588,10 +1586,13 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (!rawName) return { ok: false, error: 'skip_scenario needs the planned scenario name.' };
         if (!reason) return { ok: false, error: 'skip_scenario needs a concrete reason (why this scenario cannot be tested).' };
         const key = scenarioNameKey(rawName);
-        const planned = ctx.plannedNames.find((p) => {
-          const pk = scenarioNameKey(p);
-          return pk === key || pk.includes(key) || key.includes(pk);
-        });
+        // Exact key first, so a suffixed duplicate of another page's scenario
+        // is the one skipped when it is named; containment only as a fallback.
+        const planned = ctx.plannedNames.find((p) => scenarioNameKey(p) === key)
+          ?? ctx.plannedNames.find((p) => {
+            const pk = scenarioNameKey(p);
+            return pk.length > 0 && (pk.includes(key) || key.includes(pk));
+          });
         if (!planned) {
           return {
             ok: false,

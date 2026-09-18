@@ -264,11 +264,13 @@ const map: RequirementsMap = {
 // collector now waits for the anchor count to stop growing.
 {
   const fakePage = (counts: number[]) => { let i = 0; return { evaluate: async () => counts[Math.min(i++, counts.length - 1)]! }; };
-  const grown = await waitForAnchors(fakePage([0, 0, 3, 9, 9, 9]), 3000);
-  check('I1. waitForAnchors returns once the anchor count has held for two polls', grown === 9, String(grown));
+  // Six nav anchors at load, twenty product anchors after 800 ms: the wait
+  // must not accept the nav's own steady count.
+  const grown = await waitForAnchors(fakePage([6, 6, 6, 6, 20, 20, 20]), 3000);
+  check('I1. waitForAnchors treats the first reading as the baseline and returns once the count has grown past it and held', grown.count === 20 && grown.polls[0] === 6 && grown.polls.includes(20), JSON.stringify(grown));
   const t0 = Date.now();
-  const none = await waitForAnchors(fakePage([0]), 600);
-  check('I2. a page with no anchors returns 0 at the cap, never hangs', none === 0 && Date.now() - t0 < 1500 && Date.now() - t0 >= 500);
+  const navOnly = await waitForAnchors(fakePage([6]), 600);
+  check('I2. a page with nav only returns its count at the cap, never hangs, with every poll recorded', navOnly.count === 6 && navOnly.polls.every((n) => n === 6) && navOnly.polls.length >= 3 && Date.now() - t0 < 1500 && Date.now() - t0 >= 500, JSON.stringify(navOnly));
 }
 {
   // A local SPA: the shell has a heading and an input (so the settle poll is
@@ -291,6 +293,7 @@ const map: RequirementsMap = {
     check('I3. the fetch crawl saw the bare shell and fell through', r.warnings.some((w) => w.startsWith('crawl:') && w.includes('no additional same-origin pages')), JSON.stringify(r.warnings));
     check('I4. the browser rung crawled the late-rendered anchors', r.method === 'browser-crawl' && paths.includes('/login') && paths.includes('/cart'), JSON.stringify({ method: r.method, paths }));
     check('I5. the generated-id product page is found and tagged volatile', r.pages.some((p) => p.url.includes('/product/') && p.volatile === true), JSON.stringify(r.pages));
+    check('I6. each crawled candidate records the anchor count seen at every poll (0 at load, then the rendered links)', r.pages.every((p) => Array.isArray(p.anchorPolls) && p.anchorPolls.length >= 2 && p.anchorPolls[0] === 0 && Math.max(...p.anchorPolls) === 3), JSON.stringify(r.pages.map((p) => p.anchorPolls)));
   } finally {
     server.close();
   }

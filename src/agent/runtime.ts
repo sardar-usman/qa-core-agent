@@ -5,12 +5,12 @@ import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, lockoutScenarioNames, knownAccountIdentifiers, type PlannedScenario } from './planner.js';
+import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, type PlannedScenario } from './planner.js';
 import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
-import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey } from './rule-coverage.js';
+import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { discoverPages, writeDiscoveryJson } from './discovery.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
@@ -340,13 +340,10 @@ export function salvageOnCostCeiling(opts: {
    */
   cause?: string;
 }): CostCeilingSalvage {
-  const begunKeys = opts.begun.map(scenarioNameKey).filter((k) => k.length > 0);
-  const wasBegun = (plannedName: string): boolean => {
-    const k = scenarioNameKey(plannedName);
-    if (!k) return true;
-    return begunKeys.some((b) => b === k || b.includes(k) || k.includes(b));
-  };
-  const unexplored = opts.planned.filter((p) => !wasBegun(p.name)).map((p) => p.name);
+  // Exact key first, containment second, each planned name claimed once
+  // (claimPlanned), so a suffixed duplicate is never hidden by its base name.
+  const claimed = claimPlanned(opts.planned.map((p) => p.name), opts.begun);
+  const unexplored = opts.planned.filter((p) => scenarioNameKey(p.name).length > 0 && !claimed.has(p.name)).map((p) => p.name);
   const incomplete: CostCeilingSalvage['incomplete'] = [];
   if (opts.current) {
     incomplete.push({ scenario: opts.current, reason: 'cost ceiling hit mid-scenario; in-progress work discarded' });
@@ -833,6 +830,14 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       }
       const room = GLOBAL_PLAN_CAP - combined.length;
       if (scen.length > room) { planCapHit = true; scen = scen.slice(0, room); }
+      // Names unique across pages: skip_scenario, verdict matching and the
+      // funnel key on the name, so a duplicate from another page gets the
+      // feature or path appended.
+      const unique = uniqueScenarioNames(combined, scen, pg);
+      for (const r of unique.renames) {
+        opts.onEvent?.({ type: 'message', text: `Renamed duplicate scenario: "${r.from}" -> "${r.to}" (the same name was planned on another page)` });
+      }
+      scen = unique.scenarios;
       combined.push(...scen);
       combinedDropped.push(...p.dropped);
       combinedRejected.push(...p.rejected);

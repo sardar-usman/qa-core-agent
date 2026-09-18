@@ -19,7 +19,7 @@ import {
   MAX_PAGES_WITH_FEATURES,
   MAX_PAGES_NO_FEATURES,
 } from '../src/agent/page-filter.js';
-import { capVolatile, plainFeatureMatches, FEATURE_PATH_TOKENS } from '../src/agent/page-filter.js';
+import { capVolatile, plainFeatureMatches, FEATURE_PATH_TOKENS, tokensFor } from '../src/agent/page-filter.js';
 import { writeDiscoveryJson } from '../src/agent/discovery.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -198,6 +198,21 @@ check('H2. the token table covers product, cart, contact, login and register', [
   const written = JSON.parse(fs.readFileSync(file, 'utf8')) as { method: string; candidates: unknown[]; pages: unknown[]; warnings: string[] };
   check('H6. discovery.json lists every candidate, the pages kept, the method and the warnings', path.basename(file) === 'discovery.json' && written.candidates.length === 11 && written.pages.length === 2 && written.method === 'browser-crawl' && written.warnings[0] === 'sitemap: none', JSON.stringify(written).slice(0, 200));
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/* ─── I. the f3b41e URLs are tagged by what they are ───────────────────────── */
+{
+  const f3b41e = ['/', '/category/hand-tools', '/category/power-tools', '/category/other', '/category/special-tools', '/rentals', '/contact', '/auth/login', '/privacy', '/auth/register', '/auth/forgot-password']
+    .map((pth): DiscoveredPage => ({ url: `https://practicesoftwaretesting.com${pth}`, source: 'browser-crawl' }));
+  const mapFeatures = ['product-listing', 'product-search', 'category-filter', 'price-sorting', 'product-detail', 'add-to-cart', 'cart-display', 'update-cart-quantity', 'remove-from-cart', 'login', 'user-registration', 'contact-form'];
+  const tagged = plainFeatureMatches(f3b41e, mapFeatures);
+  const tag = (pth: string) => tagged.find((p) => p.url.endsWith(pth))?.feature ?? null;
+  check('I1. /auth/login is login and /auth/register is user-registration; "auth" alone tags nothing', tag('/auth/login') === 'login' && tag('/auth/register') === 'user-registration', JSON.stringify(tagged.map((p) => [p.url, p.feature])));
+  check('I2. /auth/forgot-password is no longer tagged login (no recovery feature in this map, so it is left to the pick)', tag('/auth/forgot-password') === null);
+  check('I3. /contact is tagged contact-form through the word match', tag('/contact') === 'contact-form');
+  check('I4. the login token set has no "auth"; registration and password-recovery sets exist', !FEATURE_PATH_TOKENS['login']!.includes('auth') && FEATURE_PATH_TOKENS['registration']!.includes('create-account') && FEATURE_PATH_TOKENS['password-recovery']!.includes('forgot') && FEATURE_PATH_TOKENS['password-recovery']!.includes('reset') && FEATURE_PATH_TOKENS['password-recovery']!.includes('recover'));
+  check('I5. a map with a password-recovery feature tags /auth/forgot-password with it', plainFeatureMatches(f3b41e, ['login', 'password-recovery']).find((p) => p.url.endsWith('/auth/forgot-password'))?.feature === 'password-recovery');
+  check('I6. tokensFor resolves a compound feature name by its words', JSON.stringify(tokensFor('user-registration')) === JSON.stringify(FEATURE_PATH_TOKENS['registration']) && tokensFor('contact-form').includes('contact') && JSON.stringify(tokensFor('warranty')) === JSON.stringify(['warranty']));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

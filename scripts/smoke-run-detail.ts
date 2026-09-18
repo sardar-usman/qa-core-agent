@@ -14,6 +14,7 @@
  * The API section runs on an ephemeral http server; the page section boots a
  * real gateway on a spare port with the built dashboard. No model.
  */
+import { buildStages } from '../src/server/run-detail.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -166,7 +167,7 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SA. every rail stat equals the report field it reads',
     st.discovery.stat === `${report.discovery.pages.length} pages found`
     && st.plan.stat === `${report.plan.length} planned`
-    && st.explore.stat === `${report.scenarios.length} recorded · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
+    && st.explore.stat === `${report.reconciliation.generated + report.reconciliation.dropped.filter((d) => d.stage === 'critic' || d.stage === 'replay' || d.stage === 'stability').length} recorded · ${report.scenarios.length} shipped · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
     && st.review.stat === `${vc.pass} pass / ${vc.rework} rework / ${vc.reject} reject`
     && st.verify.stat === `${report.stability.passed} stable / ${report.stability.flaked} flaky`
     && st.summary.stat === `${report.scenarios.length} shipped`,
@@ -181,7 +182,15 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SD. the cost split sums to the four-term total; explorer is usd minus repair (the one allowed subtraction)', Math.abs(cs.planner + cs.explorer + cs.critic + cs.repair + cs.stabilizer - cs.total) < 1e-9 && Math.abs(cs.total - b.header.cost.total) < 1e-9 && Math.abs(cs.explorer - (report.cost.usd - report.cost.repairUsd)) < 1e-9 && cs.stabilizer === report.stability.stabilizerCostUsd && cs.planner === report.cost.plannerUsd && cs.critic === report.cost.criticUsd && cs.repair === report.cost.repairUsd, JSON.stringify(cs));
   check('SE. discovery panel: rung, pages (source, feature), warnings are the report block verbatim', st.discovery.method === 'sitemap' && st.discovery.pages.length === 2 && st.discovery.pages[1]?.feature === 'cart' && st.discovery.pages[1]?.source === 'sitemap' && st.discovery.warnings[0] === report.discovery.warnings[0], JSON.stringify(st.discovery));
   check('SF. plan panel: every scenario with feature, category, rule ids and page; planner cost is cost.plannerUsd', st.plan.scenarios.length === 5 && st.plan.scenarios[0]?.rule_ids[0] === 'R1' && st.plan.scenarios[0]?.feature === 'login' && st.plan.scenarios[4]?.category === 'edge' && st.plan.planner_usd === report.cost.plannerUsd && st.plan.pages.find((p) => p.url === 'https://www.saucedemo.com/inventory.html')?.count === 4, JSON.stringify(st.plan));
-  check('SG. explore panel: steps, recorded, explorer cost, gate injection, skip with reason, heal from report.heals', st.explore.steps === report.steps && st.explore.scenarios_recorded === 2 && st.explore.explorer_usd === report.cost.usd && st.explore.gate_injections.length === 1 && st.explore.gate_injections[0]?.assertion_type === 'toBeVisible' && st.explore.skipped[0]?.reason === 'opens an external site, out of scope' && st.explore.heals[0]?.to === report.heals[0]?.to && st.explore.incomplete.length === 0, JSON.stringify(st.explore));
+  {
+    // The f3b41e shape: 1 shipped, 11 dropped at the Critic, 3 at replay, so 15 recorded.
+    const shape = JSON.parse(JSON.stringify(report)) as typeof report;
+    shape.scenarios = [report.scenarios[0]!];
+    shape.reconciliation = { ...report.reconciliation, generated: 1, dropped: [...Array.from({ length: 11 }, (_, i) => ({ name: `c${i}`, stage: 'critic', reason: 'rework' })), ...Array.from({ length: 3 }, (_, i) => ({ name: `r${i}`, stage: 'replay', reason: 'failed' }))] } as typeof report.reconciliation;
+    const f3 = buildStages(shape as never, [], 4.9671, 0);
+    check('SG2. the f3b41e shape reads "15 recorded · 1 shipped", never "1 recorded"', f3.explore.scenarios_recorded === 15 && f3.explore.scenarios_shipped === 1 && f3.explore.stat.startsWith('15 recorded · 1 shipped ·'), f3.explore.stat);
+  }
+  check('SG. explore panel: steps, recorded (generated + dropped at critic), shipped, explorer cost, gate injection, skip with reason, heal from report.heals', st.explore.steps === report.steps && st.explore.scenarios_recorded === 3 && st.explore.scenarios_shipped === 2 && st.explore.explorer_usd === report.cost.usd && st.explore.gate_injections.length === 1 && st.explore.gate_injections[0]?.assertion_type === 'toBeVisible' && st.explore.skipped[0]?.reason === 'opens an external site, out of scope' && st.explore.heals[0]?.to === report.heals[0]?.to && st.explore.incomplete.length === 0, JSON.stringify(st.explore));
   check('SH. review panel: verdicts with reasons, journeys from review.repair (kept and dropped), repair count and spend', st.review.verdicts.length === report.review.verdicts.length && st.review.verdicts[0]?.reasons[0] === 'asserts the inventory page' && st.review.journeys.length === 2 && st.review.journeys.find((j) => j.outcome === 'kept')?.second === 'pass' && st.review.journeys.find((j) => j.outcome === 'dropped')?.second === 'reject' && st.review.repair?.count === 2 && st.review.repair?.spent_usd === report.cost.repairUsd && st.review.critic_usd === report.cost.criticUsd, JSON.stringify(st.review));
   check('SI2. verify panel: the stored Stabilizer attempt and the observed text at the failing target come back as stored; no warning when cost and attempts agree',
     st.verify.stability?.attempts_total === 1 && st.verify.stability?.warning === null && st.verify.stability?.verdicts.find((v) => v.name === 'add to cart updates the badge')?.attempts[0]?.outcome === 'recovered' && st.verify.stability?.verdicts.find((v) => v.name === 'add to cart updates the badge')?.attempts[0]?.change === 'timeout_raise(10000ms)' && st.verify.stability?.verdicts.find((v) => v.name === 'add to cart updates the badge')?.first_failure?.observed?.target === '0' && st.verify.stability?.verdicts.find((v) => v.name === 'login succeeds with valid credentials')?.attempts.length === 0, JSON.stringify(st.verify.stability));

@@ -53,6 +53,13 @@ export interface DiscoveredPage {
    * interaction (listing + click by name), never by direct URL.
    */
   volatile?: boolean;
+  /**
+   * Browser crawl only: the rendered anchor count at each poll of
+   * waitForAnchors, so the record shows whether the page's links had
+   * rendered when they were read (run f3b41e read the nav before the
+   * catalogue).
+   */
+  anchorPolls?: number[];
 }
 
 // The generated-id shapes live in volatile-id.ts, shared with the gate's RULE 6.
@@ -74,7 +81,7 @@ function tagVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
  * browser-crawl rung. Returns null when the page could not be loaded.
  * Injectable so the smoke drives the rung with no browser.
  */
-export type RenderedLinkCollector = (url: string) => Promise<string[] | null>;
+export type RenderedLinkCollector = (url: string) => Promise<string[] | { hrefs: string[]; anchorPolls: number[] } | null>;
 
 export interface DiscoveryResult {
   pages: DiscoveredPage[];
@@ -508,7 +515,7 @@ async function walkCrawl(opts: {
   entry: URL;
   robots: RobotsInfo;
   /** Links found on one page, or null when the page could not be loaded. */
-  getLinks: (url: string) => Promise<string[] | null>;
+  getLinks: RenderedLinkCollector;
   delayMs: number;
   warnings: string[];
   /** Warning prefix: 'crawl' or 'browser crawl'. */
@@ -522,6 +529,7 @@ async function walkCrawl(opts: {
   }
   const visited = new Set<string>([entry.pathname]);
   const collected: URL[] = [];
+  const pollsByUrl = new Map<string, number[]>();
   const queue: Array<{ u: URL; depth: number }> = [{ u: entry, depth: 0 }];
   let loads = 0;
   let failures = 0;
@@ -533,8 +541,12 @@ async function walkCrawl(opts: {
     }
     loads++;
     let hrefs: string[] | null;
+    let anchorPolls: number[] | undefined;
     try {
-      hrefs = await getLinks(u.toString());
+      const got = await getLinks(u.toString());
+      if (got === null) hrefs = null;
+      else if (Array.isArray(got)) hrefs = got;
+      else { hrefs = got.hrefs; anchorPolls = got.anchorPolls; }
     } catch {
       hrefs = null;
     }
@@ -543,6 +555,7 @@ async function walkCrawl(opts: {
       continue;
     }
     collected.push(u);
+    if (anchorPolls) pollsByUrl.set(u.toString(), anchorPolls);
     if (depth >= CRAWL_MAX_DEPTH) continue;
     for (const href of hrefs) {
       const link = toPageUrl(href, u);
@@ -562,7 +575,10 @@ async function walkCrawl(opts: {
     warnings.push(`${label}: found no additional same-origin pages beyond the entry; falling through.`);
     return [];
   }
-  return collected.slice(0, CRAWL_PAGE_CAP).map((u): DiscoveredPage => ({ url: u.toString(), source }));
+  return collected.slice(0, CRAWL_PAGE_CAP).map((u): DiscoveredPage => {
+    const polls = pollsByUrl.get(u.toString());
+    return { url: u.toString(), source, ...(polls ? { anchorPolls: polls } : {}) };
+  });
 }
 
 /** Rung 4: the plain-fetch crawl. Cheap; fails on client-rendered SPAs. */
@@ -618,12 +634,13 @@ async function defaultRenderedCollector(
         // satisfies before its catalogue list has rendered; the product anchors
         // arrive later. Wait for the anchor count to stop growing before
         // reading links, or the crawl never sees them.
-        await waitForAnchors(page);
-        return await page.evaluate(() =>
+        const anchors = await waitForAnchors(page);
+        const hrefs = await page.evaluate(() =>
           Array.from(document.querySelectorAll('a[href]'))
             .map((a) => a.getAttribute('href') || '')
             .filter((h) => h.length > 0),
         );
+        return { hrefs, anchorPolls: anchors.polls };
       } catch {
         return null;
       }
@@ -645,20 +662,26 @@ export const ANCHOR_SETTLE_CAP_MS = 3000;
 const ANCHOR_SETTLE_POLL_MS = 200;
 
 /**
- * Poll the rendered anchor count until it has held steady for two polls (with
- * at least one anchor) or the cap expires. A SPA renders its links after the
- * shell, so the settle poll alone (headings and form controls) returns before
- * the catalogue is there. Returns the final count. Exported for the smoke.
+ * Wait for the page's links to render past the shell. The first reading is
+ * the baseline: the navigation anchors a SPA shell already carries. The wait
+ * ends when the count has grown past the baseline and then held for two
+ * polls, or when the cap expires (a page with nav only returns at the cap,
+ * never hangs). Run f3b41e accepted the nav's own steady count and read the
+ * links before the catalogue rendered. Returns the final count and every
+ * poll, which the crawl records on the candidate. Exported for the smoke.
  */
-export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHOR_SETTLE_CAP_MS): Promise<number> {
+export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHOR_SETTLE_CAP_MS): Promise<{ count: number; polls: number[] }> {
   const count = async (): Promise<number> => page.evaluate(() => document.querySelectorAll('a[href]').length);
   const deadline = Date.now() + capMs;
-  let last = await count();
+  const baseline = await count();
+  const polls: number[] = [baseline];
+  let last = baseline;
   let steady = 0;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, ANCHOR_SETTLE_POLL_MS));
     const n = await count();
-    if (n === last && n > 0) {
+    polls.push(n);
+    if (n > baseline && n === last) {
       steady++;
       if (steady >= 2) break;
     } else {
@@ -666,7 +689,7 @@ export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHO
     }
     last = n;
   }
-  return last;
+  return { count: last, polls };
 }
 
 /**
