@@ -8,7 +8,7 @@ export { recoverResolve, type ResolveInput };
 import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation } from './trace.js';
 import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
-import { runGate, gateRuleLabel, gateBrokenReason } from './gate.js';
+import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { scenarioNameKey } from './rule-coverage.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
@@ -136,6 +136,15 @@ export interface ToolContext {
    * can finish the scenario in progress and never start new work.
    */
   _costCloseout: boolean;
+  /**
+   * Identifiers of real accounts (lowercased): the ones the SRS names plus the
+   * ones a happy login in this run signed in with. A wrong-credential negative
+   * that types one of these has its identifier rewritten to a generated
+   * non-existent one, so the re-runs never lock the real account.
+   */
+  knownAccounts: Set<string>;
+  /** scenarioNameKey of every planned scenario whose SRS rule names a locked account: exempt from the rewrite. */
+  lockoutScenarioKeys: Set<string>;
   /** Gate: RULE 2 timeout injections applied to accepted scenarios. */
   _gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }>;
   /**
@@ -222,6 +231,8 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     brokenByGate: [],
     incomplete: [],
     _costCloseout: false,
+    knownAccounts: new Set(),
+    lockoutScenarioKeys: new Set(),
     _gateInjectionLog: [],
     captures: new Map(),
     _assertFailures: new Map(),
@@ -479,14 +490,14 @@ export const TOOL_DEFS = [
     name: 'assert_compare',
     description:
       'Assert how a value changed relative to one you captured earlier in this scenario. The captured value is the REAL value read from the page, never a literal you invent. ' +
-      'relation="changed" (the value is now different — e.g. a regenerated id), "unchanged"/"equal" (it held), "greater"/"less" (numeric move — e.g. a count went up), or "absent" (the OLD value no longer matches any element). ' +
+      'relation="changed" (the value is now different, e.g. a regenerated id), "unchanged"/"equal" (it held), "greater"/"less" (numeric move, e.g. a count went up), "before"/"after" (text order: after a name sort the new first cell sorts before the captured one), or "absent" (the OLD value no longer matches any element). ' +
       'For every relation except "absent", pass the SAME element hints you captured from so it re-reads the same place. For "absent" the captured value itself becomes the selector (e.g. the old id), so no element hint is needed. ' +
       'Use this after capture + an action to prove the feature actually did something. A test that cannot tell the value changed is worthless.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'The capture variable name to compare against.' },
-        relation: { type: 'string', enum: ['changed', 'unchanged', 'equal', 'greater', 'less', 'absent'] },
+        relation: { type: 'string', enum: ['changed', 'unchanged', 'equal', 'greater', 'less', 'before', 'after', 'absent'] },
         attribute: { type: 'string', description: 'Attribute name when the capture read an attribute. Omit for absent (the captured value is matched as-is).' },
         intent: { type: 'string' },
         role: { type: 'string' },
@@ -986,6 +997,9 @@ function relationHolds(relation: CompareRelation, captured: string, current: str
       return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) > Number(captured);
     case 'less':
       return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) < Number(captured);
+    // Text order, for a name sort: the re-read sorts before / after the captured value.
+    case 'before': return current.localeCompare(captured) < 0;
+    case 'after': return current.localeCompare(captured) > 0;
     case 'absent':
       return false; // handled separately via absenceLocator
   }
@@ -1032,11 +1046,18 @@ const ACTION_TOOLS = new Set(['navigate', 'click', 'fill', 'press', 'select_opti
  */
 export async function runTool(ctx: ToolContext, call: ToolInput): Promise<ToolResult> {
   const startedAt = Date.now();
+  let ok = false;
   try {
-    return await runToolInner(ctx, call);
+    const result = await runToolInner(ctx, call);
+    ok = result.ok;
+    return result;
   } finally {
+    // Only a call that succeeded is a settle the page performed. A probe that
+    // timed out waited on something that never came (run f3b41e: three
+    // 60 s failed probes each inflated the next recorded timeout to 60000);
+    // it contributes nothing, and a failed action leaves the clock as it was.
     const spent = Date.now() - startedAt;
-    ctx._pageMsSinceAction = ACTION_TOOLS.has(call.name) ? spent : ctx._pageMsSinceAction + spent;
+    if (ok) ctx._pageMsSinceAction = ACTION_TOOLS.has(call.name) ? spent : ctx._pageMsSinceAction + spent;
   }
 }
 
@@ -1173,12 +1194,17 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           .filter((x): x is string => typeof x === 'string' && x.length > 0).join(' ');
         const generate = detectUniqueField({ category: ctx.current?.category, flowHint, fieldHint });
         const filledValue = generate ? generateUnique(generate) : value;
+        // Wrong-credential negatives must not spend a real account's lockout
+        // budget: on the password fill, if the identifier typed earlier in this
+        // scenario is a known real account, that identifier is rewritten to a
+        // generated non-existent one (the same mechanism as unique data).
+        const overrode = await enforceFakeCredential(ctx, fieldHint, flowHint);
         await loc.fill(filledValue);
         ctx.lastActionAt = Date.now();
         pushStep(ctx, generate
           ? { kind: 'fill', target: record, value: filledValue, generate }
           : { kind: 'fill', target: record, value: filledValue });
-        return { ok: true, data: { filled: record.intent, generated: generate ?? undefined } };
+        return { ok: true, data: { filled: record.intent, generated: generate ?? undefined, ...(overrode ? { identifierOverridden: overrode } : {}) } };
       }
       case 'select_option': {
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
@@ -1311,8 +1337,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           return { ok: false, error: `No capture named "${name}" in this scenario. Call capture with that name first.` };
         }
         const relation = String(call.input.relation ?? '') as CompareRelation;
-        if (!['changed', 'unchanged', 'equal', 'greater', 'less', 'absent'].includes(relation)) {
-          return { ok: false, error: 'assert_compare relation must be changed, unchanged, equal, greater, less, or absent.' };
+        if (!['changed', 'unchanged', 'equal', 'greater', 'less', 'before', 'after', 'absent'].includes(relation)) {
+          return { ok: false, error: 'assert_compare relation must be changed, unchanged, equal, greater, less, before, after, or absent.' };
         }
         const readVar = claimIdent(ctx, entry.varName + '_now');
 
@@ -1659,6 +1685,17 @@ export function observedSettleMs(ctx: Pick<ToolContext, '_pageMsSinceAction'>, p
 }
 
 /**
+ * The timeout recorded on an assertion: the model's own value when it passed
+ * one (the gate floors it at 5000ms and caps it at 15000ms), else the adaptive
+ * value observed from the page. The model's value used to be discarded for
+ * async assertions, so a scenario shipped whatever the clock said.
+ */
+function recordedTimeout(ctx: ToolContext, requested: number | undefined, probeStart: number): number {
+  if (typeof requested === 'number' && Number.isFinite(requested) && requested > 0) return Math.round(requested);
+  return adaptiveTimeout(observedSettleMs(ctx, probeStart));
+}
+
+/**
  * The value a field was filled with earlier in the same scenario, so a later
  * toHaveValue assertion asserts the EXACT string that was typed rather than a
  * value the model re-supplied (which the ui.vision run got wrong: an unclosed,
@@ -1718,7 +1755,7 @@ async function executeAssertion(
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
       const t0 = Date.now();
       await expect(loc).toBeVisible(probe);
-      const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+      const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} is visible`,
@@ -1733,7 +1770,7 @@ async function executeAssertion(
       const t0 = Date.now();
       if (input.type === 'toHaveText') await expect(loc).toHaveText(input.text, probe);
       else await expect(loc).toContainText(input.text, probe);
-      const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+      const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} ${input.type === 'toHaveText' ? 'has text' : 'contains'} "${input.text}"`,
@@ -1766,7 +1803,7 @@ async function executeAssertion(
         const countLoc = baseLocator(ctx.page, record);
         const t0 = Date.now();
         await expect(countLoc).toHaveCount(0, probe);
-        const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+        const observed = recordedTimeout(ctx, input.timeout, t0);
         pushStep(ctx, {
           kind: 'assert',
           name: `${record.intent} matches zero elements`,
@@ -1799,7 +1836,7 @@ async function executeAssertion(
       const loc = baseLocator(ctx.page, record).first();
       const t0 = Date.now();
       await expect(loc).toBeHidden(probe);
-      const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+      const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} is hidden`,
@@ -1813,7 +1850,7 @@ async function executeAssertion(
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
       const t0 = Date.now();
       await expect(loc).toHaveAttribute(input.attribute, input.value, probe);
-      const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+      const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} has ${input.attribute}="${input.value}"`,
@@ -1837,7 +1874,7 @@ async function executeAssertion(
       if (expected == null) return { ok: false, error: 'toHaveValue needs value.' };
       const t0 = Date.now();
       await expect(loc).toHaveValue(expected, probe);
-      const observed = adaptiveTimeout(observedSettleMs(ctx, t0));
+      const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} has value "${expected}"`,
@@ -1896,6 +1933,24 @@ function describeAssertion(input: AssertionInput): string {
  * state instead of thrashing the form until the budget runs out.
  */
 async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Promise<ToolResult> {
+  // RULE 7 in-run: a literal catalogue value is refused before the probe runs,
+  // so the model is steered at once instead of at end_scenario (the gate
+  // applies the same rule again on the recorded trace).
+  if (ctx.current && (input.type === 'toHaveText' || input.type === 'toContainText' || input.type === 'toHaveValue' || input.type === 'toHaveCount')) {
+    const record = recordFromHints({ ...(input as object), intent: input.intent ?? 'element' });
+    const shape = input.type === 'toHaveCount'
+      ? { type: 'toHaveCount' as const, target: record, count: Number(input.count ?? 0) }
+      : input.type === 'toHaveValue'
+        ? { type: 'toHaveValue' as const, target: record, value: String(input.value ?? '') }
+        : { type: input.type, target: record, text: String(input.text ?? '') };
+    // A toHaveValue on a field this scenario filled reads the fill, so it is
+    // test data; resolve the element key the same way the handler does.
+    const filledHere = input.type === 'toHaveValue' && ctx.current.steps.some((st) => st.kind === 'fill' && sameHints(st.target, record));
+    const r7 = filledHere ? null : catalogueLiteralReason(shape as Assertion, ctx.current.steps);
+    if (r7) {
+      return { ok: false, error: `RULE 7 (literal catalogue value) rejected this assertion: ${r7}.` };
+    }
+  }
   const sig = assertionSignature(input);
   try {
     const result = await executeAssertion(ctx, input);
@@ -2037,4 +2092,59 @@ async function summarizeDom(page: Page): Promise<unknown> {
       links,
     };
   });
+}
+
+/** Same target by level and argument (the in-run RULE 7 check has no element key yet). */
+function sameHints(a: SelectorRecord, b: SelectorRecord): boolean {
+  return a.level === b.level && JSON.stringify(a.arg) === JSON.stringify(b.arg);
+}
+
+const PASSWORD_FIELD_RE = /pass[\s_-]?word|\bpasswd\b|\bpwd\b/i;
+const LOGIN_FLOW_RE = /log[\s_-]?in|sign[\s_-]?in|\bauth\b|credential|password/i;
+const IDENTIFIER_FIELD_RE = /e[\s_-]?mail|user[\s_-]?name|\blogin\b|account|identifier|\buser\b/i;
+
+/** Identifiers real accounts signed in with earlier in this run (happy login scenarios). */
+function accountsFromHappyLogins(ctx: ToolContext): string[] {
+  const out: string[] = [];
+  for (const s of ctx.scenarios) {
+    if (s.category !== 'happy') continue;
+    const flow = `${s.feature ?? ''} ${s.name}`;
+    if (!LOGIN_FLOW_RE.test(flow)) continue;
+    const hasPassword = s.steps.some((st) => st.kind === 'fill' && PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`));
+    if (!hasPassword) continue;
+    for (const st of s.steps) {
+      if (st.kind === 'fill' && IDENTIFIER_FIELD_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`)) out.push(st.value);
+    }
+  }
+  return out;
+}
+
+/**
+ * On a password fill inside a negative login scenario, rewrite the identifier
+ * filled earlier in the scenario when it is a known real account. The
+ * identifier element is re-filled on the page with a generated value, its
+ * recorded step carries `generate` and `override`, and replay plus the
+ * emitted spec regenerate it every run. A scenario whose SRS rule names a
+ * locked account is exempt: its point IS the real account. Returns what was
+ * rewritten, or null.
+ */
+async function enforceFakeCredential(ctx: ToolContext, fieldHint: string, flowHint: string): Promise<{ from: string; to: string } | null> {
+  const current = ctx.current;
+  if (!current || current.category !== 'negative') return null;
+  if (!PASSWORD_FIELD_RE.test(fieldHint)) return null;
+  if (!LOGIN_FLOW_RE.test(flowHint)) return null;
+  if (ctx.lockoutScenarioKeys.has(scenarioNameKey(current.name))) return null;
+  const ident = [...current.steps].reverse().find((st): st is Extract<TraceStep, { kind: 'fill' }> =>
+    st.kind === 'fill' && IDENTIFIER_FIELD_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`));
+  if (!ident) return null;
+  const known = new Set([...ctx.knownAccounts, ...accountsFromHappyLogins(ctx)].map((v) => v.toLowerCase()));
+  if (!known.has(ident.value.toLowerCase())) return null;
+  const kind = ident.value.includes('@') ? 'email' : 'token';
+  const to = generateUnique(kind);
+  await baseLocator(ctx.page, ident.target).first().fill(to);
+  const from = ident.value;
+  ident.value = to;
+  ident.generate = kind;
+  ident.override = 'non-existent-account';
+  return { from, to };
 }

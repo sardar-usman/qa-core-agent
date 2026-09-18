@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, type PlannedScenario } from './planner.js';
+import { plan, lockoutScenarioNames, knownAccountIdentifiers, type PlannedScenario } from './planner.js';
 import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
@@ -91,7 +91,7 @@ ASSERTION RULES — apply before every end_scenario:
 
 6. Every scenario must have at least one meaningful assertion before end_scenario. If assert_freeze or wait_for_text returns an error, stop and surface the error — do not silently retry with a weaker assertion. Retrying with toBeVisible after a freeze failure hides the bug and inflates cost.
 
-7. Falsifiability. The main assertion of every scenario must be able to FAIL if the feature breaks. Banned as the primary assertion: visibility of an element that was already visible before the action, a bare "URL did not change" check, and "the element is still present". Each of those passes even when the feature is broken, so they prove nothing on their own. Use them only as a secondary sanity check. Before end_scenario, ask "what bug would turn this red?" — if the answer is nothing specific, the assertion is too weak.
+7. Falsifiability: ASSERTION DOCTRINE rule 8 below. The Critic judges vacuous assertions under that same number.
 
 8. Value-change features. When the point of the page is that a value changes (a regenerating id, a rotating token, an incrementing counter, a shuffled order), use the capture-and-compare tools — never type the value yourself. The flow is exactly three steps:
    a. capture — read the REAL value off the page into a named variable. Pass a name and the source: source="attribute" with attribute="id" for a regenerating id, source="text" for visible text, source="count" for a list length. Give the same locator hints (role/label/css) you would for any element.
@@ -386,6 +386,8 @@ async function repairPass(args: {
   rework: Scenario[];
   verdicts: ScenarioVerdict[];
   onEvent?: ExploreOptions['onEvent'];
+  /** The Explorer's credential context (known real accounts, lockout-exempt scenarios), applied to the repair context too. */
+  credentials?: { knownAccounts: Set<string>; lockoutScenarioKeys: Set<string> };
 }): Promise<{
   scenarios: Scenario[];
   cost: RunReport['cost'];
@@ -429,6 +431,10 @@ async function repairPass(args: {
     const page = await context.newPage();
     const maxSteps = stepBudgetFor(args.rework.length, 0);
     const ctx = createContext(page, maxSteps);
+    if (args.credentials) {
+      ctx.knownAccounts = new Set(args.credentials.knownAccounts);
+      ctx.lockoutScenarioKeys = new Set(args.credentials.lockoutScenarioKeys);
+    }
     const loop = await runAgentLoop({
       client: args.client,
       model: args.model,
@@ -988,6 +994,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // discarded, and which planned scenarios were never started. Flows into the
   // reconciliation funnel (as incomplete entries) and rule coverage.
   let ceilingSalvage: CostCeilingSalvage | undefined;
+  // Carried into the repair pass so its re-recorded negatives get the same credential rule.
+  let explorerCredentialContext: { knownAccounts: Set<string>; lockoutScenarioKeys: Set<string> } | undefined;
   // Set on any abnormal end (ceiling, billing, API failure). Carried on the
   // report so the CLI keeps the checkpoint instead of deleting it.
   let stopped: RunReport['stopped'];
@@ -1022,6 +1030,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const loopBudgetUsd = Math.max(0, explorerUsd - (opts.resume ? priorSpend(cpState.spend) : 0));
 
     const ctx = createContext(page, maxSteps);
+    // Wrong-credential negatives: the real accounts the tool must not spend,
+    // and the planned scenarios whose rule names a locked account (exempt).
+    ctx.knownAccounts = new Set(knownAccountIdentifiers(opts.requirements));
+    ctx.lockoutScenarioKeys = new Set(lockoutScenarioNames(toExplore, opts.requirements).map(scenarioNameKey));
+    explorerCredentialContext = { knownAccounts: ctx.knownAccounts, lockoutScenarioKeys: ctx.lockoutScenarioKeys };
     const explorerLoop = toExplore.length === 0
       ? { cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, endedReason: 'finished' as const }
       : await runAgentLoop({
@@ -1192,20 +1205,28 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       } else {
         const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
         review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        for (const w of c.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
+        if (c.unreviewed.length > 0) {
+          opts.onEvent?.({
+            type: 'message',
+            text: `WARNING: the Critic returned no verdict for ${c.unreviewed.length} scenario(s); held as rework, never replayed unreviewed: ${c.unreviewed.map((n) => `"${n}"`).join(', ')}`,
+          });
+        }
         // Nothing parsed: keep the verbatim response on the report so the
         // cause is readable there, not reconstructed from memory.
-        if (review.verdicts.length === 0 && c.raw) review.rawResponse = c.raw;
+        // Nothing parsed at all (every scenario held): keep the raw text.
+        if (toReview.length > 0 && c.unreviewed.length === toReview.length && c.raw) review.rawResponse = c.raw;
         // Accumulate (a resumed run seeds criticUsd with the prior spend).
         cost.criticUsd = (cost.criticUsd ?? 0) + c.costUsd;
         opts.onEvent?.({ type: 'critic_done', verdicts: review.verdicts, usd: c.costUsd });
       }
-      if (review.verdicts.length === 0) {
+      if (review.rawResponse !== undefined) {
         // The call succeeded and was paid for, but nothing parsed. That means
         // the response format drifted and the critic gate cannot act this run.
         // Say so loudly instead of printing "0 verdicts" as if it were normal.
         opts.onEvent?.({
           type: 'message',
-          text: `Warning: Critic reviewed ${scenarios.length} scenario(s) but returned no parseable verdicts. The critic gate is inactive for this run. Check parseVerdicts in critic.ts against the response format.`,
+          text: `Warning: Critic reviewed ${scenarios.length} scenario(s) but returned no parseable verdicts; every scenario is held as rework (none replays unreviewed). Check parseVerdicts in critic.ts against the response format.`,
         });
       }
     } catch (err) {
@@ -1265,6 +1286,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             rework: decision.rework,
             verdicts: review.verdicts,
             onEvent: opts.onEvent,
+            ...(explorerCredentialContext ? { credentials: explorerCredentialContext } : {}),
           });
           cost.inputTokens += repair.cost.inputTokens;
           cost.outputTokens += repair.cost.outputTokens;
@@ -1293,6 +1315,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
             secondVerdicts = c2.verdicts;
+            for (const w of c2.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
+            if (c2.unreviewed.length > 0) {
+              opts.onEvent?.({ type: 'message', text: `WARNING: the Critic returned no verdict for ${c2.unreviewed.length} repaired scenario(s); held as rework: ${c2.unreviewed.map((n) => `"${n}"`).join(', ')}` });
+            }
             opts.onEvent?.({ type: 'critic_done', verdicts: c2.verdicts, usd: c2.costUsd });
           } else {
             secondVerdicts = [];

@@ -401,6 +401,9 @@ function compareHolds(relation: string, captured: string, current: string): bool
       return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) > Number(captured);
     case 'less':
       return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) < Number(captured);
+    // Text order, for a name sort: the re-read sorts before / after the captured value.
+    case 'before': return current.localeCompare(captured) < 0;
+    case 'after': return current.localeCompare(captured) > 0;
     default: return false;
   }
 }

@@ -958,3 +958,38 @@ export function applyCitationChecks(
   });
   return { scenarios: out, citationDrops };
 }
+
+const LOCK_RULE_RE = /\block(ed|s|out|ing)?\b/i;
+
+/**
+ * Planned scenarios whose cited rule names a locked account. These keep the
+ * real account (their point IS the lockout); the tool-level credential
+ * rewrite in tools.ts exempts them. Exported for smoke-plan-rule-tags.
+ */
+export function lockoutScenarioNames(plan: PlannedScenario[], map?: RequirementsMap): string[] {
+  if (!map) return [];
+  const lockIds = new Set(map.features.flatMap((f) => f.rules.filter((r) => LOCK_RULE_RE.test(r.text)).map((r) => r.id.toUpperCase())));
+  if (lockIds.size === 0) return [];
+  return plan.filter((s) => (s.ruleIds ?? []).some((id) => lockIds.has(id.toUpperCase()))).map((s) => s.name);
+}
+
+/**
+ * Identifiers of real accounts the SRS names: e-mail addresses and snake_case
+ * account names (standard_user, locked_out_user) anywhere in the rules,
+ * feature descriptions or roles. Lowercased, deduped. Exported for the smoke.
+ */
+export function knownAccountIdentifiers(map?: RequirementsMap): string[] {
+  if (!map) return [];
+  const texts: string[] = [];
+  for (const f of map.features) {
+    texts.push(f.description ?? '');
+    for (const r of f.rules) texts.push(r.text);
+  }
+  for (const role of map.roles ?? []) texts.push(String(role));
+  const out = new Set<string>();
+  for (const t of texts) {
+    for (const m of t.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []) out.add(m.toLowerCase());
+    for (const m of t.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gi) ?? []) out.add(m.toLowerCase());
+  }
+  return [...out];
+}

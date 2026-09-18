@@ -160,6 +160,12 @@ function emitStep(step: TraceStep): string[] {
         case 'less':
           lines.push(`await expect.poll(async () => Number(${rhs}), ${pollOpts}).toBeLessThan(Number(${step.varName}));`);
           break;
+        case 'before':
+          lines.push(`await expect.poll(async () => String(${rhs}).localeCompare(${step.varName}), ${pollOpts}).toBeLessThan(0); // sorts before the captured value`);
+          break;
+        case 'after':
+          lines.push(`await expect.poll(async () => String(${rhs}).localeCompare(${step.varName}), ${pollOpts}).toBeGreaterThan(0); // sorts after the captured value`);
+          break;
       }
       return lines;
     }

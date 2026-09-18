@@ -172,12 +172,24 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
     check('J4. the model\'s latency between calls adds nothing to the clock', tctx._pageMsSinceAction === afterWait);
     const settle = observedSettleMs(tctx, Date.now() - 20);
     check('J5. a probe after the pause observes the page time plus its own elapsed, not the pause', settle < 600 && settle >= 280, String(settle));
+    // A probe that fails contributes nothing: a wait_for_text that never
+    // sees its text waits its whole budget and leaves the clock where it was.
+    const beforeFail = tctx._pageMsSinceAction;
+    const failed = await runTool(tctx, { name: 'wait_for_text', input: { intent: 'go button', css: '#go', text: 'never shown', timeoutMs: 1000 } });
+    check('J7. a failed probe (1 s wait on text that never comes) leaves the page-settle clock unchanged', failed.ok === false && tctx._pageMsSinceAction === beforeFail, `${failed.ok} before=${beforeFail} after=${tctx._pageMsSinceAction}`);
     // An action restarts the clock with the action's own duration only.
     // Actions record into a scenario, so open one first (its own call adds a
     // few ms of page time, which the click then discards).
     await runTool(tctx, { name: 'begin_scenario', input: { name: 'clock check', category: 'edge' } });
     const clicked = await runTool(tctx, { name: 'click', input: { intent: 'go button', css: '#go' } });
     check('J6. an action restarts the clock with its own duration (the earlier 300 ms is gone)', clicked.ok === true && tctx._pageMsSinceAction < 280, `${clicked.ok} ${clicked.error ?? ''} ${tctx._pageMsSinceAction}`);
+    // The recorded timeout is the model's value when it passed one, not the clock.
+    const asserted = await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'go button', css: '#go', timeout: 7000 } });
+    const recorded = tctx.current?.steps.find((st) => st.kind === 'assert');
+    check('J8. an assertion records the timeout the model passed (7000), not the observed clock', asserted.ok === true && recorded?.kind === 'assert' && (recorded.assertion as { timeout?: number }).timeout === 7000, JSON.stringify(recorded));
+    const unspecified = await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'go button', css: '#go' } });
+    const second = tctx.current?.steps.filter((st) => st.kind === 'assert')[1];
+    check('J9. with no timeout passed the recorded value is the adaptive observation (at least the 5000 floor)', unspecified.ok === true && second?.kind === 'assert' && ((second.assertion as { timeout?: number }).timeout ?? 0) >= 5000, JSON.stringify(second));
   } finally {
     await browser.close();
   }

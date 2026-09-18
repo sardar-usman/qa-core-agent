@@ -161,6 +161,26 @@ ctx.current = null;
   check('G5. the wait is a grace: on timeout it falls through instead of throwing', Date.now() - t0 >= 1000, `${Date.now() - t0}ms`);
 }
 
+/* ─── H. text order: before / after for a name sort ────────────────────────── */
+const sortHtml = `
+<!doctype html><html><body>
+<ul id="names"><li class="name">Combination Pliers</li><li class="name">Adjustable Wrench</li><li class="name">Bolt Cutters</li></ul>
+<button id="sort" onclick="const ul=document.getElementById('names');[...ul.children].sort((a,b)=>a.textContent.localeCompare(b.textContent)).forEach(li=>ul.appendChild(li));">Sort A-Z</button>
+</body></html>`;
+await page.setContent(sortHtml, { waitUntil: 'load' });
+await runTool(ctx, { name: 'begin_scenario', input: { name: 'sorted the names A to Z and the first name moved earlier', category: 'happy', feature: 'list' } });
+// A role hint (listitem, first of several) keeps the capture off RULE 3's positional-css rejection.
+const capH = await runTool(ctx, { name: 'capture', input: { name: 'firstName', source: 'text', role: 'listitem', intent: 'first name' } });
+check('H1. captured the first name before the sort', capH.ok === true && (capH.data as { value?: string }).value === 'Combination Pliers', JSON.stringify(capH));
+await runTool(ctx, { name: 'click', input: { intent: 'Sort button', role: 'button', label: 'Sort A-Z' } });
+const cmpAfter = await runTool(ctx, { name: 'assert_compare', input: { name: 'firstName', relation: 'after', role: 'listitem' } });
+check('H2. assert_compare(after) FAILS when the new first name sorts before the captured one', cmpAfter.ok === false && /relation does not hold/.test(cmpAfter.error ?? ''), JSON.stringify(cmpAfter));
+const cmpBefore = await runTool(ctx, { name: 'assert_compare', input: { name: 'firstName', relation: 'before', role: 'listitem' } });
+check('H3. assert_compare(before) passes: "Adjustable Wrench" sorts before "Combination Pliers"', cmpBefore.ok === true, JSON.stringify(cmpBefore));
+await runTool(ctx, { name: 'end_scenario', input: {} });
+const hRecorded = ctx.scenarios[ctx.scenarios.length - 1];
+check('H4. the recorded scenario carries the before relation', hRecorded?.steps.some((st: TraceStep) => st.kind === 'assert_compare' && st.relation === 'before') === true, JSON.stringify(hRecorded?.steps));
+
 await browser.close();
 
 /* ─── F. the emitted spec reads real values and asserts relationships ─────── */
@@ -179,6 +199,7 @@ fs.rmSync(outDir, { recursive: true, force: true });
 check('F1. spec declares a captured const read via getAttribute("id")', /const cap_\w+ = \(await .*getAttribute\("id"\)\)\?\.trim\(\) \?\? '';/.test(spec));
 check('F2. spec polls the re-read value .not.toBe the captured one (changed)', /await expect\.poll\(async \(\) => .+, \{ timeout: \d+ \}\)\.not\.toBe\(cap_\w+\)/.test(spec));
 check('F3. spec reads a count and polls until it is greater', /\.count\(\)/.test(spec) && /await expect\.poll\(async \(\) => Number\(.+\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(Number\(cap_\w+\)\)/.test(spec));
+check('F5. spec polls the text order with localeCompare for the before relation', /await expect\.poll\(async \(\) => String\(.+\)\.localeCompare\(cap_\w+\), \{ timeout: \d+ \}\)\.toBeLessThan\(0\)/.test(spec), spec.split('\n').filter((l) => /localeCompare/.test(l)).join(' | '));
 check('F4. spec asserts the old value is absent via a value selector + count 0', /page\.locator\(`\[id="\$\{cap_\w+\}"\]`\)\)\.toHaveCount\(0\)/.test(spec));
 check('F5. spec contains NO invented placeholder id strings', !/button-fixed-id|previously-captured-id|placeholder/i.test(spec));
 

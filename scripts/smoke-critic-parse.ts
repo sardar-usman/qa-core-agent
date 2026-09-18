@@ -12,12 +12,13 @@
  *
  * Pure in-code fixtures. No network. No LLM. No browser.
  */
-import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson, CRITIC_SYSTEM_PROMPT } from '../src/agent/critic.js';
+import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson, CRITIC_SYSTEM_PROMPT, completeVerdicts, criticMaxTokens, CRITIC_TOKENS_PER_VERDICT, CRITIC_SUMMARY_TOKENS, critique, type CriticClient } from '../src/agent/critic.js';
 import { EXPLORER_SYSTEM_PROMPT } from '../src/agent/runtime.js';
 import { ASSERTION_DOCTRINE } from '../src/agent/doctrine.js';
 import type { TraceStep } from '../src/agent/trace.js';
 import { attachRuleIds, computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
+import type { Scenario } from '../src/agent/trace.js';
 
 let pass = 0;
 let fail = 0;
@@ -248,6 +249,65 @@ check('M4. doctrine rule 6 forbids literal catalogue values, not only test ids',
   /6\. Never assert or capture a literal catalogue value or a generated id/.test(ASSERTION_DOCTRINE) && !/Prefer text content, counts/.test(ASSERTION_DOCTRINE));
 check('M5. neither prompt keeps the old contradictory copy of the doctrine', !EXPLORER_SYSTEM_PROMPT.includes('the five weaknesses the Critic rejects every run') && !CRITIC_SYSTEM_PROMPT.includes('Volatile identifiers: an assertion or capture pinned to a specific catalog-item test id'));
 check('M6. the Critic flagging rule on volatile values points at doctrine rules 2 and 6', /5\. Volatile values:[^\n]*Doctrine rules 2 and 6/.test(CRITIC_SYSTEM_PROMPT));
+
+/* ─── N. every scenario gets a verdict; the call is sized to the count ─────── */
+// Run f3b41e: 15 scenarios, a 3000-token cap, 14 verdicts and no summary.
+// The 15th scenario went to replay unreviewed and failed there.
+const fifteen = Array.from({ length: 15 }, (_, i) => ({ name: `scenario ${i + 1} does something` }));
+const fourteen = fifteen.slice(0, 14).map((s) => ({ scenario: s.name, verdict: 'pass' as const, reasons: ['fine'], required_fixes: [] }));
+const completed = completeVerdicts(fifteen, fourteen);
+check('N1. 14 verdicts for 15 scenarios yields 15 verdicts: the missing one is held as rework', completed.verdicts.length === 15 && completed.verdicts[14]?.scenario === 'scenario 15 does something' && completed.verdicts[14]?.verdict === 'rework', JSON.stringify(completed.verdicts[14]));
+check('N2. the held verdict says no verdict was returned', /no verdict returned/.test(completed.verdicts[14]?.reasons[0] ?? ''));
+check('N3. the unreviewed list names the scenario for the runtime warning', JSON.stringify(completed.unreviewed) === JSON.stringify(['scenario 15 does something']));
+check('N4. the held rework is dropped by the gate, never replayed', gateByVerdicts(fifteen, completed.verdicts).kept.length === 14);
+check('N5. a complete response holds nothing', completeVerdicts(fifteen.slice(0, 14), fourteen).unreviewed.length === 0);
+check('N6. max_tokens is a stated per-verdict budget times the count plus the summary, never below 3000', criticMaxTokens(15) === 15 * CRITIC_TOKENS_PER_VERDICT + CRITIC_SUMMARY_TOKENS && criticMaxTokens(15) === 5750 && criticMaxTokens(2) === 3000 && CRITIC_TOKENS_PER_VERDICT === 350 && CRITIC_SUMMARY_TOKENS === 500);
+
+/* ─── O. one rule numbering: falsifiability is doctrine rule 8 on both sides ── */
+check('O1. the shared doctrine carries the falsifiability ban as rule 8', /\n8\. Falsifiability\. The main assertion of every scenario must be able to FAIL/.test(ASSERTION_DOCTRINE));
+check('O2. the Explorer prompt\'s ASSERTION RULES 7 points at doctrine rule 8 instead of its own copy', /7\. Falsifiability: ASSERTION DOCTRINE rule 8 below/.test(EXPLORER_SYSTEM_PROMPT) && !/Banned as the primary assertion: visibility of an element that was already visible before the action, a bare "URL did not change" check, and "the element is still present"\. Each of those passes/.test(EXPLORER_SYSTEM_PROMPT.replace(ASSERTION_DOCTRINE, '')));
+check('O3. the Critic\'s vacuous rule cites doctrine rule 8', /doctrine rule 8 below; cite it as rule 8/.test(CRITIC_SYSTEM_PROMPT));
+check('O4. doctrine rule 2 names the text relations before and after', /before or after for text/.test(ASSERTION_DOCTRINE));
+
+/* ─── P. one retry on a zero-verdict response ─────────────────────────────── */
+{
+  const scripted = (responses: string[]): { client: CriticClient; calls: () => number } => {
+    let n = 0;
+    const client: CriticClient = {
+      messages: {
+        create: async () => {
+          const text = responses[Math.min(n, responses.length - 1)] ?? '';
+          n++;
+          return {
+            id: 'msg_fake', type: 'message', role: 'assistant', model: 'fake',
+            content: [{ type: 'text', text, citations: null }],
+            stop_reason: 'end_turn', stop_sequence: null,
+            usage: { input_tokens: 1000, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+          } as never;
+        },
+      },
+    };
+    return { client, calls: () => n };
+  };
+  const two: Scenario[] = [
+    { name: 'rejected empty username with error message', category: 'negative', steps: [] } as unknown as Scenario,
+    { name: 'logged in with valid credentials', category: 'happy', steps: [] } as unknown as Scenario,
+  ];
+  const junkText = 'I cannot review this right now.';
+  const recovered = scripted([junkText, canonical]);
+  const r = await critique({ scenarios: two, url: 'https://x.example/', apiKey: 'fake', client: recovered.client });
+  check('P1. an empty first response is retried once and the good retry yields its verdicts', recovered.calls() === 2 && r.verdicts.length === 2 && r.verdicts[0]?.verdict === 'pass' && r.verdicts[1]?.verdict === 'rework' && r.unreviewed.length === 0, JSON.stringify(r.verdicts));
+  check('P2. exactly one warning line names the retry and its outcome', r.warnings.length === 1 && /retried once with the same input and the retry returned 2 verdict/.test(r.warnings[0] ?? ''), JSON.stringify(r.warnings));
+  check('P3. both raw responses are kept, in order', Array.isArray(r.raw) && r.raw.length === 2 && r.raw[0] === junkText && r.raw[1] === canonical);
+  check('P4. the cost is the sum of both calls', Math.abs(r.costUsd - 2 * ((1000 * 3.0 + 100 * 15.0) / 1_000_000)) < 1e-12, String(r.costUsd));
+  const twice = scripted([junkText, 'Still nothing.']);
+  const held = await critique({ scenarios: two, url: 'https://x.example/', apiKey: 'fake', client: twice.client });
+  check('P5. empty twice holds every scenario as rework, no third call', twice.calls() === 2 && held.verdicts.length === 2 && held.verdicts.every((v) => v.verdict === 'rework' && /no verdict returned/.test(v.reasons[0] ?? '')) && held.unreviewed.length === 2, JSON.stringify(held.verdicts));
+  check('P6. both responses are recorded and the warning says the retry returned none', Array.isArray(held.raw) && held.raw[0] === junkText && held.raw[1] === 'Still nothing.' && held.warnings.length === 1 && /retry returned none/.test(held.warnings[0] ?? ''), JSON.stringify({ raw: held.raw, warnings: held.warnings }));
+  const clean = scripted([canonical]);
+  const direct = await critique({ scenarios: two, url: 'https://x.example/', apiKey: 'fake', client: clean.client });
+  check('P7. a good first response makes one call, keeps a single raw string and no warning', clean.calls() === 1 && typeof direct.raw === 'string' && direct.warnings.length === 0);
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

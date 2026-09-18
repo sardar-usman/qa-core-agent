@@ -25,8 +25,20 @@ export interface CriticResult {
   verdicts: ScenarioVerdict[];
   summary: string;
   costUsd: number;
-  /** The critic's response text, verbatim. Kept on the report when nothing parsed. */
-  raw: string;
+  /**
+   * Scenarios the response carried no verdict for. Each is held as rework
+   * ("no verdict returned") inside `verdicts`, never passed to replay
+   * unreviewed; the runtime prints a warning naming them.
+   */
+  unreviewed: string[];
+  /**
+   * The critic's response text, verbatim. An array when the first call
+   * yielded no verdicts and the call was retried once (both responses, in
+   * order). Kept on the report when nothing parsed.
+   */
+  raw: string | string[];
+  /** Lines for the run log: the one retry, and whether it recovered. */
+  warnings: string[];
 }
 
 /**
@@ -59,7 +71,7 @@ Flagging rules — apply to every scenario:
 
 1. Timing: any assertion on an animated or async element (progress bar, countdown timer, loading spinner, toast, live counter) with [no-timeout] is automatically "rework". The required_fix must name the correct tool: wait_for_text (polls until text matches) or assert with timeout set to at least 10000ms.
 
-2. Vacuous or substring: asserting toBeVisible on the element the agent just clicked proves nothing about the outcome. A substring match (toContainText with a single character or a unit-only string like "%") is never acceptable. Flag as "rework".
+2. Vacuous or substring: asserting toBeVisible on the element the agent just clicked, or on anything that was already true before the action, proves nothing about the outcome (doctrine rule 8 below; cite it as rule 8). A substring match (toContainText with a single character or a unit-only string like "%") is never acceptable. Flag as "rework".
 
 3. a11y without ARIA: an a11y scenario that only checks visible text or element presence is automatically "rework". It must assert ARIA attributes (role, aria-valuenow, aria-valuemin, aria-valuemax, aria-label, aria-expanded) via toHaveAttribute, or prove keyboard operability produced a meaningful outcome.
 
@@ -91,7 +103,7 @@ export async function critique(opts: {
   client?: CriticClient;
 }): Promise<CriticResult> {
   if (opts.scenarios.length === 0) {
-    return { verdicts: [], summary: 'No scenarios recorded — nothing to review.', costUsd: 0, raw: '' };
+    return { verdicts: [], summary: 'No scenarios recorded, nothing to review.', costUsd: 0, raw: '', unreviewed: [], warnings: [] };
   }
 
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
@@ -106,27 +118,84 @@ export async function critique(opts: {
     return `${i + 1}. [${s.category}] ${s.name}\n      ${steps}`;
   }).join('\n\n');
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 3000,
-    system: [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
-    messages: [
-      {
-        role: 'user',
-        content: `URL: ${opts.url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`,
-      },
-    ],
-  });
+  const ask = async (): Promise<{ text: string; costUsd: number }> => {
+    const response = await client.messages.create({
+      model,
+      max_tokens: criticMaxTokens(opts.scenarios.length),
+      system: [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
+      messages: [
+        {
+          role: 'user',
+          content: `URL: ${opts.url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`,
+        },
+      ],
+    });
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    const u = response.usage;
+    return { text, costUsd: (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000 };
+  };
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  // One retry on a zero-verdict response, with the same input. A response
+  // nothing can parse is usually a one-off (a refusal preamble, a format
+  // slip); a second call is far cheaper than holding every scenario as
+  // rework and spending the repair reserve on it. Both responses are kept.
+  const first = await ask();
+  let text = first.text;
+  let costUsd = first.costUsd;
+  let raw: string | string[] = first.text;
+  const warnings: string[] = [];
+  let parsed = parseVerdicts(text);
+  if (parsed.length === 0) {
+    const second = await ask();
+    costUsd += second.costUsd;
+    raw = [first.text, second.text];
+    const retryParsed = parseVerdicts(second.text);
+    if (retryParsed.length > 0) {
+      text = second.text;
+      parsed = retryParsed;
+      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned ${retryParsed.length} verdict(s).`);
+    } else {
+      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned none, so every scenario is held as rework. Both responses are kept on review.rawResponse.`);
+    }
+  }
 
-  const u = response.usage;
-  const costUsd = (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000;
+  const completed = completeVerdicts(opts.scenarios, parsed);
+  return { verdicts: completed.verdicts, summary: parseSummary(text), costUsd, raw, unreviewed: completed.unreviewed, warnings };
+}
 
-  return { verdicts: parseVerdicts(text), summary: parseSummary(text), costUsd, raw: text };
+/** Output budget per verdict object (reasons and required_fixes included) and for the summary block. */
+export const CRITIC_TOKENS_PER_VERDICT = 350;
+export const CRITIC_SUMMARY_TOKENS = 500;
+const CRITIC_MIN_MAX_TOKENS = 3000;
+
+/**
+ * max_tokens for a Critic call, sized to the scenario count. A fixed 3000
+ * cut the response of run f3b41e after 14 of 15 verdicts and before the
+ * summary, and the 15th scenario went to replay unreviewed.
+ */
+export function criticMaxTokens(scenarioCount: number): number {
+  return Math.max(CRITIC_MIN_MAX_TOKENS, scenarioCount * CRITIC_TOKENS_PER_VERDICT + CRITIC_SUMMARY_TOKENS);
+}
+
+/**
+ * Every reviewed scenario gets a verdict. A scenario the parsed response did
+ * not cover (tolerant name match) is held as rework with the reason "no
+ * verdict returned", so it is repaired or dropped, never replayed as if it had
+ * passed. Returns the completed list and the names that were missing.
+ */
+export function completeVerdicts<S extends { name: string }>(scenarios: S[], verdicts: ScenarioVerdict[]): { verdicts: ScenarioVerdict[]; unreviewed: string[] } {
+  const assigned = assignVerdicts(scenarios.map((s) => s.name), verdicts);
+  const unreviewed = scenarios.map((s) => s.name).filter((name) => !assigned.has(name));
+  const held: ScenarioVerdict[] = unreviewed.map((scenario) => ({
+    scenario,
+    verdict: 'rework',
+    reasons: ['no verdict returned: the Critic response carried no verdict for this scenario (truncated or malformed), so it was not reviewed'],
+    required_fixes: ['re-record the scenario so the next review covers it; do not ship an unreviewed assertion'],
+  }));
+  return { verdicts: [...verdicts, ...held], unreviewed };
 }
 
 /**

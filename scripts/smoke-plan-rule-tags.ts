@@ -10,7 +10,7 @@
  *
  * This drives the REAL exported parsePlan, not a mirror.
  */
-import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor, applyCitationChecks } from '../src/agent/planner.js';
+import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor, applyCitationChecks, lockoutScenarioNames, knownAccountIdentifiers } from '../src/agent/planner.js';
 import { citationMismatchReason } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
@@ -126,6 +126,22 @@ check('I5. every drop is reported with the scenario, the id and the reason', cit
 check('I6. the scenarios themselves survive (only the citation goes)', cited.scenarios.length === 4);
 check('I7. without a map nothing is checked or changed', applyCitationChecks(ec8effPlan, undefined).scenarios === ec8effPlan && applyCitationChecks(ec8effPlan, undefined).citationDrops.length === 0);
 check('I8. citationMismatchReason covers the rejection words and leaves plausible citations alone', citationMismatchReason('happy', 'Registration with an already used email address is rejected with an error.') !== null && citationMismatchReason('happy', 'Sorting by price low to high orders the visible products by ascending price.') === null && citationMismatchReason('negative', 'Submitting the form with an empty required field shows a required-field message.') === null && citationMismatchReason('negative', 'The cart page lists each added product with quantity and line total.') !== null && citationMismatchReason('happy', 'The locked_out_user account is refused with a locked-out error.') !== null);
+
+/* ─── J. the tool-level credential rule knows the real accounts and the lockout exception ── */
+{
+  const map: RequirementsMap = { features: [{ name: 'login', description: 'sign in as standard_user / secret_sauce', rules: [
+    { id: 'R1', text: 'A user with valid credentials (standard_user / secret_sauce) is taken to the inventory page.', type: 'behavior' },
+    { id: 'R2', text: 'A wrong password shows the error and the user stays on the login page.', type: 'behavior' },
+    { id: 'R4', text: 'The locked_out_user account is refused with an error stating the user has been locked out.', type: 'behavior' },
+    { id: 'R5', text: 'Support is reached at help@shop.example.', type: 'behavior' },
+  ] }], roles: ['standard user'], truncated: false };
+  const plan = parsePlan('<plan>\n1. [login][happy][R1] logged in with valid credentials — fails if login stops\n2. [login][negative][R2] rejected a wrong password — fails if a wrong password is accepted\n3. [login][negative][R4] rejected the locked_out_user account — fails if the lockout stops\n</plan>');
+  check('J1. the scenario citing the lockout rule is the one exempt from the credential rewrite', JSON.stringify(lockoutScenarioNames(plan, map)) === JSON.stringify(['rejected the locked_out_user account']), JSON.stringify(lockoutScenarioNames(plan, map)));
+  check('J2. without a map nothing is exempt', lockoutScenarioNames(plan, undefined).length === 0);
+  const ids = knownAccountIdentifiers(map);
+  check('J3. the SRS-named accounts are known: snake_case account names and e-mail addresses, lowercased and deduped', ids.includes('standard_user') && ids.includes('locked_out_user') && ids.includes('help@shop.example') && ids.filter((x) => x === 'standard_user').length === 1, JSON.stringify(ids));
+  check('J4. plain words are not identifiers', !ids.includes('user') && !ids.includes('login'));
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

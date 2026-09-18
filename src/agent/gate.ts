@@ -1,4 +1,4 @@
-import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
+import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import { generatedIdFragment } from './volatile-id.js';
 
@@ -30,6 +30,13 @@ import { generatedIdFragment } from './volatile-id.js';
  *           assertion. Such ids rot when the data reseeds. The reason names
  *           the fragment and steers to a role, label, id-free testid or a
  *           table-scoped path.
+ *   RULE 7: No literal catalogue value. A toHaveText / toContainText /
+ *           toHaveValue with a literal on a product card, list item, table
+ *           body cell or product-listing target, a price literal on any
+ *           target, or a toHaveCount above 1, is rejected with the steer
+ *           "capture the value, act, assert_compare". Messages, alerts,
+ *           headings and fields the model filled itself are never catalogue
+ *           data. Also applied in-run at assert time (tools.ts).
  *   RULE 5: Unused captures are stripped. A capture whose varName no
  *           assert_compare ever reads is dead weight the Critic flags every
  *           run; nothing can reference it later (assert_compare is the only
@@ -42,7 +49,7 @@ import { generatedIdFragment } from './volatile-id.js';
  */
 
 export interface GateViolation {
-  rule: 1 | 3 | 4 | 6;
+  rule: 1 | 3 | 4 | 6 | 7;
   stepIndex: number;
   detail: string;
 }
@@ -72,6 +79,10 @@ export interface GateResult {
 // constant — it is the lowest budget the gate will let any async assertion ship
 // with, so a missing or too-small timeout gets raised to the floor.
 const ASYNC_TIMEOUT_FLOOR = ADAPTIVE_FLOOR_MS;
+// Ceiling. A recorded timeout above this masks a performance regression and
+// drew a rework on every scenario that carried one (run f3b41e: three 60000ms
+// values, each the residue of a failed 60 s probe). Lowered, and logged.
+export const ASYNC_TIMEOUT_CEILING = 15_000;
 const DYNAMIC_TIMEOUT_THRESHOLD = 5_000;
 
 // Positional pseudo-classes that make a selector fragile under DOM changes
@@ -125,6 +136,12 @@ export function runGate(scenario: Scenario): GateResult {
           detail: `step ${i + 1}: selector ${JSON.stringify(text6)} embeds the generated id "${fragment}", which rots when the data reseeds; locate the element by role, label, or a testid that carries no id, or by a table-scoped path`,
         });
       }
+    }
+
+    // RULE 7: no literal catalogue value (see catalogueLiteralReason).
+    if (step.kind === 'assert') {
+      const r7 = catalogueLiteralReason(step.assertion, scenario.steps.slice(0, i));
+      if (r7) violations.push({ rule: 7, stepIndex: i, detail: `step ${i + 1}: ${r7}` });
     }
 
     // RULE 3a: capture / assert_compare on a FRAGILE CSS-tier locator.
@@ -219,25 +236,31 @@ export function runGate(scenario: Scenario): GateResult {
       (s) => s.kind === 'click' || s.kind === 'fill' || s.kind === 'press' || s.kind === 'navigate'
         || s.kind === 'select_option' || s.kind === 'set_checked' || s.kind === 'set_input_files',
     );
-    if (hasAction) {
-      for (let i = 0; i < scenario.steps.length; i++) {
-        const step = scenario.steps[i]!;
-        if (step.kind !== 'assert') continue;
-        const a = step.assertion;
-        // Every timeout-bearing assertion type is floored, including
-        // toBeHidden (absence waits for the element to leave) and toHaveCount
-        // (counts settle after async actions). toHaveURL has no element and
-        // polls on its own.
-        if (a.type === 'toHaveURL') continue;
-        const current = (a as { timeout?: number }).timeout;
-        if (!current || current < ASYNC_TIMEOUT_FLOOR) {
-          (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
-          injections.push({
-            stepIndex: i,
-            assertionType: a.type,
-            detail: `step ${i + 1}: raised timeout to the ${ASYNC_TIMEOUT_FLOOR}ms floor on ${a.type} (was ${current ?? 'unset'})`,
-          });
-        }
+    for (let i = 0; i < scenario.steps.length; i++) {
+      const step = scenario.steps[i]!;
+      if (step.kind !== 'assert') continue;
+      const a = step.assertion;
+      // Every timeout-bearing assertion type is floored, including
+      // toBeHidden (absence waits for the element to leave) and toHaveCount
+      // (counts settle after async actions). toHaveURL has no element and
+      // polls on its own. The floor applies after an action; the ceiling
+      // applies always.
+      if (a.type === 'toHaveURL') continue;
+      const current = (a as { timeout?: number }).timeout;
+      if (hasAction && (!current || current < ASYNC_TIMEOUT_FLOOR)) {
+        (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
+        injections.push({
+          stepIndex: i,
+          assertionType: a.type,
+          detail: `step ${i + 1}: raised timeout to the ${ASYNC_TIMEOUT_FLOOR}ms floor on ${a.type} (was ${current ?? 'unset'})`,
+        });
+      } else if (current !== undefined && current > ASYNC_TIMEOUT_CEILING) {
+        (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_CEILING;
+        injections.push({
+          stepIndex: i,
+          assertionType: a.type,
+          detail: `step ${i + 1}: lowered timeout to the ${ASYNC_TIMEOUT_CEILING}ms ceiling on ${a.type} (was ${current})`,
+        });
       }
     }
   }
@@ -386,6 +409,7 @@ export function gateRuleLabel(rule: GateViolation['rule']): string {
     case 3: return 'RULE 3 (no CSS on animated elements)';
     case 4: return 'RULE 4 (intermediate value on animated element)';
     case 6: return 'RULE 6 (generated id in selector)';
+    case 7: return 'RULE 7 (literal catalogue value)';
   }
 }
 
@@ -396,5 +420,63 @@ export function gateBrokenReason(rule: GateViolation['rule']): string {
     case 3: return 'unstable locator on dynamic element';
     case 4: return 'intermediate value assertion on animated element';
     case 6: return 'selector embeds a generated id';
+    case 7: return 'literal catalogue value asserted';
   }
+}
+
+/* ─────────────────── RULE 7: literal catalogue values ─────────────────── */
+
+// A target that shows catalogue data: a product card, a list item, a table
+// body cell, a listing grid or row, a price or sku element.
+// Markers that name catalogue content outright; a heading word next to one does not exempt.
+const STRONG_CATALOGUE_RE = /product|\bcard\b|card[-_]|listing|catalog|\bsku\b/i;
+const CATALOGUE_TARGET_RE = /product|\bcard\b|card[-_]|listing|catalog|\bgrid\b|tbody|\btd\b|\bli\b|listitem|gridcell|\bcell\b|\brow\b|\bsku\b|price|result/i;
+// Targets that are never catalogue data: messages, alerts, headings, form fields.
+const NON_CATALOGUE_RE = /alert|error|message|toast|notif|invalid|feedback|status|heading|\bh[1-6]\b|page-title|caption|banner|breadcrumb|no-results|empty|search-query|\bquery\b|\binput\b|textarea|\bselect\b|\bfield\b|textbox|combobox|checkbox/i;
+// A price: a currency symbol with a number, or a number with two decimals.
+const PRICE_LITERAL_RE = /^\s*(?:[$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?|\d[\d,]*\.\d{2}\s?[$€£¥]?)\s*$/;
+
+function targetWords(t: SelectorRecord): string {
+  return `${selectorText(t)} ${t.intent}`;
+}
+
+/**
+ * Why an assertion pins a literal catalogue value, or null. Deterministic
+ * from the trace: the TARGET tells whether the literal is catalogue data
+ * (run f3b41e: every literal the Critic rejected sat on a product-card
+ * selector), a price literal is catalogue data on any target, and a count
+ * above 1 is a catalogue count. Messages, alerts, headings and a field the
+ * model filled itself are never catalogue data. Exported so tools.ts applies
+ * it at assert time and smoke-gate locks it.
+ */
+export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[]): string | null {
+  const steer = 'capture the value, act, assert_compare (changed, greater, less, before, after) or assert a heading, a message, a format, or count 0 or 1';
+  if (a.type === 'toHaveCount') {
+    // A count of form controls, messages or headings is structural, not
+    // catalogue data (three checkboxes in a form); a count of cards or rows is.
+    const countWords = targetWords(a.target);
+    const countExempt = NON_CATALOGUE_RE.test(countWords) && !STRONG_CATALOGUE_RE.test(countWords);
+    if (a.count > 1 && !countExempt) return `count=${a.count} on ${countWords} is a literal catalogue count that changes when the data reseeds; ${steer}`;
+    return null;
+  }
+  if (a.type !== 'toHaveText' && a.type !== 'toContainText' && a.type !== 'toHaveValue') return null;
+  const literal = a.type === 'toHaveValue' ? a.value : a.text;
+  const words = targetWords(a.target);
+  if (a.type === 'toHaveValue') {
+    // A value the model filled itself is test data, not catalogue data.
+    const filled = priorSteps.some((s) => s.kind === 'fill' && sameElement(s.target, a.target));
+    if (filled) return null;
+  }
+  // A product-card marker wins over an incidental heading word: the h5 inside
+  // a product card is the product name, not a page heading.
+  const strongCatalogue = STRONG_CATALOGUE_RE.test(words);
+  const exempt = NON_CATALOGUE_RE.test(words) && !strongCatalogue;
+  if (!exempt && PRICE_LITERAL_RE.test(literal)) return `${JSON.stringify(literal)} is a price literal, catalogue data that changes when the data reseeds; ${steer}`;
+  if (!exempt && CATALOGUE_TARGET_RE.test(words)) return `${JSON.stringify(literal)} on ${words.trim()} is catalogue data that changes when the data reseeds; ${steer}`;
+  return null;
+}
+
+function sameElement(x: SelectorRecord, y: SelectorRecord): boolean {
+  if (x.elementKey && y.elementKey) return x.elementKey === y.elementKey;
+  return x.level === y.level && JSON.stringify(x.arg) === JSON.stringify(y.arg);
 }

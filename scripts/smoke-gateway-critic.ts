@@ -161,7 +161,7 @@ check('N. toHaveURL renders as a quoted regex string, never /pattern//', rendere
 
 const junkSeen: { model?: string; envAtCall?: string | undefined } = {};
 const junk = await critique({ scenarios, url: 'https://x.example/', apiKey: 'fake', client: fakeClient('I cannot review this.\n\n<summary>No verdicts.</summary>', junkSeen) });
-check('O. an unparseable response yields zero verdicts and the raw text', junk.verdicts.length === 0 && junk.raw.startsWith('I cannot review this.') && junk.summary === 'No verdicts.');
+check('O. an unparseable response holds EVERY scenario as rework (no verdict returned), names them as unreviewed, and keeps the raw text', junk.verdicts.length === scenarios.length && junk.verdicts.every((v) => v.verdict === 'rework' && /no verdict returned/.test(v.reasons[0] ?? '')) && junk.unreviewed.length === scenarios.length && Array.isArray(junk.raw) && junk.raw.length === 2 && junk.raw.every((r) => r.startsWith('I cannot review this.')) && junk.summary === 'No verdicts.' && junk.warnings.length === 1 && /retried once/.test(junk.warnings[0] ?? ''), JSON.stringify({ verdicts: junk.verdicts, warnings: junk.warnings }));
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);

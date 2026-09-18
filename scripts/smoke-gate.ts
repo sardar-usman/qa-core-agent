@@ -15,7 +15,7 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, ASYNC_TIMEOUT_CEILING } from '../src/agent/gate.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
@@ -121,9 +121,10 @@ check('AG. RULE 2 — missing timeout raised in-place to the 5000 floor', assert
 // page) is left untouched — the gate never overrides a real measured budget.
 const r2SufficientSteps: TraceStep[] = [
   NAV, CLICK_ROLE,
-  { kind: 'assert', name: 'ok', assertion: { type: 'toHaveText', target: { level: 'role', arg: { role: 'status', name: '' }, intent: 's' }, text: 'done', timeout: 18000 } },
+  // 12000: above the 5000 floor and under the 15000 ceiling, so RULE 2 leaves it alone.
+  { kind: 'assert', name: 'ok', assertion: { type: 'toHaveText', target: { level: 'role', arg: { role: 'status', name: '' }, intent: 's' }, text: 'done', timeout: 12000 } },
 ];
-check('AH. RULE 2 — adaptive timeout above the floor is not re-injected', runGate(makeScenario(r2SufficientSteps)).injections.length === 0);
+check('AH. RULE 2: adaptive timeout above the floor and under the ceiling is not re-injected', runGate(makeScenario(r2SufficientSteps)).injections.length === 0);
 
 // Below the floor — raised up to the floor only.
 const r2LowSteps: TraceStep[] = [
@@ -231,7 +232,8 @@ const r3FragileCorrobResult = runGate(makeScenario(r3FragileCorrobSteps));
 // assert_freeze at index 3 is fragile (RULE 3) → violation;
 // toHaveText at index 2 is corroborated (RULE 3) → violation;
 // toHaveText("50%") on same intent as assert_freeze (RULE 4) → violation = 3 total
-check('AX. RULE 3+4 — fragile selector + intermediate value: three violations', r3FragileCorrobResult.violations.length === 3);
+// RULE 7 adds a fourth violation here (a literal on a list item); this check counts the RULE 3 and RULE 4 ones.
+check('AX. RULE 3+4: fragile selector + intermediate value, three violations', r3FragileCorrobResult.violations.filter((v) => v.rule === 3 || v.rule === 4).length === 3 && r3FragileCorrobResult.violations.some((v) => v.rule === 7));
 
 /* ─── RULE 1 + RULE 3 combined: violations win, no injections ───────────── */
 
@@ -328,7 +330,8 @@ check('BL. assert_freeze on stable #id — gate accepts (no violations)', afOnly
 const countAssert: TraceStep = {
   kind: 'assert',
   name: 'row count',
-  assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3 },
+  // count 1: a literal count above 1 is RULE 7 (catalogue count), and this fixture is about the RULE 2 floor.
+  assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 1 },
 };
 const hiddenAssert: TraceStep = {
   kind: 'assert',
@@ -403,13 +406,54 @@ check('R6G. the shared label and drop reason exist for rule 6', gateRuleLabel(6)
 check('R6H. generatedIdFragment: ulid, uuid, hex found; ordinary ids and dates not', generatedIdFragment('category-01M2K06AWQJ6XZEYHJEKD7E8JV') === '01M2K06AWQJ6XZEYHJEKD7E8JV' && generatedIdFragment('a 3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c b') === '3f2b8a9c-1d4e-4f6a-9b2c-8d7e6f5a4b3c' && generatedIdFragment('#507f1f77bcf86cd799439011') === '507f1f77bcf86cd799439011' && generatedIdFragment('[data-test="login-submit"]') === null && generatedIdFragment('order-2026-09-17-1234') === null && generatedIdFragment('.inventory_item_description_container') === null);
 
 /* ─── RULE 2 keeps the model's toHaveCount timeout; only a missing or low one is floored ── */
-const countKept: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3, timeout: 15000 } };
+const countKept: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 1, timeout: 15000 } };
 const rKept = runGate(makeScenario([NAV, CLICK_ROLE, countKept]));
 check('R2K. a toHaveCount recorded with the model\'s 15000ms keeps it (no injection)', rKept.violations.length === 0 && !rKept.injections.some((i) => i.assertionType === 'toHaveCount') && (rKept as unknown as { injections: unknown[] }).injections !== undefined);
-const countLow: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 3, timeout: 3000 } };
+const countLow: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 1, timeout: 3000 } };
 const scLow = makeScenario([NAV, CLICK_ROLE, countLow]);
 const rLow = runGate(scLow);
 check('R2L. a toHaveCount recorded below the floor is raised to 5000 and logged', rLow.injections.some((i) => i.assertionType === 'toHaveCount' && /was 3000/.test(i.detail)) && (scLow.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(rLow.injections));
+
+/* ─── RULE 2 ceiling: a timeout above 15000 is lowered and logged ─────────── */
+const bigTimeout: TraceStep = { kind: 'assert', name: 'price', assertion: { type: 'toContainText', target: { level: 'testid', arg: 'no-results', intent: 'no results message' }, text: 'no products found', timeout: 60000 } };
+const scBig = makeScenario([NAV, CLICK_ROLE, bigTimeout]);
+const rBig = runGate(scBig);
+check('R2C. a 60000ms request is capped to the 15000ms ceiling and logged as an injection',
+  ASYNC_TIMEOUT_CEILING === 15000 && (scBig.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 15000 && rBig.injections.some((i) => /lowered timeout to the 15000ms ceiling on toContainText \(was 60000\)/.test(i.detail)) && rBig.violations.length === 0, JSON.stringify(rBig.injections));
+const okTimeout: TraceStep = { kind: 'assert', name: 'price', assertion: { type: 'toContainText', target: { level: 'testid', arg: 'no-results', intent: 'no results message' }, text: 'no products found', timeout: 15000 } };
+check('R2D. exactly 15000 is untouched', runGate(makeScenario([NAV, CLICK_ROLE, okTimeout])).injections.length === 0);
+const bigNoAction: TraceStep = { kind: 'assert', name: 'h', assertion: { type: 'toHaveText', target: { level: 'testid', arg: 'page-title', intent: 'heading' }, text: 'Category: Hand Tools', timeout: 40000 } };
+check('R2E. the ceiling applies even with no action in the scenario (the floor does not)', runGate(makeScenario([NAV, bigNoAction])).injections.some((i) => /lowered timeout to the 15000ms ceiling/.test(i.detail)));
+
+/* ─── RULE 7: literal catalogue values, the six f3b41e shapes ──────────────── */
+const card = (extra = ''): SelectorRecord => ({ level: 'css', arg: `a[data-test^="product-"]:first-of-type${extra}`, intent: 'first product card' });
+const price: TraceStep = { kind: 'assert', name: 'p', assertion: { type: 'toContainText', target: card(' span.text-muted'), text: '$14.15', timeout: 10000 } };
+const wrench: TraceStep = { kind: 'assert', name: 'w', assertion: { type: 'toHaveText', target: card(' h5'), text: 'Adjustable Wrench', timeout: 10000 } };
+const sander: TraceStep = { kind: 'assert', name: 's', assertion: { type: 'toContainText', target: card(), text: 'Sander', timeout: 10000 } };
+const count9: TraceStep = { kind: 'assert', name: 'c9', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'a[data-test^="product-"]', intent: 'product cards' }, count: 9, timeout: 10000 } };
+const count8: TraceStep = { kind: 'assert', name: 'c8', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'a[data-test^="product-"]', intent: 'product cards' }, count: 8, timeout: 10000 } };
+const count0: TraceStep = { kind: 'assert', name: 'c0', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'a[data-test^="product-"]', intent: 'product cards' }, count: 0, timeout: 10000 } };
+const count1: TraceStep = { kind: 'assert', name: 'c1', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'tbody tr.selected', intent: 'selected row' }, count: 1, timeout: 10000 } };
+for (const [label, step, frag] of [['$14.15 on a card price', price, '"$14.15"'], ['Adjustable Wrench on a card name', wrench, '"Adjustable Wrench"'], ['contains Sander on a card', sander, '"Sander"'], ['count=9 on the product cards', count9, 'count=9'], ['count=8 on the product cards', count8, 'count=8']] as Array<[string, TraceStep, string]>) {
+  const r = runGate(makeScenario([NAV, CLICK_ROLE, step]));
+  check(`R7A. ${label} is rejected under RULE 7 with the capture-then-compare steer`, r.violations.some((v) => v.rule === 7 && v.detail.includes(frag) && /capture the value, act, assert_compare/.test(v.detail)), JSON.stringify(r.violations));
+}
+check('R7B. count 0 (absence) and count 1 stay allowed', !runGate(makeScenario([NAV, CLICK_ROLE, count0, count1])).violations.some((v) => v.rule === 7));
+const countBoxes: TraceStep = { kind: 'assert', name: 'cb', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '#checkboxes input[type=checkbox]', intent: 'checkbox inputs' }, count: 3, timeout: 10000 } };
+check('R7B2. a count of form controls (three checkboxes) is structural, not catalogue data, so it stays allowed', !runGate(makeScenario([NAV, CLICK_ROLE, countBoxes])).violations.some((v) => v.rule === 7));
+const heading: TraceStep = { kind: 'assert', name: 'h', assertion: { type: 'toHaveText', target: { level: 'testid', arg: 'page-title', intent: 'category heading' }, text: 'Category: Hand Tools', timeout: 10000 } };
+const noResults: TraceStep = { kind: 'assert', name: 'n', assertion: { type: 'toContainText', target: { level: 'testid', arg: 'no-results', intent: 'no results message' }, text: 'no products found', timeout: 10000 } };
+const loginError: TraceStep = { kind: 'assert', name: 'e', assertion: { type: 'toContainText', target: { level: 'css', arg: '[data-test="login-error"]', intent: 'login error message' }, text: 'Invalid email or password', timeout: 10000 } };
+const caption: TraceStep = { kind: 'assert', name: 'cap', assertion: { type: 'toContainText', target: { level: 'css', arg: '[data-test="search-caption"]', intent: 'search caption' }, text: 'Pliers', timeout: 10000 } };
+const alertPrice: TraceStep = { kind: 'assert', name: 'ap', assertion: { type: 'toContainText', target: { level: 'role', arg: { role: 'alert' }, intent: 'order confirmation alert' }, text: '$14.15', timeout: 10000 } };
+const searchFill: TraceStep = { kind: 'fill', target: { level: 'testid', arg: 'search-query', intent: 'search input' }, value: 'a' };
+const searchValue: TraceStep = { kind: 'assert', name: 'v', assertion: { type: 'toHaveValue', target: { level: 'testid', arg: 'search-query', intent: 'search input' }, value: 'a', timeout: 10000 } };
+const rAllowed = runGate(makeScenario([NAV, searchFill, CLICK_ROLE, heading, noResults, loginError, caption, alertPrice, searchValue]));
+check('R7C. a heading, a message, an alert (even with a price), a caption and a field the scenario filled are never catalogue data', !rAllowed.violations.some((v) => v.rule === 7), JSON.stringify(rAllowed.violations));
+const totalPrice: TraceStep = { kind: 'assert', name: 't', assertion: { type: 'toHaveText', target: { level: 'css', arg: '.summary .total', intent: 'order total' }, text: '$73.59', timeout: 10000 } };
+check('R7D. a price literal is rejected on any non-message target', runGate(makeScenario([NAV, CLICK_ROLE, totalPrice])).violations.some((v) => v.rule === 7 && /price literal/.test(v.detail)));
+check('R7E. the shared label and drop reason exist for rule 7', gateRuleLabel(7) === 'RULE 7 (literal catalogue value)' && gateBrokenReason(7) === 'literal catalogue value asserted');
+check('R7F. catalogueLiteralReason is null for a filled field value and for a row cell count of 1', catalogueLiteralReason(searchValue.assertion, [searchFill]) === null && catalogueLiteralReason(count1.assertion, []) === null);
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
