@@ -13,7 +13,7 @@ export interface ProjectCard {
 }
 
 export interface GatewaySettings {
-  run_settings: Array<{ name: string; label: string; value: string; fromEnv: boolean }>;
+  run_settings: Array<{ name: string; label: string; value: string; fromEnv: boolean; help?: string }>;
   output_root: string;
   gateway: { host: string | null; port: number | null };
   token_set: boolean;
@@ -81,7 +81,7 @@ export interface ObservedOnFailure { url: string; target: string | null; message
 export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
 /** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
 export interface RunDetailStages {
-  discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; warnings: string[] };
+  discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; warnings: string[] };
   plan: { status: StageStatus; stat: string; planner_usd: number; scenarios: Array<{ name: string; feature: string | null; category: string | null; rule_ids: string[]; page_url: string | null }>; pages: Array<{ url: string | null; count: number }> };
   explore: {
     status: StageStatus; stat: string; steps: number; scenarios_recorded: number; explorer_usd: number; repair_usd: number;

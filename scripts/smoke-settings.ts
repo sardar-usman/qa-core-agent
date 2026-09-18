@@ -18,6 +18,8 @@ import { chromium } from 'playwright';
 import { gatewaySettings } from '../src/server/api.js';
 import { RUN_ENV_SETTINGS } from '../src/agent/explore-request.js';
 
+import { stepBudgetWithFloor, stepBudgetFor } from '../src/agent/runtime.js';
+
 let pass = 0;
 let fail = 0;
 const check = (label: string, ok: boolean, hint?: string): void => {
@@ -32,6 +34,8 @@ const pure = gatewaySettings({ root: '/tmp/x', token: TOKEN, gateway: { host: '1
 const pureText = JSON.stringify(pure);
 check('A. gatewaySettings reports set/not set for the API key and the token, never their values', pure.token_set === true && pure.api_key_set === true && !pureText.includes(SECRET_KEY) && !pureText.includes(TOKEN));
 check('A2. run settings come from the env passed in, with their origin', (pure.run_settings as Array<{ name: string; value: string; fromEnv: boolean }>).find((s) => s.name === 'QA_CORE_COST_CEILING')?.value === '3' && (pure.run_settings as Array<{ fromEnv: boolean }>).filter((s) => !s.fromEnv).length === RUN_ENV_SETTINGS.length - 1);
+check('A4. the step budget row is described as it works: a floor with the formula in its help text', RUN_ENV_SETTINGS.find((s) => s.name === 'QA_CORE_MAX_STEPS')?.label === 'Max explorer steps (floor)' && /6 \+ n x max\(14, 8 \+ f\)/.test(RUN_ENV_SETTINGS.find((s) => s.name === 'QA_CORE_MAX_STEPS')?.help ?? '') && /floor, not a cap/.test(RUN_ENV_SETTINGS.find((s) => s.name === 'QA_CORE_MAX_STEPS')?.help ?? '') && (pure.run_settings as Array<{ name: string; help?: string }>).find((s) => s.name === 'QA_CORE_MAX_STEPS')?.help === RUN_ENV_SETTINGS.find((s) => s.name === 'QA_CORE_MAX_STEPS')?.help);
+check('A5. the runtime treats the setting as a floor: it raises the formula and never lowers it', stepBudgetWithFloor(stepBudgetFor(10, 24), 40) === 326 && stepBudgetWithFloor(stepBudgetFor(3), 100) === 100 && stepBudgetWithFloor(stepBudgetFor(3), undefined) === 48 && stepBudgetWithFloor(146, 40) === 146);
 check('A3. without keys the payload says not set', gatewaySettings({ root: '/tmp/x', token: '' }, {} as NodeJS.ProcessEnv).api_key_set === false && gatewaySettings({ root: '/tmp/x', token: '' }, {} as NodeJS.ProcessEnv).token_set === false);
 
 /* ─── gateway ─── */
@@ -80,11 +84,12 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await page.goto(`${base}/settings#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-setting"]');
 const shown = await page.evaluate(() => ({
-  rows: Array.from(document.querySelectorAll('[data-testid="run-setting"]')).map((r) => ({ name: r.getAttribute('data-name'), def: r.querySelector('[data-testid="setting-default"]')?.textContent })),
+  rows: Array.from(document.querySelectorAll('[data-testid="run-setting"]')).map((r) => ({ name: r.getAttribute('data-name'), def: r.querySelector('[data-testid="setting-default"]')?.textContent, help: r.querySelector('[data-testid="setting-help"]')?.textContent ?? '', label: r.querySelector('.font-semibold')?.textContent ?? '' })),
   token: document.querySelector('[data-testid="setting-token"]')?.textContent, key: document.querySelector('[data-testid="setting-api-key"]')?.textContent,
   gateway: document.querySelector('[data-testid="setting-gateway"]')?.textContent, body: document.body.textContent ?? '',
 }));
 check('I. page: every run setting with its gateway default; token and API key as set; gateway host:port', shown.rows.length === RUN_ENV_SETTINGS.length && shown.rows.find((r) => r.name === 'QA_CORE_COST_CEILING')?.def === '3' && shown.token === 'set' && shown.key === 'set' && shown.gateway === `127.0.0.1:${PORT}`, JSON.stringify(shown.rows));
+check('I2. page: the step budget row shows the floor label and the formula help text', shown.rows.find((r) => r.name === 'QA_CORE_MAX_STEPS')?.label === 'Max explorer steps (floor)' && /6 \+ n x max\(14, 8 \+ f\)/.test(shown.rows.find((r) => r.name === 'QA_CORE_MAX_STEPS')?.help ?? ''), JSON.stringify(shown.rows.find((r) => r.name === 'QA_CORE_MAX_STEPS')));
 check('J. page: no secret in the page text', !shown.body.includes(SECRET_KEY) && !shown.body.includes(TOKEN));
 check('K. page: the clear button is disabled with no overrides', await page.isDisabled('[data-testid="clear-overrides"]'));
 await page.fill('[data-testid="run-setting"][data-name="QA_CORE_MAX_STEPS"] [data-testid="setting-override"]', '55');

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { chromium, type Frame, type Page } from 'playwright';
 import { installEvalShim } from './eval-shim.js';
 import { renderRequirementsBlock, type RequirementsMap } from './requirements.js';
+import { citationMismatchReason } from './rule-coverage.js';
 
 /**
  * Planner — Step 1 of the multi-agent pipeline.
@@ -82,6 +83,13 @@ export interface PlanResult {
    * Each entry names the scenario and why. Surfaced in the run log.
    */
   rejected: Array<{ scenario: PlannedScenario; reason: string }>;
+  /**
+   * Rule citations removed by `applyCitationChecks`: a happy scenario citing
+   * a rejection rule, or a negative citing a rule that states no rejection.
+   * The scenario stays; only the citation goes, so coverage cannot claim a
+   * rule the scenario does not verify. Surfaced in the run log.
+   */
+  citationDrops: Array<{ scenario: string; ruleId: string; reason: string }>;
 }
 
 /**
@@ -655,10 +663,13 @@ export async function plan(opts: {
     if (injected) {
       console.log(`Planner: injected an inside-frame scenario (no model scenario covered the iframe): ${injected.name}`);
     }
+    // A citation is a claim that the scenario verifies the rule; drop the ones
+    // the category makes impossible, so coverage never counts them.
+    const { scenarios: cited, citationDrops } = applyCitationChecks(covered, opts.requirements);
     const u = response.usage;
     const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000;
 
-    return { scenarios: covered, pageTitle: snapshot.title, costUsd, dropped, rejected, fillableFields: snapshot.fillableCount };
+    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, fillableFields: snapshot.fillableCount };
   } finally {
     await browser.close();
   }
@@ -915,4 +926,35 @@ export function dedupePlan(scenarios: PlannedScenario[]): {
     kept.push(s);
   }
   return { kept, dropped };
+}
+
+/**
+ * Check every rule citation against the scenario that makes it: a happy
+ * scenario may not cite a rule whose text states a rejection (error, reject,
+ * invalid, required, locked), and a negative may not cite a rule with none of
+ * those. A mismatched id is removed from the scenario and reported, so a
+ * shipped test can never be counted as covering a rule it does not verify.
+ * Without a map nothing is checked. Exported for smoke-plan-rule-tags.
+ */
+export function applyCitationChecks(
+  scenarios: PlannedScenario[],
+  map?: RequirementsMap,
+): { scenarios: PlannedScenario[]; citationDrops: Array<{ scenario: string; ruleId: string; reason: string }> } {
+  if (!map) return { scenarios, citationDrops: [] };
+  const ruleText = new Map<string, string>();
+  for (const f of map.features) for (const r of f.rules) ruleText.set(r.id.toUpperCase(), r.text);
+  const citationDrops: Array<{ scenario: string; ruleId: string; reason: string }> = [];
+  const out = scenarios.map((s) => {
+    if (!s.ruleIds || s.ruleIds.length === 0) return s;
+    const kept = s.ruleIds.filter((id) => {
+      const text = ruleText.get(id.toUpperCase());
+      if (text === undefined) return true;
+      const reason = citationMismatchReason(s.category, text);
+      if (!reason) return true;
+      citationDrops.push({ scenario: s.name, ruleId: id, reason });
+      return false;
+    });
+    return kept.length === s.ruleIds.length ? s : { ...s, ruleIds: kept };
+  });
+  return { scenarios: out, citationDrops };
 }

@@ -36,6 +36,7 @@ try {
       intent: 'checkbox inputs',
       css: '#checkboxes input[type=checkbox]',
       count: 3,
+      timeout: 15000,
     },
   });
   console.log('assert toHaveCount(3):', JSON.stringify(result));
@@ -52,6 +53,12 @@ try {
   }
   if (step.assertion.target.ambiguous === true) {
     console.error('FAIL: toHaveCount record still has ambiguous=true — would emit .first() in spec'); process.exit(1);
+  }
+  // The timeout the model passed is recorded on the step (the gate floors a
+  // low one at 5000ms); it used to be dropped, so every count check shipped
+  // with the floor whatever the model asked for.
+  if (step.assertion.timeout !== 15000) {
+    console.error(`FAIL: toHaveCount recorded timeout ${String(step.assertion.timeout)}, expected the model's 15000`); process.exit(1);
   }
   console.log('OK: toHaveCount(N) succeeds AND target.ambiguous is not set on the recorded step');
 } finally {

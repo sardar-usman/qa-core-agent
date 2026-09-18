@@ -17,7 +17,7 @@ export const TOOL_NAMES = ['qa_explore', 'qa_resume', 'qa_transcribe', 'qa_gener
 const settingArgs = {
   ceilingUsd: z.number().positive().optional().describe('Per-run cost ceiling in USD (CLI: --ceiling, env QA_CORE_COST_CEILING, default 2.00). Completed scenarios are salvaged when it is hit.'),
   repairReserve: z.number().min(0).lt(1).optional().describe('Fraction of the ceiling reserved for the critic repair pass (CLI: --repair-reserve, env QA_CORE_REPAIR_RESERVE, default 0.15).'),
-  maxSteps: z.number().int().positive().optional().describe('Hard ceiling on Explorer tool calls (CLI: --max-steps, env QA_CORE_MAX_STEPS, default 40).'),
+  maxSteps: z.number().int().positive().optional().describe('Floor for the Explorer step budget, never a cap: the run gets the larger of the adaptive formula and this value (CLI: --max-steps, env QA_CORE_MAX_STEPS, default 40).'),
   plannerModel: z.string().optional().describe('Planner model id (CLI: --planner-model, env QA_CORE_PLANNER_MODEL, default claude-haiku-4-5).'),
   explorerModel: z.string().optional().describe('Explorer model id (CLI: --explorer-model, env QA_CORE_EXPLORER_MODEL, default claude-opus-4-7).'),
   criticModel: z.string().optional().describe('Critic model id (CLI: --critic-model, env QA_CORE_CRITIC_MODEL, default claude-sonnet-4-6).'),

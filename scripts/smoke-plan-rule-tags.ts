@@ -10,7 +10,8 @@
  *
  * This drives the REAL exported parsePlan, not a mirror.
  */
-import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor } from '../src/agent/planner.js';
+import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor, applyCitationChecks } from '../src/agent/planner.js';
+import { citationMismatchReason } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
@@ -101,6 +102,30 @@ check('H4. a lockout rule is named as keeping the real account; the wrong-passwo
 const noLock = credentialSteeringFor({ features: [{ name: 'login', description: 'sign in', rules: [{ id: 'R2', text: 'A wrong password shows the error.', type: 'behavior' }] }], roles: [], truncated: false });
 check('H5. with no lockout rule the block says so and every negative uses a non-existent account', /No stated rule names a locked account/.test(noLock) && noLock.includes(CREDENTIAL_STEERING));
 check('H6. without a map the block still carries the steering', credentialSteeringFor(undefined).includes(CREDENTIAL_STEERING));
+
+/* ─── I. rule citations must fit the scenario category (the ec8eff shape) ──── */
+const ec8effMap: RequirementsMap = { features: [
+  { name: 'catalogue', description: 'browse', rules: [{ id: 'R1', text: 'The home page lists products with a name, an image and a price.', type: 'behavior' }] },
+  { name: 'login', description: 'sign in', rules: [{ id: 'R10', text: 'Login with a wrong password shows an error and the user stays on the login page.', type: 'behavior' }] },
+], roles: [], truncated: false };
+const ec8effPlan = parsePlan([
+  '<plan>',
+  '1. [login][happy][R10] logged in with valid email and password — fails if successful login stops navigating away',
+  '2. [login][negative][R10] rejected login with wrong password and error message appeared — fails if an incorrect password is accepted',
+  '3. [login][edge][R10] attempted login with empty password field — fails if the required-field validation stops',
+  '4. [catalogue][negative][R1] typed a non-matching search term and the list became empty — fails if the search stops narrowing',
+  '</plan>',
+].join('\n'));
+const cited = applyCitationChecks(ec8effPlan, ec8effMap);
+const byName = new Map(cited.scenarios.map((s) => [s.name, s]));
+check('I1. the happy login loses its R10 citation (R10 states a rejection)', JSON.stringify(byName.get('logged in with valid email and password')?.ruleIds) === '[]', JSON.stringify(byName.get('logged in with valid email and password')));
+check('I2. the negative wrong-password scenario keeps R10', JSON.stringify(byName.get('rejected login with wrong password and error message appeared')?.ruleIds) === '["R10"]');
+check('I3. the edge scenario is not judged and keeps its citation', JSON.stringify(byName.get('attempted login with empty password field')?.ruleIds) === '["R10"]');
+check('I4. a negative citing a rule that states no rejection (R1 lists products) loses it', JSON.stringify(byName.get('typed a non-matching search term and the list became empty')?.ruleIds) === '[]');
+check('I5. every drop is reported with the scenario, the id and the reason', cited.citationDrops.length === 2 && cited.citationDrops.some((d) => d.ruleId === 'R10' && d.scenario === 'logged in with valid email and password' && /happy scenario cannot verify a rule that states a rejection/.test(d.reason)) && cited.citationDrops.some((d) => d.ruleId === 'R1' && /negative scenario cannot verify a rule that states no rejection/.test(d.reason)), JSON.stringify(cited.citationDrops));
+check('I6. the scenarios themselves survive (only the citation goes)', cited.scenarios.length === 4);
+check('I7. without a map nothing is checked or changed', applyCitationChecks(ec8effPlan, undefined).scenarios === ec8effPlan && applyCitationChecks(ec8effPlan, undefined).citationDrops.length === 0);
+check('I8. citationMismatchReason covers the rejection words and leaves plausible citations alone', citationMismatchReason('happy', 'Registration with an already used email address is rejected with an error.') !== null && citationMismatchReason('happy', 'Sorting by price low to high orders the visible products by ascending price.') === null && citationMismatchReason('negative', 'Submitting the form with an empty required field shows a required-field message.') === null && citationMismatchReason('negative', 'The cart page lists each added product with quantity and line total.') !== null && citationMismatchReason('happy', 'The locked_out_user account is refused with a locked-out error.') !== null);
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

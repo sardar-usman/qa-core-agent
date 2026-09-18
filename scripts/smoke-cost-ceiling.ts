@@ -264,25 +264,26 @@ const echoedVerdicts = [
   rw('[negative] rejected an empty search with a message'),
   rw('5. [happy] filtered products by category'),
 ];
-const liveSpent = 5.1840 + 0.0314 + 0.0350; // explorer + critic + planner
-const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: liveSpent, ceilingUsd: 6 });
+// Reserve $0.90 (15% of $6). The Explorer spent $5.1840 recording 6 scenarios.
+const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0.9, explorerUsd: 5.184, recorded: 6 });
 check('H1. the live shape now RUNS the repair pass', h?.run === true, JSON.stringify(h));
 check('H2. all 5 prefix-echoed rework verdicts match their scenarios', h?.rework.length === 5, String(h?.rework.length));
-check('H3. the budget is the TOTAL ceiling minus actual spend (~$0.75), not the overshot sub-ceiling',
-  h !== null && Math.abs(h.budgetUsd - (6 - liveSpent)) < 1e-9 && h.budgetUsd > 0.7, String(h?.budgetUsd));
-check('H4. the run line states count and budget', h?.line === `repair pass: 5 scenario(s), budget $${(6 - liveSpent).toFixed(2)}`, h?.line);
+check('H3. the budget is the FULL stated reserve ($0.90), not the reserve minus planner and critic spend',
+  h !== null && Math.abs(h.budgetUsd - 0.9) < 1e-9, String(h?.budgetUsd));
+check('H4. the run line states count, the reserve, the per-scenario explorer cost observed, and how many it funds',
+  h?.line === 'repair pass: 5 scenario(s), budget $0.90 (the stated reserve); explorer cost this run $0.8640 per recorded scenario, so the reserve funds about 1 of 5', h?.line);
 
-// Exhausted budget: still a line, never silence.
-const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, spentUsd: 6.01, ceilingUsd: 6 });
-check('H5. zero budget skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no budget remaining'), hBroke?.line);
+// No reserve at all: still a line, never silence.
+const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0, explorerUsd: 5.184, recorded: 6 });
+check('H5. a zero reserve skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no reserve'), hBroke?.line);
 
 // Verdict names that match nothing: still a line naming the orphans.
-const hAlien = decideRepairPass({ scenarios: liveScenarios, verdicts: [rw('a verdict about something else entirely')], spentUsd: 1, ceilingUsd: 6 });
+const hAlien = decideRepairPass({ scenarios: liveScenarios, verdicts: [rw('a verdict about something else entirely')], reserveUsd: 0.9, explorerUsd: 1, recorded: 5 });
 check('H6. unmatched rework verdicts skip WITH a printed reason naming them',
   hAlien?.run === false && hAlien.line.includes('matched no recorded scenario') && hAlien.line.includes('something else'), hAlien?.line);
 
 // No rework verdicts at all: nothing to decide, nothing to print.
-const hNone = decideRepairPass({ scenarios: liveScenarios, verdicts: [{ scenario: liveNames[0]!, verdict: 'pass', reasons: [], required_fixes: [] }], spentUsd: 1, ceilingUsd: 6 });
+const hNone = decideRepairPass({ scenarios: liveScenarios, verdicts: [{ scenario: liveNames[0]!, verdict: 'pass', reasons: [], required_fixes: [] }], reserveUsd: 0.9, explorerUsd: 1, recorded: 5 });
 check('H7. no rework verdicts -> null (no decision line needed)', hNone === null);
 
 /* ─── I. closeout grace at the cost ceiling ────────────────────────────────── */

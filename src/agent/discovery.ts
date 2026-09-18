@@ -1,4 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Page } from 'playwright';
 import type { RequirementsMap } from './requirements.js';
+import { isVolatilePath } from './volatile-id.js';
 
 /**
  * Multi-page discovery — the ladder that decides WHICH pages a run covers.
@@ -51,26 +55,8 @@ export interface DiscoveredPage {
   volatile?: boolean;
 }
 
-// A UUID, a long hex run, or a long alphanumeric segment with digits: the
-// shapes generated catalog ids take (uuid, ulid, mongo id, nanoid).
-const UUID_SEGMENT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const HEX_SEGMENT_RE = /^[0-9a-f]{16,}$/i;
-const LONG_ID_SEGMENT_RE = /^[a-z0-9_-]{20,}$/i;
-
-/**
- * Does this pathname contain a generated-id segment? The heuristic: a UUID, a
- * 16+ char hex run, or a 20+ char alphanumeric segment that contains at least
- * one digit (a 20-char English word is not an id; a ulid/nanoid always mixes
- * digits in). Exported for the smoke and the page filter.
- */
-export function isVolatilePath(pathname: string): boolean {
-  return pathname.split('/').some((seg) => {
-    if (!seg) return false;
-    if (UUID_SEGMENT_RE.test(seg)) return true;
-    if (HEX_SEGMENT_RE.test(seg) && /\d/.test(seg)) return true;
-    return LONG_ID_SEGMENT_RE.test(seg) && /\d/.test(seg);
-  });
-}
+// The generated-id shapes live in volatile-id.ts, shared with the gate's RULE 6.
+export { isVolatilePath };
 
 /** Tag each page whose path looks like a generated-id URL. */
 function tagVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
@@ -92,6 +78,13 @@ export type RenderedLinkCollector = (url: string) => Promise<string[] | null>;
 
 export interface DiscoveryResult {
   pages: DiscoveredPage[];
+  /**
+   * Every page the winning rung found, BEFORE the relevance filter. The
+   * runtime fills this so discovery.json and the Discovery panel can show
+   * what was seen and not picked (run ec8eff found 15 and kept 3, and the
+   * other 12 were recorded nowhere).
+   */
+  candidates?: DiscoveredPage[];
   /** The rung that yielded the pages: srs | user | sitemap | crawl | entry. */
   method: string;
   warnings: string[];
@@ -621,6 +614,11 @@ async function defaultRenderedCollector(
       try {
         await page.goto(url, { waitUntil: 'load', timeout: 15_000 });
         await settleForSnapshot(page);
+        // The settle poll counts headings and form controls, which a SPA shell
+        // satisfies before its catalogue list has rendered; the product anchors
+        // arrive later. Wait for the anchor count to stop growing before
+        // reading links, or the crawl never sees them.
+        await waitForAnchors(page);
         return await page.evaluate(() =>
           Array.from(document.querySelectorAll('a[href]'))
             .map((a) => a.getAttribute('href') || '')
@@ -640,4 +638,45 @@ async function defaultRenderedCollector(
     warnings.push(`browser crawl: could not launch a browser (${(err as Error).message}); rung skipped.`);
     return null;
   }
+}
+
+/** Cap on how long the browser crawl waits for a page's anchors to stop changing. */
+export const ANCHOR_SETTLE_CAP_MS = 3000;
+const ANCHOR_SETTLE_POLL_MS = 200;
+
+/**
+ * Poll the rendered anchor count until it has held steady for two polls (with
+ * at least one anchor) or the cap expires. A SPA renders its links after the
+ * shell, so the settle poll alone (headings and form controls) returns before
+ * the catalogue is there. Returns the final count. Exported for the smoke.
+ */
+export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHOR_SETTLE_CAP_MS): Promise<number> {
+  const count = async (): Promise<number> => page.evaluate(() => document.querySelectorAll('a[href]').length);
+  const deadline = Date.now() + capMs;
+  let last = await count();
+  let steady = 0;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, ANCHOR_SETTLE_POLL_MS));
+    const n = await count();
+    if (n === last && n > 0) {
+      steady++;
+      if (steady >= 2) break;
+    } else {
+      steady = 0;
+    }
+    last = n;
+  }
+  return last;
+}
+
+/**
+ * Write the discovery record (method, every candidate, the pages kept,
+ * warnings) to discovery.json in the run directory, so the candidate set a
+ * run saw is a file, not a lost console line.
+ */
+export function writeDiscoveryJson(outDir: string, info: { method: string; pages: DiscoveredPage[]; candidates?: DiscoveredPage[]; warnings: string[] }): string {
+  fs.mkdirSync(outDir, { recursive: true });
+  const file = path.join(outDir, 'discovery.json');
+  fs.writeFileSync(file, JSON.stringify({ method: info.method, candidates: info.candidates ?? info.pages, pages: info.pages, warnings: info.warnings }, null, 2));
+  return file;
 }

@@ -12,7 +12,7 @@ import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
-import { discoverPages } from './discovery.js';
+import { discoverPages, writeDiscoveryJson } from './discovery.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
 import {
   CHECKPOINT_VERSION,
@@ -28,6 +28,7 @@ import {
 } from './checkpoint.js';
 import { installEvalShim } from './eval-shim.js';
 import { ASSERTION_DOCTRINE } from './doctrine.js';
+import { gateBrokenReason } from './gate.js';
 import type { CascadeLevel } from './selectors.js';
 import { writeCsv } from './csv.js';
 
@@ -565,6 +566,16 @@ const STEP_BUDGET_FLOOR = 40;
  * page keeps the base 14 per scenario while a long form gets one step per field.
  * The $QA_CORE_MAX_USD ceiling is still the ultimate runaway guard.
  */
+/**
+ * The effective step budget: the formula, raised to the floor when one is
+ * set (QA_CORE_MAX_STEPS, --max-steps, opts.maxSteps). The floor can only
+ * raise the budget, so a setting can never cut a large plan short; the cost
+ * ceiling is what stops a large run. Exported for smoke-settings.
+ */
+export function stepBudgetWithFloor(formula: number, floor?: number): number {
+  return floor === undefined || !Number.isFinite(floor) ? formula : Math.max(formula, Math.floor(floor));
+}
+
 export function stepBudgetFor(planCount: number, fillableFields = 0): number {
   const n = Math.max(1, planCount);
   const f = Math.min(Math.max(0, fillableFields), FILL_FIELD_CAP);
@@ -576,10 +587,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in.');
 
-  // Step budget. Precedence: explicit opts.maxSteps > QA_CORE_MAX_STEPS env >
-  // adaptive-to-plan. The adaptive value is computed below once the plan size
-  // is known — a fixed 40 was too tight for a 3-scenario plan once one gate
-  // retry (a full begin..end cycle, ~7 calls) is spent. See stepBudgetFor.
+  // Step budget. The adaptive formula (stepBudgetFor) is computed below once
+  // the plan size is known; an explicit opts.maxSteps or QA_CORE_MAX_STEPS is
+  // its FLOOR, never a cap (stepBudgetWithFloor): the run gets the larger of
+  // the two. A fixed 40 was too tight for a 3-scenario plan once one gate
+  // retry (a full begin..end cycle, ~7 calls) is spent.
   const maxStepsOverride =
     opts.maxSteps ?? (process.env.QA_CORE_MAX_STEPS ? Number(process.env.QA_CORE_MAX_STEPS) : undefined);
   // Cost ceiling. QA_CORE_COST_CEILING is the documented name; the older
@@ -716,6 +728,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // Relevance filter — only the remote-discovered sets (sitemap/crawl) are
     // trimmed. SRS pages are stated requirements and user pages are explicit
     // intent; both pass through whole.
+    // Every page the rung found, before the filter: recorded on the report and
+    // in discovery.json so a reader can see what was seen and not picked.
+    const candidates = disc.pages;
     let pages = disc.pages;
     let plannerUsd = 0;
     if (FILTERED_SOURCES.has(disc.method)) {
@@ -738,7 +753,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
     }
     opts.onEvent?.({ type: 'message', text: `discovery: ${pages.length} page(s) via ${disc.method}` });
-    discoveryInfo = { method: disc.method, pages, warnings: disc.warnings };
+    discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings };
+    try {
+      writeDiscoveryJson(opts.outDir, discoveryInfo);
+    } catch (err) {
+      opts.onEvent?.({ type: 'message', text: `discovery: could not write discovery.json (${(err as Error).message})` });
+    }
     // Phase boundary: discovery done.
     cpState.discovery = discoveryInfo;
     cpState.phase = 'discovery';
@@ -750,6 +770,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const combined: PlannedScenario[] = [];
     const combinedDropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> = [];
     const combinedRejected: Array<{ scenario: PlannedScenario; reason: string }> = [];
+    const combinedCitationDrops: Array<{ scenario: string; ruleId: string; reason: string }> = [];
     let fillableMax = 0;
     for (const [idx, pg] of pages.entries()) {
       if (combined.length >= GLOBAL_PLAN_CAP) {
@@ -809,6 +830,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       combined.push(...scen);
       combinedDropped.push(...p.dropped);
       combinedRejected.push(...p.rejected);
+      combinedCitationDrops.push(...p.citationDrops);
       fillableMax = Math.max(fillableMax, p.fillableFields);
       plannerUsd += p.costUsd;
       opts.onEvent?.({
@@ -842,6 +864,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         type: 'message',
         text: `Rejected circular scenario: "${r.scenario.name}" — ${r.reason}`,
       });
+    }
+    for (const c of combinedCitationDrops) {
+      opts.onEvent?.({ type: 'message', text: `Dropped rule citation ${c.ruleId} from "${c.scenario}": ${c.reason}` });
     }
     if (opts.review) {
       process.removeListener('SIGINT', onSigint);
@@ -910,6 +935,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         type: 'message',
         text: `Rejected circular scenario: "${r.scenario.name}" — ${r.reason}`,
       });
+    }
+    for (const c of p.citationDrops) {
+      opts.onEvent?.({ type: 'message', text: `Dropped rule citation ${c.ruleId} from "${c.scenario}": ${c.reason}` });
     }
 
     // Review mode — write the CSV and pause. The caller resumes via fromPlan.
@@ -981,13 +1009,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // Resolve the effective budget now that the plan size is known. An override
     // (opts or env) always wins; otherwise scale to the plan AND the form
     // complexity so a long-form page does not run dry mid-fill.
-    const maxSteps = maxStepsOverride ?? stepBudgetFor(toExplore.length, planResult.fillableFields);
-    if (maxStepsOverride === undefined) {
-      opts.onEvent?.({
-        type: 'message',
-        text: `Step budget: ${maxSteps} (${toExplore.length} scenario(s), ${planResult.fillableFields} fillable field(s) on the page)`,
-      });
-    }
+    const formulaSteps = stepBudgetFor(toExplore.length, planResult.fillableFields);
+    const maxSteps = stepBudgetWithFloor(formulaSteps, maxStepsOverride);
+    opts.onEvent?.({
+      type: 'message',
+      text: `Step budget: ${maxSteps} (${toExplore.length} scenario(s), ${planResult.fillableFields} fillable field(s) on the page; formula ${formulaSteps}${maxStepsOverride !== undefined ? `, floor ${maxStepsOverride} from QA_CORE_MAX_STEPS` : ''})`,
+    });
 
     // Prior spend counts against the SAME total ceiling on resume; the loop
     // gets whatever is left of the explorer share (the env ceiling read now
@@ -1089,8 +1116,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             ctx.scenarios.push(ctx.current);
           } else {
             const firstV = gr.violations[0]!;
-            const reason = firstV.rule === 1 ? 'could not generate without hard sleep' : firstV.rule === 3 ? 'unstable locator on dynamic element' : 'intermediate value assertion on animated element';
-            ctx.brokenByGate.push({ scenario: ctx.current.name, reason, attempts: 1 });
+            ctx.brokenByGate.push({ scenario: ctx.current.name, reason: gateBrokenReason(firstV.rule), attempts: 1 });
           }
         } else {
           ctx.incomplete.push({ scenario: ctx.current.name, reason: 'explorer stopped before finalizing (no assertion recorded)' });
@@ -1216,15 +1242,15 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // The single entry decision for the repair pass. decideRepairPass returns
     // null only when NO rework verdicts exist; otherwise its line is ALWAYS
     // printed (run or skip, with the reason), so silent non-execution is
-    // impossible. The budget is the TOTAL ceiling minus actual spend — never
-    // the explorer sub-ceiling, which the last API call legitimately
-    // overshoots.
-    const spentSoFar = cost.usd + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0);
+    // impossible. The budget is the full stated reserve, as promised at run
+    // start, and the line states the per-scenario explorer cost observed in
+    // this run against it.
     const decision = decideRepairPass({
       scenarios,
       verdicts: review.verdicts,
-      spentUsd: spentSoFar,
-      ceilingUsd: maxUsd,
+      reserveUsd,
+      explorerUsd: cost.usd - (cost.repairUsd ?? 0),
+      recorded: scenarios.length,
     });
     if (decision) {
       opts.onEvent?.({ type: 'message', text: decision.line });

@@ -123,6 +123,20 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
           </li>
         ))}
       </ul>
+      {d.candidates.length ? (
+        <details className="mt-2 text-s" data-testid="discovery-candidates">
+          <summary className="cursor-pointer text-fg-2">candidates found before the filter: <b data-testid="discovery-candidates-count">{d.candidates.length}</b> (also in discovery.json)</summary>
+          <ul className="mt-1">
+            {d.candidates.map((p) => (
+              <li key={`c-${p.url}`} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 first:border-t-0" data-testid="discovery-candidate">
+                <span className="mono truncate text-fg-2" title={p.url}>{p.url}</span>
+                {d.pages.some((k) => k.url === p.url) ? <Badge variant="pass">kept</Badge> : <Badge variant="neutral">not picked</Badge>}
+                {p.volatile ? <Badge variant="neutral">volatile</Badge> : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       {d.warnings.length ? (
         <>
           <SubLabel>Robots and rung warnings</SubLabel>

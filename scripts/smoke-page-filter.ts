@@ -19,7 +19,10 @@ import {
   MAX_PAGES_WITH_FEATURES,
   MAX_PAGES_NO_FEATURES,
 } from '../src/agent/page-filter.js';
-import { capVolatile } from '../src/agent/page-filter.js';
+import { capVolatile, plainFeatureMatches, FEATURE_PATH_TOKENS } from '../src/agent/page-filter.js';
+import { writeDiscoveryJson } from '../src/agent/discovery.js';
+import os from 'node:os';
+import path from 'node:path';
 import { isVolatilePath, type DiscoveredPage } from '../src/agent/discovery.js';
 import { VOLATILE_PAGE_GUIDANCE } from '../src/agent/planner.js';
 import { EXPLORER_SYSTEM_PROMPT } from '../src/agent/runtime.js';
@@ -167,6 +170,35 @@ check('G3. the Explorer doctrine bans direct generated-id navigation (checked on
   /Never navigate directly to a URL that carries a generated id/.test(EXPLORER_SYSTEM_PROMPT));
 check('G4. the plan text marks volatile pages for the Explorer',
   /VOLATILE generated-id URL/.test(fs.readFileSync('src/agent/runtime.ts', 'utf8')));
+
+/* ─── H. plain feature matches survive the filter; discovery.json lists the candidates ── */
+// Run ec8eff: the crawl found /auth/register, the SRS had a registration
+// feature, and the pick dropped it. A path that plainly names a feature is
+// kept before any pick.
+const nine = ['/', '/a', '/b', '/c', '/d', '/e', '/f', '/g', '/h'].map((pth): DiscoveredPage => ({ url: `https://s.example${pth}`, source: 'browser-crawl' }));
+const deep: DiscoveredPage[] = [{ url: 'https://s.example/auth/register', source: 'browser-crawl' }, { url: 'https://s.example/shop/checkout', source: 'browser-crawl' }];
+const plain = plainFeatureMatches([...nine, ...deep], ['registration', 'cart', 'contact']);
+check('H1. /auth/register plainly matches registration and /shop/checkout matches cart, each tagged with the feature', plain.length === 2 && plain.find((p) => p.url.endsWith('/auth/register'))?.feature === 'registration' && plain.find((p) => p.url.endsWith('/shop/checkout'))?.feature === 'cart', JSON.stringify(plain));
+check('H2. the token table covers product, cart, contact, login and register', ['product', 'cart', 'contact', 'login', 'register'].every((f) => Array.isArray(FEATURE_PATH_TOKENS[f]) && FEATURE_PATH_TOKENS[f]!.length > 0));
+{
+  const saved = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    const r = await filterPages({ pages: [...nine, ...deep], features: ['registration', 'cart', 'contact'] });
+    check('H3. over the cap, the deterministic filter keeps both plain matches although the shallow trim alone would drop them', r.method === 'fallback' && r.pages.length === 8 && r.pages.some((p) => p.url.endsWith('/auth/register')) && r.pages.some((p) => p.url.endsWith('/shop/checkout')), JSON.stringify(r.pages.map((p) => p.url)));
+    check('H4. the kept pages carry their feature so per-page planning gets the feature\'s rules', r.pages.find((p) => p.url.endsWith('/auth/register'))?.feature === 'registration');
+    check('H5. the rest of the cap is filled shallowest-first from the other candidates', r.pages.filter((p) => !p.feature).length === 6 && r.pages.some((p) => p.url === 'https://s.example/'));
+  } finally {
+    if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+  }
+}
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-disc-'));
+  const file = writeDiscoveryJson(dir, { method: 'browser-crawl', candidates: [...nine, ...deep], pages: deep, warnings: ['sitemap: none'] });
+  const written = JSON.parse(fs.readFileSync(file, 'utf8')) as { method: string; candidates: unknown[]; pages: unknown[]; warnings: string[] };
+  check('H6. discovery.json lists every candidate, the pages kept, the method and the warnings', path.basename(file) === 'discovery.json' && written.candidates.length === 11 && written.pages.length === 2 && written.method === 'browser-crawl' && written.warnings[0] === 'sitemap: none', JSON.stringify(written).slice(0, 200));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

@@ -1,5 +1,6 @@
-import type { Scenario, SelectorRecord } from './trace.js';
+import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
+import { generatedIdFragment } from './volatile-id.js';
 
 /**
  * Static validation gate — runs after the Explorer closes a scenario and
@@ -23,6 +24,12 @@ import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
  *   RULE 4: No intermediate numeric text assertion on a known-animated element.
  *           Asserting "50%" on a progress bar that is also the target of
  *           assert_freeze will almost certainly be flaky.
+ *   RULE 6: No generated id embedded in any selector (a uuid, a 16+ hex run,
+ *           a 20+ alphanumeric run with digits, the same shapes that make a
+ *           discovered path volatile), on any action, capture, compare or
+ *           assertion. Such ids rot when the data reseeds. The reason names
+ *           the fragment and steers to a role, label, id-free testid or a
+ *           table-scoped path.
  *   RULE 5: Unused captures are stripped. A capture whose varName no
  *           assert_compare ever reads is dead weight the Critic flags every
  *           run; nothing can reference it later (assert_compare is the only
@@ -35,7 +42,7 @@ import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
  */
 
 export interface GateViolation {
-  rule: 1 | 3 | 4;
+  rule: 1 | 3 | 4 | 6;
   stepIndex: number;
   detail: string;
 }
@@ -48,7 +55,7 @@ export interface GateInjection {
 
 export interface GateResult {
   /**
-   * RULE 1, RULE 3, and RULE 4 blocking violations. When non-empty the caller
+   * RULE 1, RULE 3, RULE 4 and RULE 6 blocking violations. When non-empty the caller
    * must reject the scenario and give the Explorer a chance to regenerate.
    */
   violations: GateViolation[];
@@ -101,6 +108,23 @@ export function runGate(scenario: Scenario): GateResult {
         stepIndex: i,
         detail: `step ${i + 1}: page.waitForTimeout(${step.ms}ms) is a hard sleep; use wait_for_text or a polling assertion with an explicit timeout instead`,
       });
+    }
+
+    // RULE 6: no generated id embedded in a selector, whatever the step. The
+    // id is the catalogue row's key; it changes on the next reseed and the
+    // locator goes with it. Role, label, an id-free testid or a table path
+    // survive a reseed.
+    const target6 = targetOf(step);
+    if (target6) {
+      const text6 = selectorText(target6);
+      const fragment = generatedIdFragment(text6);
+      if (fragment) {
+        violations.push({
+          rule: 6,
+          stepIndex: i,
+          detail: `step ${i + 1}: selector ${JSON.stringify(text6)} embeds the generated id "${fragment}", which rots when the data reseeds; locate the element by role, label, or a testid that carries no id, or by a table-scoped path`,
+        });
+      }
     }
 
     // RULE 3a: capture / assert_compare on a FRAGILE CSS-tier locator.
@@ -337,4 +361,40 @@ function hasDynamicCorroborationByIntent(scenario: Scenario, excludeIdx: number,
     ) return true;
     return false;
   });
+}
+
+/** The step's locator record, for rules that inspect every selector. */
+function targetOf(step: TraceStep): SelectorRecord | null {
+  if (step.kind === 'assert') return 'target' in step.assertion ? step.assertion.target : null;
+  if ('target' in step && step.target) return step.target;
+  return null;
+}
+
+/** The text a selector record locates by: the css / testid / label / text argument, or the role plus name. */
+function selectorText(t: SelectorRecord): string {
+  if (t.level === 'role') {
+    const a = t.arg as { role: string; name?: string };
+    return a.name ? `${a.role} ${a.name}` : a.role;
+  }
+  return String(t.arg);
+}
+
+/** Console label for a blocking gate rule, shared by every rejection site. */
+export function gateRuleLabel(rule: GateViolation['rule']): string {
+  switch (rule) {
+    case 1: return 'RULE 1 (no hard sleeps)';
+    case 3: return 'RULE 3 (no CSS on animated elements)';
+    case 4: return 'RULE 4 (intermediate value on animated element)';
+    case 6: return 'RULE 6 (generated id in selector)';
+  }
+}
+
+/** Reason recorded on a scenario the gate dropped, shared by every rejection site. */
+export function gateBrokenReason(rule: GateViolation['rule']): string {
+  switch (rule) {
+    case 1: return 'could not generate without hard sleep';
+    case 3: return 'unstable locator on dynamic element';
+    case 4: return 'intermediate value assertion on animated element';
+    case 6: return 'selector embeds a generated id';
+  }
 }

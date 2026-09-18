@@ -60,14 +60,22 @@ export interface ExploreRequest {
   env: Record<string, string>;
 }
 
+/**
+ * How the step budget works, in the words the Settings page shows. The budget
+ * is the adaptive formula from runtime.ts (stepBudgetFor); QA_CORE_MAX_STEPS
+ * is its FLOOR, never a cap: the run gets max(formula, this value). The cost
+ * ceiling is what stops a large plan first.
+ */
+export const STEP_BUDGET_HELP = 'The step budget is adaptive: 6 + n x max(14, 8 + f) tool calls, where n is the number of planned scenarios and f the fillable fields on the page (f counts up to 24), never below 40. This value is a floor, not a cap: the run gets the larger of the formula and this number (a 10-scenario plan on a 24-field page gets 326 either way). The cost ceiling, not the step budget, is what stops a large run.';
+
 /** Env-driven settings a run may override, with their defaults. */
-export const RUN_ENV_SETTINGS: ReadonlyArray<{ name: string; label: string; defaultValue: string; flag: string }> = [
-  { name: 'QA_CORE_COST_CEILING', label: 'Cost ceiling (USD)', defaultValue: '2.00', flag: '--ceiling' },
-  { name: 'QA_CORE_REPAIR_RESERVE', label: 'Repair reserve (fraction)', defaultValue: '0.15', flag: '--repair-reserve' },
-  { name: 'QA_CORE_MAX_STEPS', label: 'Max explorer steps', defaultValue: '40', flag: '--max-steps' },
-  { name: 'QA_CORE_PLANNER_MODEL', label: 'Planner model', defaultValue: 'claude-haiku-4-5', flag: '--planner-model' },
-  { name: 'QA_CORE_EXPLORER_MODEL', label: 'Explorer model', defaultValue: 'claude-opus-4-7', flag: '--explorer-model' },
-  { name: 'QA_CORE_CRITIC_MODEL', label: 'Critic model', defaultValue: 'claude-sonnet-4-6', flag: '--critic-model' },
+export const RUN_ENV_SETTINGS: ReadonlyArray<{ name: string; label: string; defaultValue: string; flag: string; help: string }> = [
+  { name: 'QA_CORE_COST_CEILING', label: 'Cost ceiling (USD)', defaultValue: '2.00', flag: '--ceiling', help: 'Total spend per run. The Explorer runs under the ceiling minus the repair reserve; hitting it stops the run cleanly and keeps every completed scenario.' },
+  { name: 'QA_CORE_REPAIR_RESERVE', label: 'Repair reserve (fraction)', defaultValue: '0.15', flag: '--repair-reserve', help: 'Share of the ceiling held back for the repair pass, offered to it in full when the Critic returns rework verdicts.' },
+  { name: 'QA_CORE_MAX_STEPS', label: 'Max explorer steps (floor)', defaultValue: '40', flag: '--max-steps', help: STEP_BUDGET_HELP },
+  { name: 'QA_CORE_PLANNER_MODEL', label: 'Planner model', defaultValue: 'claude-haiku-4-5', flag: '--planner-model', help: 'Model for the one-snapshot scenario plan.' },
+  { name: 'QA_CORE_EXPLORER_MODEL', label: 'Explorer model', defaultValue: 'claude-opus-4-7', flag: '--explorer-model', help: 'Model that drives the browser and records every scenario.' },
+  { name: 'QA_CORE_CRITIC_MODEL', label: 'Critic model', defaultValue: 'claude-sonnet-4-6', flag: '--critic-model', help: 'Model that reviews the recorded assertions and returns pass, rework or reject.' },
 ];
 
 const ENV_NAMES = new Set(RUN_ENV_SETTINGS.map((s) => s.name));
@@ -82,11 +90,11 @@ const LEGACY_ENV: Record<string, string> = {
 };
 
 /** Current effective value of each overridable setting (env or default). */
-export function readRunSettings(env: NodeJS.ProcessEnv = process.env): Array<{ name: string; label: string; value: string; fromEnv: boolean }> {
+export function readRunSettings(env: NodeJS.ProcessEnv = process.env): Array<{ name: string; label: string; value: string; fromEnv: boolean; help: string }> {
   return RUN_ENV_SETTINGS.map((s) => {
     const legacy = Object.entries(LEGACY_ENV).find(([, canon]) => canon === s.name)?.[0];
     const raw = env[s.name] ?? (legacy ? env[legacy] : undefined);
-    return { name: s.name, label: s.label, value: raw ?? s.defaultValue, fromEnv: raw !== undefined };
+    return { name: s.name, label: s.label, value: raw ?? s.defaultValue, fromEnv: raw !== undefined, help: s.help };
   });
 }
 
