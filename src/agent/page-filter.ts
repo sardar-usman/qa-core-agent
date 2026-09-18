@@ -51,9 +51,15 @@ export function capVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
  * registration feature whatever Haiku thinks of it (run ec8eff dropped it).
  */
 export const FEATURE_PATH_TOKENS: Record<string, string[]> = {
-  login: ['login', 'signin', 'sign-in', 'auth'],
-  registration: ['register', 'registration', 'signup', 'sign-up'],
-  register: ['register', 'registration', 'signup', 'sign-up'],
+  // "auth" is NOT a login token: /auth/register and /auth/forgot-password sit
+  // under it too, and tagging them login sent the Planner login-only steering
+  // for a registration form (run f3b41e).
+  login: ['login', 'signin', 'sign-in'],
+  registration: ['register', 'registration', 'signup', 'sign-up', 'create-account'],
+  register: ['register', 'registration', 'signup', 'sign-up', 'create-account'],
+  'password-recovery': ['forgot', 'forgot-password', 'reset', 'reset-password', 'recover', 'recovery'],
+  'forgot-password': ['forgot', 'forgot-password', 'reset', 'reset-password', 'recover', 'recovery'],
+  'reset-password': ['forgot', 'forgot-password', 'reset', 'reset-password', 'recover', 'recovery'],
   cart: ['cart', 'basket', 'checkout'],
   checkout: ['checkout', 'cart'],
   product: ['product', 'products', 'item', 'items'],
@@ -64,10 +70,18 @@ export const FEATURE_PATH_TOKENS: Record<string, string[]> = {
   account: ['account', 'profile'],
 };
 
-/** The tokens that plainly name a feature: the map's entry, or the feature name itself. */
-function tokensFor(feature: string): string[] {
+/**
+ * The tokens that plainly name a feature: the table's entry for the whole
+ * name, else the union of the entries for its words (so an SRS feature called
+ * "user-registration" gets the registration tokens and "contact-form" gets
+ * "contact"), else the name itself.
+ */
+export function tokensFor(feature: string): string[] {
   const key = feature.trim().toLowerCase();
-  return FEATURE_PATH_TOKENS[key] ?? [key];
+  if (FEATURE_PATH_TOKENS[key]) return FEATURE_PATH_TOKENS[key];
+  const words = key.split(/[^a-z0-9]+/).filter((w) => w.length > 0);
+  const byWord = words.flatMap((w) => FEATURE_PATH_TOKENS[w] ?? []);
+  return byWord.length > 0 ? [...new Set(byWord)] : [key];
 }
 
 /**

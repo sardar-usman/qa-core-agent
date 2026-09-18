@@ -285,3 +285,33 @@ export function citationMismatchReason(category: string, ruleText: string): stri
   if (category === 'negative' && !rejection) return 'a negative scenario cannot verify a rule that states no rejection';
   return null;
 }
+
+/**
+ * Which planned names a list of begun / skipped / recorded names claims:
+ * an exact key match first, then containment (a small rephrasing), each
+ * planned name claimable once. Containment alone let a base name claim its
+ * own suffixed duplicate ("... (auth/forgot-password)") too, so a skip of
+ * the first hid the second. Shared by skip_scenario, finish's plan check
+ * and the cost-ceiling salvage.
+ */
+export function claimPlanned(plannedNames: string[], names: string[]): Set<string> {
+  const claimed = new Set<string>();
+  const keyOf = new Map(plannedNames.map((p) => [p, scenarioNameKey(p)] as const));
+  const loose: string[] = [];
+  for (const n of names) {
+    const k = scenarioNameKey(n);
+    if (!k) continue;
+    const exact = plannedNames.find((p) => !claimed.has(p) && keyOf.get(p) === k);
+    if (exact) claimed.add(exact);
+    else loose.push(k);
+  }
+  for (const k of loose) {
+    const hit = plannedNames.find((p) => {
+      if (claimed.has(p)) return false;
+      const pk = keyOf.get(p) ?? '';
+      return pk.length > 0 && (pk.includes(k) || k.includes(pk));
+    });
+    if (hit) claimed.add(hit);
+  }
+  return claimed;
+}

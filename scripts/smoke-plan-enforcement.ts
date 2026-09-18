@@ -13,6 +13,7 @@
  * Stub page, no browser, no LLM (same pattern as smoke-cost-ceiling).
  */
 import { createContext, runTool } from '../src/agent/tools.js';
+import { uniqueScenarioNames } from '../src/agent/planner.js';
 import { reconcile, renderReconciliation } from '../src/agent/reconcile.js';
 import type { RunReport, Scenario } from '../src/agent/trace.js';
 import type { Page } from 'playwright';
@@ -94,6 +95,36 @@ check('F2. the skipped term carries names and reasons', rec.skipped.length === 2
 const lines = renderReconciliation(rec).join('\n');
 check('F3. the rendered identity shows the skipped term', lines.includes('+ skipped 2'), lines);
 check('F4. skipped scenarios are listed with reasons', lines.includes('skipped (declined by the Explorer, with reason):'));
+
+/* ─── G. scenario names are unique across pages ────────────────────────────── */
+// Run f3b41e planned "rejected wrong password and stayed on login page" on two
+// pages; skip_scenario hit the first, refused the second as already skipped,
+// and the funnel lost a scenario.
+{
+  const first = uniqueScenarioNames([], [{ name: 'rejected wrong password and stayed on login page', category: 'negative', rationale: 'r', feature: 'login', pageUrl: 'https://s.example/auth/register' }], { url: 'https://s.example/auth/register', feature: 'login' });
+  const second = uniqueScenarioNames(first.scenarios, [{ name: 'rejected wrong password and stayed on login page', category: 'negative', rationale: 'r', feature: 'login', pageUrl: 'https://s.example/auth/forgot-password' }], { url: 'https://s.example/auth/forgot-password', feature: 'login' });
+  check('G1. the first page keeps its name; the duplicate on the second page gets the page path appended (same feature on both)', first.renames.length === 0 && second.renames.length === 1 && second.scenarios[0]?.name === 'rejected wrong password and stayed on login page (auth/forgot-password)', JSON.stringify(second));
+  const byFeature = uniqueScenarioNames(first.scenarios, [{ name: 'rejected wrong password and stayed on login page', category: 'negative', rationale: 'r', feature: 'registration', pageUrl: 'https://s.example/auth/register' }], { url: 'https://s.example/auth/register', feature: 'registration' });
+  check('G2. when the pages differ by feature the feature is the suffix', byFeature.scenarios[0]?.name === 'rejected wrong password and stayed on login page (registration)');
+  const third = uniqueScenarioNames([...first.scenarios, ...second.scenarios], [{ name: 'rejected wrong password and stayed on login page', category: 'negative', rationale: 'r', feature: 'login', pageUrl: 'https://s.example/auth/forgot-password' }], { url: 'https://s.example/auth/forgot-password', feature: 'login' });
+  check('G3. a third clash on the same page counts up', third.scenarios[0]?.name === 'rejected wrong password and stayed on login page (auth/forgot-password 2)');
+  // With unique names, skip_scenario hits the right one and the funnel balances.
+  const names = [first.scenarios[0]!.name, second.scenarios[0]!.name];
+  const gctx = createContext(stubPage, 40);
+  gctx.plannedNames = [...names];
+  const s1 = await runTool(gctx, { name: 'skip_scenario', input: { name: names[0], reason: 'the register page has no login form' } });
+  const early = await runTool(gctx, { name: 'finish', input: { summary: 'one skipped' } });
+  check('G4a. after the base name is skipped, finish still names the suffixed duplicate as unexplored', early.ok === false && (early.error ?? '').includes(names[1]!), early.error);
+  const s2 = await runTool(gctx, { name: 'skip_scenario', input: { name: names[1], reason: 'the forgot-password page has no password field' } });
+  check('G4. skip_scenario hits each planned scenario once', s1.ok === true && s2.ok === true && gctx.skipped.length === 2 && gctx.skipped[0]?.scenario === names[0] && gctx.skipped[1]?.scenario === names[1], JSON.stringify([s1, s2, gctx.skipped]));
+  const fin = await runTool(gctx, { name: 'finish', input: { summary: 'both skipped' } });
+  check('G5. finish is accepted with both skipped', fin.ok === true, fin.error);
+  const gRec = reconcile({
+    url: 'https://s.example/', language: 'ts', scenarios: [], cascadeStats: {}, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, steps: 4, startedAt: '', finishedAt: '',
+    plan: [...first.scenarios, ...second.scenarios], skipped: gctx.skipped,
+  } as unknown as RunReport);
+  check('G6. the funnel balances: planned 2 = skipped 2, nothing vanishes', gRec.balanced === true && gRec.accountedFor === 2 && gRec.skipped.length === 2, JSON.stringify(gRec));
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
