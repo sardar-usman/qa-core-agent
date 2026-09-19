@@ -2,14 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { emitLocatorCall } from './selectors.js';
 import { uniqueCallExpr, inlineUniqueDataFns } from './unique-data.js';
+import { inlineParseNumberFn } from './parse-number.js';
+// How long the emitted assert_compare poll waits for an async state change (a
+// sort, a re-render) to settle before failing: the replay engine's own value,
+// so the spec and the in-process check agree.
+import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
 import type { Assertion, CaptureSource, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
-
-/**
- * How long the emitted assert_compare poll waits for an async state change (a
- * sort, a re-render) to settle before failing. Matches the replay engine's
- * DEFAULT_TIMEOUT_MS so the spec and the in-process check agree.
- */
-const COMPARE_POLL_TIMEOUT_MS = 10_000;
 
 /**
  * Turn a verified trace into a runnable Playwright spec.
@@ -56,6 +54,13 @@ export function transcribe(opts: TranscribeOptions): TranscribeResult {
   const usesGenerated = report.scenarios.some((s) => s.steps.some((st) => st.kind === 'fill' && st.generate));
   if (usesGenerated) {
     lines.push(inlineUniqueDataFns());
+    lines.push('');
+  }
+  // Inline the number parser when any compare is numeric, so greater / less
+  // read "$1,299.00" the way the agent verified it.
+  const usesNumeric = report.scenarios.some((s) => s.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'greater' || st.relation === 'less')));
+  if (usesNumeric) {
+    lines.push(inlineParseNumberFn());
     lines.push('');
   }
   lines.push(`test.describe(${q(titleFromUrl(report.url))}, () => {`);
@@ -133,7 +138,10 @@ function emitStep(step: TraceStep): string[] {
       // A sort or re-render settles asynchronously, so a single read races it and
       // flakes. expect.poll re-reads until the relation holds or the timeout
       // expires, the web-first wait Playwright already uses for locators.
-      const rhs = captureReadExpr(step.source, locFirst(step.target), locCount(step.target), step.attribute);
+      // The re-read element is the compare's own target when it named one
+      // (the detail heading against the captured listing name).
+      const readFrom = step.readTarget ?? step.target;
+      const rhs = captureReadExpr(step.source, locFirst(readFrom), locCount(readFrom), step.attribute);
       const pollOpts = `{ timeout: ${COMPARE_POLL_TIMEOUT_MS} }`;
       const lines: string[] = [];
       switch (step.relation) {
@@ -155,10 +163,10 @@ function emitStep(step: TraceStep): string[] {
           }
           break;
         case 'greater':
-          lines.push(`await expect.poll(async () => Number(${rhs}), ${pollOpts}).toBeGreaterThan(Number(${step.varName}));`);
+          lines.push(`await expect.poll(async () => parseNumber(${rhs}), ${pollOpts}).toBeGreaterThan(parseNumber(${step.varName}));`);
           break;
         case 'less':
-          lines.push(`await expect.poll(async () => Number(${rhs}), ${pollOpts}).toBeLessThan(Number(${step.varName}));`);
+          lines.push(`await expect.poll(async () => parseNumber(${rhs}), ${pollOpts}).toBeLessThan(parseNumber(${step.varName}));`);
           break;
         case 'before':
           lines.push(`await expect.poll(async () => String(${rhs}).localeCompare(${step.varName}), ${pollOpts}).toBeLessThan(0); // sorts before the captured value`);
@@ -182,11 +190,15 @@ function emitAssertion(a: Assertion): string[] {
     }
     case 'toHaveText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toHaveText(${q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toHaveText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
     }
     case 'toContainText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toContainText(${q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toContainText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
+    }
+    case 'toBeChecked': {
+      const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
+      return [`await expect(${loc(a.target)}).toBeChecked(${opts ? `{ ${opts} }` : ''});`];
     }
     case 'toHaveURL':
       return [`await expect(page).toHaveURL(new RegExp(${q(a.pattern)}));`];
@@ -198,12 +210,16 @@ function emitAssertion(a: Assertion): string[] {
       return [`await expect(${locFirst(a.target)}).toBeHidden(${opts});`];
     }
     case 'toHaveCount': {
+      if (a.atLeast) {
+        // A minimum, polled: Playwright has no toHaveCount matcher for "at least".
+        return [`await expect.poll(async () => ${locCount(a.target)}.count(), { timeout: ${a.timeout ?? COMPARE_POLL_TIMEOUT_MS} }).toBeGreaterThanOrEqual(${a.count}); // at least ${a.count}`];
+      }
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return [`await expect(${loc(a.target)}).toHaveCount(${a.count}${opts});`];
     }
     case 'toHaveAttribute': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toHaveAttribute(${q(a.attribute)}, ${q(a.value)}${opts});`];
+      return [`await expect(${loc(a.target)}).toHaveAttribute(${q(a.attribute)}, ${a.pattern ? regexLiteral(a.pattern) : q(a.value)}${opts});`];
     }
     case 'toHaveValue': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
@@ -266,6 +282,11 @@ function titleFromUrl(url: string): string {
 
 function q(s: string): string {
   return JSON.stringify(s);
+}
+
+/** A recorded regex source as a RegExp literal, escaping only a bare forward slash. */
+export function regexLiteral(source: string): string {
+  return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/`;
 }
 
 /** Render the selectOption(...) argument for the recorded match mode. */

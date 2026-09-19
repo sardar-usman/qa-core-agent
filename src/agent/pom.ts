@@ -3,17 +3,15 @@ import path from 'node:path';
 import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
+import { regexLiteral } from './transcriber.js';
+import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
 import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
 import { envForCredentialValue, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
 import type { RequirementsMap } from './requirements.js';
 import type { Assertion, CaptureSource, GenerateKind, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 
-/**
- * How long the emitted assert_compare poll waits for an async state change (a
- * sort, a re-render) to settle before failing. Matches the replay engine's
- * DEFAULT_TIMEOUT_MS so the spec and the in-process check agree.
- */
-const COMPARE_POLL_TIMEOUT_MS = 10_000;
+// The assert_compare poll timeout is the replay engine's own (COMPARE_POLL_TIMEOUT_MS),
+// so the spec waits exactly as long as the in-process check did.
 
 /**
  * Page Object Model emitter.
@@ -803,15 +801,20 @@ function renderSpec(
     }
   }
   const genFns = [...genKinds].map(uniqueFnName).sort();
+  // A numeric compare (greater / less) reads "$1,299.00" through the shipped
+  // helpers/parse-number, the same parser the agent verified with.
+  const usesNumeric = pc.scenarios.some((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'greater' || st.relation === 'less')));
   if (ext === 'ts') {
     out.push(`import { test, expect } from '@playwright/test';`);
     out.push(`import { ${pc.className} } from '${importPath}';`);
     if (genFns.length > 0) out.push(`import { ${genFns.join(', ')} } from '../../helpers/unique-data';`);
+    if (usesNumeric) out.push(`import { parseNumber } from '../../helpers/parse-number';`);
     if (param) out.push(`import rawCases from '../../data/${pc.feature}.json';`);
   } else {
     out.push(`const { test, expect } = require('@playwright/test');`);
     out.push(`const { ${pc.className} } = require('${importPath}');`);
     if (genFns.length > 0) out.push(`const { ${genFns.join(', ')} } = require('../../helpers/unique-data');`);
+    if (usesNumeric) out.push(`const { parseNumber } = require('../../helpers/parse-number');`);
     if (param) out.push(`const rawCases = require('../../data/${pc.feature}.json');`);
   }
   out.push(``);
@@ -1070,7 +1073,8 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
       // A sort or re-render settles asynchronously, so a single read races it and
       // flakes. expect.poll re-reads until the relation holds or the timeout
       // expires, the web-first wait Playwright already uses for locators.
-      const readRhs = captureRhs(step.source, step.target, step.attribute);
+      // The re-read element is the compare's own target when it named one.
+      const readRhs = captureRhs(step.source, step.readTarget ?? step.target, step.attribute);
       const pollOpts = `{ timeout: ${COMPARE_POLL_TIMEOUT_MS} }`;
       const lines: string[] = [];
       switch (step.relation) {
@@ -1092,10 +1096,10 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
           }
           break;
         case 'greater':
-          lines.push(`await expect.poll(async () => Number(${readRhs}), ${pollOpts}).toBeGreaterThan(Number(${step.varName}));`);
+          lines.push(`await expect.poll(async () => parseNumber(${readRhs}), ${pollOpts}).toBeGreaterThan(parseNumber(${step.varName}));`);
           break;
         case 'less':
-          lines.push(`await expect.poll(async () => Number(${readRhs}), ${pollOpts}).toBeLessThan(Number(${step.varName}));`);
+          lines.push(`await expect.poll(async () => parseNumber(${readRhs}), ${pollOpts}).toBeLessThan(parseNumber(${step.varName}));`);
           break;
         case 'before':
           lines.push(`await expect.poll(async () => String(${readRhs}).localeCompare(${step.varName}), ${pollOpts}).toBeLessThan(0); // sorts before the captured value`);
@@ -1130,7 +1134,13 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const fn = a.type === 'toHaveText' ? 'toHaveText' : 'toContainText';
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return `await expect(${loc}).${fn}(${q(a.text)}${opts});`;
+      return `await expect(${loc}).${fn}(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`;
+    }
+    case 'toBeChecked': {
+      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
+      const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
+      return `await expect(${loc}).toBeChecked(${opts ? `{ ${opts} }` : ''});`;
     }
     case 'toHaveURL':
       return `await expect(page).toHaveURL(new RegExp(${q(a.pattern)}));`;
@@ -1151,6 +1161,10 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const loc = field && fieldRec && fieldRec.ambiguous !== true
         ? `${handle}.${field}`
         : emitLocatorCall(a.target.level, a.target.arg, false, a.target.frameChain, a.target.filterText);
+      if (a.atLeast) {
+        // A minimum, polled: Playwright has no toHaveCount matcher for "at least".
+        return `await expect.poll(async () => ${loc}.count(), { timeout: ${a.timeout ?? COMPARE_POLL_TIMEOUT_MS} }).toBeGreaterThanOrEqual(${a.count}); // at least ${a.count}`;
+      }
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).toHaveCount(${a.count}${opts});`;
     }
@@ -1158,7 +1172,7 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const field = pc.intentToField.get(canonicalIntent(a.target.intent));
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return `await expect(${loc}).toHaveAttribute(${q(a.attribute)}, ${q(a.value)}${opts});`;
+      return `await expect(${loc}).toHaveAttribute(${q(a.attribute)}, ${a.pattern ? regexLiteral(a.pattern) : q(a.value)}${opts});`;
     }
     case 'toHaveValue': {
       const field = pc.intentToField.get(canonicalIntent(a.target.intent));

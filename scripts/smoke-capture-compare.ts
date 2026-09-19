@@ -181,6 +181,98 @@ await runTool(ctx, { name: 'end_scenario', input: {} });
 const hRecorded = ctx.scenarios[ctx.scenarios.length - 1];
 check('H4. the recorded scenario carries the before relation', hRecorded?.steps.some((st: TraceStep) => st.kind === 'assert_compare' && st.relation === 'before') === true, JSON.stringify(hRecorded?.steps));
 
+/* ─── I. cross-element compare: the compare re-reads the element it names ── */
+// Run 5e4394: the model captured the listing name, clicked through, and passed
+// css "h1" to assert_compare eight times; the handler ignored the hints and
+// re-read the listing selector on the detail page (the first related-product
+// card). With hints the compare now resolves THAT element and records it as
+// readTarget, so replay and the emitted spec read the heading, not the card.
+const listingHtml = `
+<!doctype html><html><body>
+<a class="card" href="#" id="open"><h5>Sheet Sander</h5><span class="card-footer">$58.48</span></a>
+<script>
+  document.getElementById('open').addEventListener('click', function (e) {
+    e.preventDefault();
+    document.body.innerHTML = '<h1 data-test="product-name">Sheet Sander</h1><span data-test="unit-price">$58.48</span>'
+      + '<h2>Related products</h2><a class="card" href="#"><h5>Random Orbit Sander</h5><span class="card-footer">$12.00</span></a>';
+  });
+</script>
+</body></html>`;
+const listingUrl = 'data:text/html,' + encodeURIComponent(listingHtml);
+// The navigate tool takes http(s) only; the live part loads the page directly
+// and the replay copy gets a navigate step to the same markup as a data URL.
+await page.setContent(listingHtml, { waitUntil: 'load' });
+await runTool(ctx, { name: 'begin_scenario', input: { name: 'clicked a product and the detail page showed the listing name and price', category: 'happy', feature: 'catalogue' } });
+const capI = await runTool(ctx, { name: 'capture', input: { name: 'listingName', source: 'text', css: 'a.card h5', intent: 'first card name' } });
+check('I1. captured the listing name', capI.ok === true && (capI.data as { value?: string }).value === 'Sheet Sander', JSON.stringify(capI));
+const capIp = await runTool(ctx, { name: 'capture', input: { name: 'listingPrice', source: 'text', css: 'a.card .card-footer', intent: 'first card price' } });
+check('I2. captured the listing price', capIp.ok === true && (capIp.data as { value?: string }).value === '$58.48', JSON.stringify(capIp));
+await runTool(ctx, { name: 'click', input: { intent: 'first product card', css: 'a.card' } });
+const cmpISame = await runTool(ctx, { name: 'assert_compare', input: { name: 'listingName', relation: 'equal' } });
+check('I3. with NO hints the compare re-reads the capture element (the related card) and fails honestly', cmpISame.ok === false && /Random Orbit Sander/.test(cmpISame.error ?? ''), JSON.stringify(cmpISame));
+const cmpI = await runTool(ctx, { name: 'assert_compare', input: { name: 'listingName', relation: 'equal', css: 'h1', intent: 'detail heading' } });
+check('I4. with css "h1" the compare re-reads the detail heading and passes', cmpI.ok === true, JSON.stringify(cmpI));
+const cmpIp = await runTool(ctx, { name: 'assert_compare', input: { name: 'listingPrice', relation: 'equal', css: '[data-test="unit-price"]', intent: 'detail price' } });
+check('I5. the price compare re-reads the detail price element', cmpIp.ok === true, JSON.stringify(cmpIp));
+const iSteps = ctx.current!.steps;
+const iCompare = iSteps.find((st) => st.kind === 'assert_compare' && st.varName === 'cap_listingName');
+check('I6. the recorded compare carries readTarget = the heading, target = the card',
+  !!iCompare && iCompare.kind === 'assert_compare' && iCompare.readTarget?.level === 'css' && String(iCompare.readTarget?.arg) === 'h1' && String(iCompare.target.arg) === 'a.card h5', JSON.stringify(iCompare));
+await runTool(ctx, { name: 'end_scenario', input: {} });
+const iRecorded = ctx.scenarios[ctx.scenarios.length - 1]!;
+const iReplay = await replayScenarioOnce(browser, { ...iRecorded, steps: [{ kind: 'navigate', url: listingUrl }, ...iRecorded.steps] }, undefined, 8000);
+check('I7. replay reads the heading (readTarget), so the cross-element compare passes on a fresh context', iReplay.passed === true, JSON.stringify(iReplay));
+
+/* ─── J. numeric relations parse formatted text ─────────────────────────── */
+// Run 5e4394: Number("$48.41") is NaN, so greater and less were false for every
+// price in the tool, in replay and in the emitted spec. The first number in
+// the text is what compares now, and a side with no number fails loudly.
+const priceHtml = `
+<!doctype html><html><body>
+<span id="price">$4.92</span><span id="total">999</span><span id="label">Loading</span><span id="num">5</span>
+<button id="sort" onclick="document.getElementById('price').textContent='$48.41';document.getElementById('total').textContent='1,299.00';document.getElementById('label').textContent='Ready';document.getElementById('num').textContent='n/a';">Sort</button>
+</body></html>`;
+await page.setContent(priceHtml, { waitUntil: 'load' });
+await runTool(ctx, { name: 'begin_scenario', input: { name: 'sorted by price high to low and the first price rose', category: 'happy', feature: 'catalogue' } });
+await runTool(ctx, { name: 'capture', input: { name: 'firstPrice', source: 'text', css: '#price', intent: 'first price' } });
+await runTool(ctx, { name: 'capture', input: { name: 'total', source: 'text', css: '#total', intent: 'total' } });
+await runTool(ctx, { name: 'capture', input: { name: 'label', source: 'text', css: '#label', intent: 'label' } });
+await runTool(ctx, { name: 'capture', input: { name: 'num', source: 'text', css: '#num', intent: 'number' } });
+await runTool(ctx, { name: 'click', input: { intent: 'Sort button', role: 'button', label: 'Sort' } });
+const cmpJ1 = await runTool(ctx, { name: 'assert_compare', input: { name: 'firstPrice', relation: 'greater' } });
+check('J1. "$48.41" greater than the captured "$4.92" passes (currency parsed)', cmpJ1.ok === true, JSON.stringify(cmpJ1));
+const cmpJ1b = await runTool(ctx, { name: 'assert_compare', input: { name: 'firstPrice', relation: 'less' } });
+check('J2. "$48.41" less than "$4.92" fails on the numbers, not on the format', cmpJ1b.ok === false && /relation does not hold/.test(cmpJ1b.error ?? ''), JSON.stringify(cmpJ1b));
+const cmpJ2 = await runTool(ctx, { name: 'assert_compare', input: { name: 'total', relation: 'greater' } });
+check('J3. "1,299.00" greater than "999" passes (thousands separator dropped)', cmpJ2.ok === true, JSON.stringify(cmpJ2));
+const cmpJ3 = await runTool(ctx, { name: 'assert_compare', input: { name: 'label', relation: 'greater' } });
+check('J4. a captured side with no number is a loud rejection, never a silent false', cmpJ3.ok === false && /no number found in "Loading"/.test(cmpJ3.error ?? ''), JSON.stringify(cmpJ3));
+const cmpJ4 = await runTool(ctx, { name: 'assert_compare', input: { name: 'num', relation: 'less' } });
+check('J5. a re-read side with no number is a loud rejection naming the text', cmpJ4.ok === false && /no number found in "n\/a"/.test(cmpJ4.error ?? ''), JSON.stringify(cmpJ4));
+await runTool(ctx, { name: 'end_scenario', input: {} });
+const jRecorded = ctx.scenarios[ctx.scenarios.length - 1]!;
+const jReplay = await replayScenarioOnce(browser, { ...jRecorded, steps: [{ kind: 'navigate', url: 'data:text/html,' + encodeURIComponent(priceHtml) }, ...jRecorded.steps] }, undefined, 8000);
+check('J6. replay parses the same numbers and the greater compares pass', jReplay.passed === true, JSON.stringify(jReplay));
+
+/* ─── K. a compare with no action since the capture is circular ──────────── */
+// Run 5e4394 recorded five equal / unchanged compares straight after their
+// capture; the Critic reworked the only re-recorded repair for them. The tool
+// now refuses that shape (invariant 17 at the tool) with the same wording.
+await page.setContent('<span id="price">$4.92</span><span id="a">same</span><span id="b">same</span><button id="noop" onclick="void 0">Reload view</button>', { waitUntil: 'load' });
+await runTool(ctx, { name: 'begin_scenario', input: { name: 'price held after the view reloaded', category: 'happy', feature: 'catalogue' } });
+await runTool(ctx, { name: 'capture', input: { name: 'held', source: 'text', css: '#price', intent: 'price' } });
+const cmpK1 = await runTool(ctx, { name: 'assert_compare', input: { name: 'held', relation: 'equal' } });
+check('K1. equal with no action since the capture is rejected as circular', cmpK1.ok === false && /compares a value to itself; act first, or use changed/.test(cmpK1.error ?? ''), JSON.stringify(cmpK1));
+const cmpK2 = await runTool(ctx, { name: 'assert_compare', input: { name: 'held', relation: 'unchanged' } });
+check('K2. unchanged with no action is rejected the same way', cmpK2.ok === false && /compares a value to itself/.test(cmpK2.error ?? ''), JSON.stringify(cmpK2));
+await runTool(ctx, { name: 'capture', input: { name: 'left', source: 'text', css: '#a', intent: 'left value' } });
+const cmpK3 = await runTool(ctx, { name: 'assert_compare', input: { name: 'left', relation: 'equal', css: '#b', intent: 'right value' } });
+check('K3. equal against a DIFFERENT element with no action is a real comparison and passes', cmpK3.ok === true, JSON.stringify(cmpK3));
+await runTool(ctx, { name: 'click', input: { intent: 'Reload view button', role: 'button', label: 'Reload view' } });
+const cmpK4 = await runTool(ctx, { name: 'assert_compare', input: { name: 'held', relation: 'equal' } });
+check('K4. equal after an action is falsifiable and passes', cmpK4.ok === true, JSON.stringify(cmpK4));
+await runTool(ctx, { name: 'end_scenario', input: {} });
+
 await browser.close();
 
 /* ─── F. the emitted spec reads real values and asserts relationships ─────── */
@@ -198,11 +290,19 @@ fs.rmSync(outDir, { recursive: true, force: true });
 
 check('F1. spec declares a captured const read via getAttribute("id")', /const cap_\w+ = \(await .*getAttribute\("id"\)\)\?\.trim\(\) \?\? '';/.test(spec));
 check('F2. spec polls the re-read value .not.toBe the captured one (changed)', /await expect\.poll\(async \(\) => .+, \{ timeout: \d+ \}\)\.not\.toBe\(cap_\w+\)/.test(spec));
-check('F3. spec reads a count and polls until it is greater', /\.count\(\)/.test(spec) && /await expect\.poll\(async \(\) => Number\(.+\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(Number\(cap_\w+\)\)/.test(spec));
+check('F3. spec reads a count and polls until it is greater (through parseNumber)', /\.count\(\)/.test(spec) && /await expect\.poll\(async \(\) => parseNumber\(.+\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(parseNumber\(cap_\w+\)\)/.test(spec));
 check('F5. spec polls the text order with localeCompare for the before relation', /await expect\.poll\(async \(\) => String\(.+\)\.localeCompare\(cap_\w+\), \{ timeout: \d+ \}\)\.toBeLessThan\(0\)/.test(spec), spec.split('\n').filter((l) => /localeCompare/.test(l)).join(' | '));
 check('F4. spec asserts the old value is absent via a value selector + count 0', /page\.locator\(`\[id="\$\{cap_\w+\}"\]`\)\)\.toHaveCount\(0\)/.test(spec));
 check('F5. spec contains NO invented placeholder id strings', !/button-fixed-id|previously-captured-id|placeholder/i.test(spec));
+check('F6. the cross-element compare in the spec reads the heading locator, not the card',
+  /await expect\.poll\(async \(\) => \(await page\.locator\("h1"\)\.first\(\)\.textContent\(\)\)\?\.trim\(\) \?\? '', \{ timeout: \d+ \}\)\.toBe\(cap_listingName\)/.test(spec),
+  spec.split('\n').filter((l) => /cap_listingName/.test(l)).join(' | '));
+check('F7. the spec never re-reads "a.card h5" for the cross-element compare', !/expect\.poll\(async \(\) => \(await page\.locator\("a\.card h5"\)/.test(spec));
+check('F8. numeric compares in the spec go through parseNumber, and the parser is inlined',
+  /await expect\.poll\(async \(\) => parseNumber\(.+\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(parseNumber\(cap_firstPrice\)\)/.test(spec) && /^function parseNumber\(text\)/m.test(spec) && !/\bNumber\(cap_firstPrice\)/.test(spec),
+  spec.split('\n').filter((l) => /parseNumber/.test(l)).slice(0, 3).join(' | '));
+check('F9. the inlined parser throws on text with no number (loud in the shipped spec too)', /throw new Error\('no number found in '/.test(spec));
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: capture-and-compare — real values captured, changed/greater/absent asserted, falsifiable, no placeholder strings.');
+console.log('OK: capture-and-compare — real values captured, changed/greater/absent asserted, cross-element compares read the named element, numbers parse out of formatted text, circular compares are refused, no placeholder strings.');

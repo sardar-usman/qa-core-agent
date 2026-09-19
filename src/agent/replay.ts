@@ -5,6 +5,7 @@ import { generateUnique } from './unique-data.js';
 import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
 import { captureActualState } from './actual-state.js';
+import { parseNumber, noNumberMessage } from './parse-number.js';
 
 /**
  * Reality check.
@@ -78,6 +79,13 @@ export interface ReplayResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+/**
+ * How long an assert_compare re-read polls before failing, here and in both
+ * emitters (expect.poll). One constant so the shipped spec waits exactly as
+ * long as replay did, and so the Critic can be shown the number
+ * (describeStep renders it as [polls Nms]).
+ */
+export const COMPARE_POLL_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 
 export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -328,18 +336,29 @@ export async function runStep(
       // read races the operation and flakes. Re-read until the comparison holds
       // or the timeout expires, the same web-first wait the completion
       // assertions use for aria-valuenow.
+      // The re-read element is the capture's own unless the compare named a
+      // different one (readTarget): the detail heading against the captured
+      // listing name, the second card against the first.
+      const readFrom = step.readTarget ?? step.target;
+      const numeric = step.relation === 'greater' || step.relation === 'less';
+      if (numeric && parseNumber(captured) === null) {
+        throw new Error(`assert_compare(${step.relation}): ${noNumberMessage(captured)} (captured "${step.varName}")`);
+      }
       let current = '';
       const held = await pollUntil(
         timeoutMs,
         async () => {
-          current = await readStepValue(page, step.source, step.target, step.attribute);
+          current = await readStepValue(page, step.source, readFrom, step.attribute);
           return compareHolds(step.relation, captured, current);
         },
         `assert_compare(${step.relation}) did not settle`,
       ).then(() => true).catch(() => false);
       if (!held) {
+        if (numeric && parseNumber(current) === null) {
+          throw new Error(`assert_compare(${step.relation}): ${noNumberMessage(current)} at "${readFrom.intent}"`);
+        }
         throw new Error(
-          `assert_compare(${step.relation}): "${step.target.intent}" captured "${captured}", now "${current}"`
+          `assert_compare(${step.relation}): "${readFrom.intent}" captured "${captured}", now "${current}"`
         );
       }
       // 'unchanged' on a value widget also proves the frozen value sits strictly
@@ -397,10 +416,16 @@ function compareHolds(relation: string, captured: string, current: string): bool
     case 'changed': return current !== captured;
     case 'unchanged':
     case 'equal': return current === captured;
-    case 'greater':
-      return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) > Number(captured);
-    case 'less':
-      return Number.isFinite(Number(current)) && Number.isFinite(Number(captured)) && Number(current) < Number(captured);
+    // Numbers are parsed out of formatted text ($48.41, 1,299.00, 42%); a side
+    // with no number never holds, and the caller reports it loudly.
+    case 'greater': {
+      const a = parseNumber(current); const b = parseNumber(captured);
+      return a !== null && b !== null && a > b;
+    }
+    case 'less': {
+      const a = parseNumber(current); const b = parseNumber(captured);
+      return a !== null && b !== null && a < b;
+    }
     // Text order, for a name sort: the re-read sorts before / after the captured value.
     case 'before': return current.localeCompare(captured) < 0;
     case 'after': return current.localeCompare(captured) > 0;
@@ -418,6 +443,13 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promis
     case 'toHaveText': {
       const loc = locatorFromRecord(page, a.target).first();
       const effectiveTimeout = a.timeout ?? timeoutMs;
+      if (a.pattern) {
+        // A format assertion: the text must match the recorded regex source,
+        // the same RegExp the emitted spec passes to toHaveText.
+        const re = new RegExp(a.pattern);
+        await pollUntil(effectiveTimeout, async () => re.test((await loc.textContent())?.trim() ?? ''), `toHaveText: expected text matching /${a.pattern}/`);
+        return;
+      }
       await pollUntil(effectiveTimeout, async () => {
         const txt = (await loc.textContent())?.trim() ?? '';
         return txt === a.text;
@@ -427,10 +459,22 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promis
     case 'toContainText': {
       const loc = locatorFromRecord(page, a.target).first();
       const effectiveTimeout = a.timeout ?? timeoutMs;
+      if (a.pattern) {
+        const re = new RegExp(a.pattern);
+        await pollUntil(effectiveTimeout, async () => re.test((await loc.textContent()) ?? ''), `toContainText: expected text matching /${a.pattern}/`);
+        return;
+      }
       await pollUntil(effectiveTimeout, async () => {
         const txt = (await loc.textContent()) ?? '';
         return txt.includes(a.text);
       }, `toContainText: expected text containing "${a.text}"`);
+      return;
+    }
+    case 'toBeChecked': {
+      // The checked PROPERTY, the same read Playwright's toBeChecked makes.
+      const loc = locatorFromRecord(page, a.target).first();
+      const effectiveTimeout = a.timeout ?? timeoutMs;
+      await pollUntil(effectiveTimeout, async () => (await loc.isChecked()) === a.checked, `toBeChecked: expected "${a.target.intent}" to be ${a.checked ? 'checked' : 'not checked'}`);
       return;
     }
     case 'toHaveURL': {
@@ -454,12 +498,22 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promis
     case 'toHaveCount': {
       const loc = locatorFromRecord(page, a.target);
       const effectiveTimeout = a.timeout ?? timeoutMs;
+      if (a.atLeast) {
+        // A minimum, polled: "at least one card" without pinning the catalogue count.
+        await pollUntil(effectiveTimeout, async () => (await loc.count()) >= a.count, `toHaveCount: expected at least ${a.count}`);
+        return;
+      }
       await pollUntil(effectiveTimeout, async () => (await loc.count()) === a.count, `toHaveCount: expected ${a.count}`);
       return;
     }
     case 'toHaveAttribute': {
       const loc = locatorFromRecord(page, a.target).first();
       const effectiveTimeout = a.timeout ?? timeoutMs;
+      if (a.pattern) {
+        const re = new RegExp(a.pattern);
+        await pollUntil(effectiveTimeout, async () => re.test((await loc.getAttribute(a.attribute)) ?? ''), `toHaveAttribute: expected ${a.attribute} matching /${a.pattern}/`);
+        return;
+      }
       await pollUntil(effectiveTimeout, async () => {
         const val = await loc.getAttribute(a.attribute);
         return val === a.value;

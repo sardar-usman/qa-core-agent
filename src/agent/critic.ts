@@ -3,6 +3,7 @@ import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { scenarioNameKey } from './rule-coverage.js';
 import { emitLocatorCall } from './selectors.js';
 import { ASSERTION_DOCTRINE } from './doctrine.js';
+import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
 
 /**
  * Critic — Step 3 of the multi-agent pipeline.
@@ -69,7 +70,7 @@ Verdicts:
 
 Flagging rules — apply to every scenario:
 
-1. Timing: any assertion on an animated or async element (progress bar, countdown timer, loading spinner, toast, live counter) with [no-timeout] is automatically "rework". The required_fix must name the correct tool: wait_for_text (polls until text matches) or assert with timeout set to at least 10000ms.
+1. Timing: any assertion on an animated or async element (progress bar, countdown timer, loading spinner, toast, live counter) with [no-timeout] is automatically "rework". The required_fix must name the correct tool: wait_for_text (polls until text matches) or assert with timeout set to at least 10000ms. An assert_compare line ends in [polls Nms]: the replay engine and the emitted spec poll its re-read for that long (expect.poll), so a compare never needs a timeout and must not be reworked for one.
 
 2. Vacuous or substring: asserting toBeVisible on the element the agent just clicked, or on anything that was already true before the action, proves nothing about the outcome (doctrine rule 8 below; cite it as rule 8). A substring match (toContainText with a single character or a unit-only string like "%") is never acceptable. Flag as "rework".
 
@@ -77,7 +78,7 @@ Flagging rules — apply to every scenario:
 
 4. Missing outcome assertion: a scenario where the key action (submit, navigate, toggle) has no assertion on its outcome is "rework" or "reject".
 
-5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape.
+5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-read from a second element ("re-read at ...") for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
 ${ASSERTION_DOCTRINE}
 
@@ -250,11 +251,15 @@ export function describeStep(step: TraceStep): string {
         }
         case 'toHaveText': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${where(a.target)} has text "${a.text}"${t}`;
+          return a.pattern ? `assert ${where(a.target)} has text matching /${a.pattern}/${t}` : `assert ${where(a.target)} has text "${a.text}"${t}`;
         }
         case 'toContainText': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${where(a.target)} contains "${a.text}"${t}`;
+          return a.pattern ? `assert ${where(a.target)} contains text matching /${a.pattern}/${t}` : `assert ${where(a.target)} contains "${a.text}"${t}`;
+        }
+        case 'toBeChecked': {
+          const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
+          return `assert ${where(a.target)} ${a.checked ? 'checked' : 'not checked'}${t}`;
         }
         case 'toHaveURL':
           // Rendered as a quoted pattern string, not /pattern/: a pattern
@@ -266,10 +271,10 @@ export function describeStep(step: TraceStep): string {
           return `assert ${where(a.target)} hidden/absent${t}`;
         }
         case 'toHaveCount':
-          return `assert ${where(a.target)} count=${a.count}`;
+          return a.atLeast ? `assert ${where(a.target)} count>=${a.count} [polls]` : `assert ${where(a.target)} count=${a.count}`;
         case 'toHaveAttribute': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${where(a.target)} ${a.attribute}="${a.value}"${t}`;
+          return a.pattern ? `assert ${where(a.target)} ${a.attribute} matching /${a.pattern}/${t}` : `assert ${where(a.target)} ${a.attribute}="${a.value}"${t}`;
         }
         case 'toHaveValue': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
@@ -282,8 +287,12 @@ export function describeStep(step: TraceStep): string {
       return `capture ${what} -> ${step.varName}`;
     }
     case 'assert_compare': {
+      // The poll is what replay and the emitted spec do (expect.poll for
+      // COMPARE_POLL_TIMEOUT_MS); the Critic asked for a timeout on compares
+      // five times in run 5e4394 because the line did not say so.
       const bounds = step.bounds ? `, strictly within ${step.bounds.min}..${step.bounds.max}` : '';
-      return `assert_compare ${step.readVar} ${step.relation} vs captured ${step.varName} at ${where(step.target)}${bounds}`;
+      const reread = step.readTarget ? `, re-read at ${where(step.readTarget)}` : '';
+      return `assert_compare ${step.readVar} ${step.relation} vs captured ${step.varName} at ${where(step.target)}${reread}${bounds} [polls ${COMPARE_POLL_TIMEOUT_MS}ms]`;
     }
     case 'wait_for_state':
       return `wait_for_state(${where(step.target)}, ${step.state})`;

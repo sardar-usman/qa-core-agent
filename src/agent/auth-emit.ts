@@ -196,7 +196,7 @@ export function renderAuthSetup(login: Scenario, url: string, lang: 'ts' | 'js')
       // loudly, instead of cascading into every authenticated spec.
       if (a.type === 'toHaveURL') {
         out.push(`  await expect(page).toHaveURL(new RegExp(${JSON.stringify(a.pattern)}), { timeout: 10000 });`);
-      } else if ('target' in a && (a.type === 'toBeVisible' || a.type === 'toHaveText' || a.type === 'toContainText')) {
+      } else if ('target' in a && (a.type === 'toBeVisible' || ((a.type === 'toHaveText' || a.type === 'toContainText') && !a.pattern))) {
         const call = a.type === 'toBeVisible'
           ? `toBeVisible({ timeout: 10000 })`
           : `${a.type}(${JSON.stringify((a as { text: string }).text)}, { timeout: 10000 })`;

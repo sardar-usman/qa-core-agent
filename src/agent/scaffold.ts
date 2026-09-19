@@ -4,6 +4,7 @@ import type { RunReport, Scenario } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
 import { renderUniqueDataHelper } from './unique-data.js';
+import { renderParseNumberHelper } from './parse-number.js';
 import { redactCredentialValues } from './datasets.js';
 import {
   AUTH_ENV_PASS,
@@ -131,6 +132,7 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   writeFile(`fixtures/credentials.${ext}`, renderCredentialsFixture(opts, lang, authLogin !== null));
   writeFile(`helpers/assertions.${ext}`, renderAssertionsHelper(lang));
   writeFile(`helpers/unique-data.${ext}`, renderUniqueDataHelper(lang));
+  writeFile(`helpers/parse-number.${ext}`, renderParseNumberHelper(lang));
   writeFile('README.md', renderReadme(opts, pomResult, lang));
 
   // Self-sufficient framework dir: write run-report.json here too. This copy
@@ -691,7 +693,9 @@ ${tsconfigLine}├── pages/                      # Page Object Model classes
 ├── fixtures/
 │   └── credentials.${ext}          # Test data (replace placeholders)
 ├── helpers/
-│   └── assertions.${ext}           # Reusable custom matchers
+│   ├── assertions.${ext}           # Reusable custom matchers
+│   ├── unique-data.${ext}          # Per-run unique email / token / password
+│   └── parse-number.${ext}         # The number inside formatted text, for numeric compares
 └── run-report.json             # Original QA-Core run report (cost, cascade, verdicts)
 \`\`\`
 

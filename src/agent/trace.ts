@@ -139,6 +139,15 @@ export type TraceStep =
       target: SelectorRecord;
       attribute?: string;
       intent: string;
+      /**
+       * The element the compare re-reads when it is NOT the capture's own
+       * element (the detail heading against the captured listing name, the
+       * second card against the captured first). Resolved through the cascade
+       * from the hints the model passed to assert_compare; absent when the
+       * compare re-reads the capture's element. Replay and both emitters read
+       * from this record when present.
+       */
+      readTarget?: SelectorRecord;
       /** Fresh, collision-free identifier for the re-read value in the spec. */
       readVar: string;
       /**
@@ -226,16 +235,27 @@ export type Assertion =
    * locator that matches zero elements.
    */
   | { type: 'toBeHidden'; target: SelectorRecord; timeout?: number }
-  | { type: 'toHaveText'; target: SelectorRecord; text: string; timeout?: number }
-  | { type: 'toContainText'; target: SelectorRecord; text: string; timeout?: number }
+  /**
+   * Text assertions. With `pattern` set (a regex source the model passed as
+   * `regex`), the element text must MATCH that pattern and `text` is '' on
+   * purpose: a format assertion ("a price is rendered", "a name-shaped
+   * string") has no literal to pin. Emitted as `toHaveText(new RegExp(...))`.
+   */
+  | { type: 'toHaveText'; target: SelectorRecord; text: string; pattern?: string; timeout?: number }
+  | { type: 'toContainText'; target: SelectorRecord; text: string; pattern?: string; timeout?: number }
   | { type: 'toHaveURL'; pattern: string }
   /**
    * Count assertion. `count: 0` is the absence form — built directly from
    * hints without resolving, so it can assert a selector matches nothing.
    * `timeout` is optional and lets an absence wait for the element to leave.
+   * `atLeast: true` makes it a minimum (count >= N): a structural "at least one
+   * card" that polls, never a literal catalogue count.
    */
-  | { type: 'toHaveCount'; target: SelectorRecord; count: number; timeout?: number }
-  | { type: 'toHaveAttribute'; target: SelectorRecord; attribute: string; value: string; timeout?: number }
+  | { type: 'toHaveCount'; target: SelectorRecord; count: number; atLeast?: boolean; timeout?: number }
+  /** With `pattern` set the attribute must MATCH the regex source and `value` is ''. */
+  | { type: 'toHaveAttribute'; target: SelectorRecord; attribute: string; value: string; pattern?: string; timeout?: number }
+  /** Checkbox or radio state, the property Playwright's toBeChecked reads. checked false asserts NOT checked. */
+  | { type: 'toBeChecked'; target: SelectorRecord; checked: boolean; timeout?: number }
   /**
    * Form-field value assertion. Reads the element's value PROPERTY (what the
    * user sees in the field), not the static `value` attribute. Typed text and
