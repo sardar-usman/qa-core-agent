@@ -1,16 +1,13 @@
 /**
  * Locks the adaptive-timeout measurement anchor (tools.ts + adaptive-timeout.ts).
  *
- * The regression this guards against:
- *   A progress bar fills to aria-valuenow="100" over a few seconds. The model
- *   clicks Start, spends a turn thinking, THEN issues a toHaveAttribute assert.
- *   By the time the assert runs the bar is already at 100, so measuring the
- *   settle from the assert call gives ~0ms and the emitted timeout collapses to
- *   the 5000ms floor — too short for replay, where the bar fills from scratch.
- *
- * The fix: the observed settle is anchored to the last state-changing action
- * (the Start click), so it covers the FULL action-to-target window regardless of
- * how long the model waited before asserting. The adaptiveTimeout FORMULA is
+ * The clock is PAGE time, invariant 55(a): every successful action restarts
+ * it with the action's own duration, every later successful call grows it,
+ * and the probe's own wait is added. The model's latency between calls is
+ * never counted (the old wall-clock anchor counted it, and failed 60s probes
+ * inflated the next timeout to 60000 in run f3b41e). So an assert that waits
+ * for a fill records the fill window, a late assert after the model's own
+ * pause records the floor, and a static check floors. The adaptiveTimeout FORMULA is
  * unchanged — only the duration fed into it.
  *
  * This drives a real headless page through the actual tools and inspects the
@@ -60,27 +57,44 @@ const bctx = await browser.newContext();
 await installEvalShim(bctx);
 const page = await bctx.newPage();
 
-/* ─── A. Late assert on a completed bar still gets the full-window timeout ─── */
-// Click Start, wait until the bar is already at 100 (simulating the model
-// spending a turn thinking), THEN assert. The old code measured ~0ms here.
+/* ─── A. An assert that waits for the fill records the fill window ────────── */
+// Click Start and assert at once: the probe polls until the bar reaches 100,
+// so the page time from the click to the target (~4s) is the observed
+// settle and the recorded timeout covers it, never the floor.
 await page.setContent(animatedBar, { waitUntil: 'load' });
 const tc = createContext(page, 50);
 await runTool(tc, { name: 'begin_scenario', input: { name: 'bar completes', category: 'happy', feature: 'progressbar' } });
 await runTool(tc, { name: 'click', input: { intent: 'Start button', role: 'button', label: 'Start' } });
-// The model "thinks" — the bar finishes filling before the assert is issued.
-await new Promise((r) => setTimeout(r, FILL_MS + 600));
 const a = await runTool(tc, { name: 'assert', input: { intent: 'progress bar reached 100', css: '#progressBar', type: 'toHaveAttribute', attribute: 'aria-valuenow', value: '100' } });
-check('A. toHaveAttribute on the completed bar succeeded', a.ok === true, JSON.stringify(a));
+check('A. toHaveAttribute on the filling bar succeeded once it reached 100', a.ok === true, JSON.stringify(a));
 
 const step = lastStep(tc.current!.steps);
 let recorded = -1;
 if (step.kind === 'assert' && step.assertion.type === 'toHaveAttribute') recorded = step.assertion.timeout ?? -1;
 check('B. recorded an aria-valuenow="100" attribute assertion', step.kind === 'assert' && step.assertion.type === 'toHaveAttribute' && step.assertion.attribute === 'aria-valuenow');
-check('C. the timeout is NOT the 5000ms floor (the regression value)', recorded > ADAPTIVE_FLOOR_MS,
-  `recorded ${recorded}ms — measurement collapsed to the floor, the anchor is broken`);
-check('D. the timeout covers the full ~4s fill window (>= 6000ms)', recorded >= 6000,
-  `recorded ${recorded}ms, expected to reflect the ${FILL_MS}ms fill plus margin`);
+check('C. the timeout is NOT the 5000ms floor: the probe waited for the fill and that page time was measured', recorded > ADAPTIVE_FLOOR_MS,
+  `recorded ${recorded}ms`);
+check(`D. the timeout covers the ~${FILL_MS}ms fill window`, recorded >= FILL_MS,
+  `recorded ${recorded}ms, expected to reflect the ${FILL_MS}ms fill`);
 check('E. the timeout is sane (<= adaptive ceiling)', recorded <= ADAPTIVE_CEILING_MS, `recorded ${recorded}ms`);
+
+/* ─── A2. The model's own latency is never counted (invariant 55a) ──────────── */
+// Click Start, let the model "think" until the bar is already at 100, THEN
+// assert. The settle clock counts page time only (the click's own duration
+// plus later successful calls), never the wait between calls, so this
+// records the floor; in replay the bar fills from scratch in ~4s, which the
+// 5000ms floor covers. The old wall-clock anchor counted the think time and
+// inflated the timeout (run f3b41e: three failed 60s probes each pushed the
+// next recorded timeout to 60000).
+await page.setContent(animatedBar, { waitUntil: 'load' });
+const tcLate = createContext(page, 50);
+await runTool(tcLate, { name: 'begin_scenario', input: { name: 'bar completes, late assert', category: 'happy', feature: 'progressbar' } });
+await runTool(tcLate, { name: 'click', input: { intent: 'Start button', role: 'button', label: 'Start' } });
+await new Promise((r) => setTimeout(r, FILL_MS + 600));
+const aLate = await runTool(tcLate, { name: 'assert', input: { intent: 'progress bar reached 100', css: '#progressBar', type: 'toHaveAttribute', attribute: 'aria-valuenow', value: '100' } });
+const stepLate = lastStep(tcLate.current!.steps);
+const recordedLate = stepLate.kind === 'assert' && stepLate.assertion.type === 'toHaveAttribute' ? stepLate.assertion.timeout ?? -1 : -1;
+check('A2. a late assert after the model\'s own pause records the floor: the pause is model latency, not page time', aLate.ok === true && recordedLate === ADAPTIVE_FLOOR_MS, `recorded ${recordedLate}ms`);
 
 /* ─── B. A genuinely instant state still floors at 5000 ───────────────────── */
 // Anchoring must not inflate an assertion on a static element checked right
@@ -99,4 +113,4 @@ await browser.close();
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the completion timeout is measured from the triggering action, so a late assert on a finished animation keeps the full-window timeout instead of the floor.');
+console.log('OK: the completion timeout measures page time from the triggering action through the probe, so an assert that waits for the fill records the fill window, the model\'s own pause between calls is never counted, and a static check floors.');
