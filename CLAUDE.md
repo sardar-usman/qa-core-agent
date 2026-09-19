@@ -153,33 +153,10 @@ npx tsc --noEmit
 Full smoke-test suite:
 
 ```bash
-for s in smoke-tools smoke-finish smoke-hascount smoke-planner-parse \
-         smoke-abandoned smoke-dashboard-math smoke-retry-cap \
-         smoke-feature-grouping smoke-scaffold smoke-scaffold-js smoke-parse-features \
-         smoke-zip smoke-ui-download smoke-slim-dir smoke-ui-brand-label \
-         smoke-placeholder-cascade smoke-cascade-coverage smoke-capture-compare \
-         smoke-plan-dedup smoke-form-controls smoke-aria-assertion smoke-gate \
-         smoke-unique-data smoke-closeout-grace smoke-step-budget \
-         smoke-table-gate smoke-circular smoke-compare-poll smoke-iframe \
-         smoke-planner-iframe smoke-frame-value smoke-fill-verify \
-         smoke-pom-ambiguous smoke-filter-disambiguation smoke-selector-recovery \
-         smoke-srs-parse smoke-plan-rule-tags smoke-rule-coverage \
-         smoke-critic-parse smoke-discovery-ladder smoke-page-filter \
-         smoke-derivation-report smoke-cost-ceiling smoke-plan-enforcement \
-         smoke-repair-pass smoke-empty-diagnosis smoke-css-prefix \
-         smoke-checkpoint smoke-failure-classify smoke-datasets \
-         smoke-param-emit smoke-auth-emit smoke-paste-hints \
-         smoke-gateway-commands smoke-surface-parity smoke-no-legacy \
-         smoke-gateway-critic smoke-output-layout smoke-index smoke-api \
-         smoke-acceptance smoke-dashboard smoke-run-detail smoke-terminal smoke-projects \
-         smoke-settings smoke-resume-transcribe smoke-prompt-cache \
-         smoke-stability-lockout smoke-emitted-run; do
-  echo "=== $s ==="
-  npx tsx scripts/$s.ts
-done
+npm run smoke
 ```
 
-Every script should print `OK:` on its last line. `tsc --noEmit` should print nothing.
+`npm run smoke` (`scripts/smoke-all.ts`) discovers every `scripts/smoke-*.ts` from disk, sorted; the list is not maintained by hand, so a new smoke lock cannot be silently skipped. A script passes only when it exits 0 AND its last non-empty line starts with `OK:`; the runner prints a table, the tail of every failure, and `N smokes, P passed, F failed`. `tsc --noEmit` should print nothing.
 
 ---
 
