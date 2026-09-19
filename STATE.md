@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-09-17 (evening). Update this file at the end of every working day.
+Updated: 2026-09-19. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -82,13 +82,25 @@ Schedule: two focused days, then the audit.
   anchored at zero; Regenerate confirmation; Unassigned wording.
 - PR F design pass: after the $6 run, before the audit. Brief first at
   docs/dashboard-design.md, then page by page, numbers untouched.
-- Dashboard v2 code complete as of Sept 15. Next: diagnosis report of run
-  ec8eff, then the fixes above one PR each, then the after-run, then PR F,
-  then the write-up.
+- Dashboard v2 code complete as of Sept 15. Next: run 4, then STATE table
+  update, then PR F design pass (brief first at docs/dashboard-design.md),
+  then the audit write-up docs/audit-2026-09.md, then the demo video and
+  the launch post.
 - Fix: stopped runs keep run-meta, SRS copy, repair events (PR #17):
   MERGED Sept 16. run-meta written at start and every end; no
   hold-and-restore, run files are never rewritten; runs.source nullable
   (schema v6), never defaulted; repair pass emits events.
+- Audit fix PRs, all MERGED: #18 cache history (Sept 17), #19 critic sees
+  selectors + shared doctrine + lockout (Sept 17), #20 audit remainder
+  (Sept 18), #21 assertion gate: RULE 7 catalogue literals, timeout cap,
+  Critic sized to scenario count with one retry, fake credentials at the
+  fill (Sept 18), #22 planning and discovery: page feature tags, unique
+  names, anchor baseline (Sept 18), #23 tool surface: cross-element
+  compares, currency parsing, pattern and toBeChecked assertions, minimum
+  counts, circular compares refused, smoke-emitted-run executes the
+  emitted framework in TS and JS (Sept 19), #24 plan scope: one plan per
+  path template, rule-content feature matching, repair pass funds only
+  what the reserve covers (Sept 19).
 
 Cut line if the schedule slips: the Terminals page cannot move after the
 audit, it is the only way to start a run from the new dashboard and the
@@ -96,12 +108,21 @@ demo needs it. If PR C runs long, ship a single-terminal composer in PR C
 and move the parallel-run plumbing (RunSettings, registry, concurrent
 terminals) to after the audit.
 
-Audit data: the $6 run happened Sept 15 on practicesoftwaretesting.com
-(run 20260915T174318Z-ec8eff, started from the dashboard): $6.0812 spent,
-0 shipped, 10 planned, 6 dropped at the critic gate, 4 incomplete,
-stopped at the explorer share of the ceiling. Not resumed on purpose; it
-is the audit's before-run. The after-run repeats it with the same SRS and
-ceiling once the fixes below land.
+Toolshop runs, same site, same SRS, same $6 ceiling:
+
+| Run | Date | After | Pages | Planned | Explored | Shipped | Cost | End | Diagnosis |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 ec8eff | Sept 15 | baseline | 3 | 10 | 6 | 0 | $6.08 | stopped at ceiling | docs/audit/run-ec8eff-diagnosis.md |
+| 2 f3b41e | Sept 18 | #18 to #20 | 7 | 18 | 15 | 1 | $4.97 | completed | docs/audit/run-f3b41e-diagnosis.md |
+| 3 5e4394 | Sept 18 | #21, #22 | 7 | 20 | 16 | 1 | $6.09 | completed | docs/audit/run-5e4394-diagnosis.md |
+| 4 | NEXT | #23, #24 | | | | | | same command | first run where the tools can do what the doctrine asks |
+
+Run 3: twelve of fourteen reworks asked for tool capabilities that did not
+exist (assert_compare ignored its target hints; numeric relations could not
+parse currency; no pattern, toBeChecked or minimum-count assertions).
+
+saucedemo proof runs: Sept 14 $0.6187 4 shipped; Sept 17 after #18 $0.4536
+3 shipped, 95.8 percent cache; Sept 17 after #19 $0.3437 4 shipped, 0 rework.
 
 ## After the dashboard: the audit
 
@@ -109,53 +130,23 @@ Structured evaluation of the engine producing an evidence report, using the
 qa-core-heal evaluation report as the template. Backlog items for it, gathered
 during the maturity pass:
 
-### From run ec8eff (ranked by cost impact)
-
-- FIXED (PR #18, Sept 17): the Explorer re-sent the whole conversation
-  uncached on every call; five get_dom results were paid for about 60
-  times each, $5.37 of the $6.01. Conversation history is now cached
-  (breakpoint on the latest message). Proof run saucedemo
-  20260917T124620Z-34307c: total $0.4536 against $0.6187 on Sept 14,
-  exploration $0.3391 against $0.6033 with 39 steps against 28, 95.8
-  percent of prompt tokens from cache over 32 calls. Also: closeout
-  grace at the cost ceiling.
-  Diagnosis: docs/audit/run-ec8eff-diagnosis.md (commit 85bf6ea). Fix
-  list order: cache (done), critic + doctrine + lockout (done), the rest
-  (PR 3), then the after-run.
-- FIXED (PR #19, Sept 17): the Critic never saw selectors (describeStep
-  rendered the intent only) and the Explorer and Critic prompts carried
-  contradictory doctrine. describeStep now renders intent = locator as
-  the emitter writes it; one ASSERTION_DOCTRINE constant
-  (src/agent/doctrine.ts) is interpolated into both prompts; wrong
-  credential negatives use non-existent accounts; replay records
-  observed text on failure; every Stabilizer attempt is recorded and
-  broken means gaveUp. Proof run saucedemo 20260917T163041Z-0ebfe7:
-  4 of 4 shipped, 4 of 4 rules, 0 rework, $0.3437 (Sept 14 baseline
-  $0.6187 for the same 4).
-- Repair reserve: 15 percent of the ceiling could not fund one repair at
-  this per-scenario cost; $0.86 spent, nothing re-recorded. Reserve must
-  be sized against observed per-scenario cost or the pass declines up
-  front, loudly.
-- Stabilizer: $0.0122 spent with no attempts recorded.
-- Steps: 84 explorer calls against a documented max of 40; find which
-  limit governs and make Settings describe that one.
-- Planner rule tags: a happy login cited R10 (the wrong-password rule).
+Findings from the three diagnoses are tracked in the diagnosis files; every
+item ranked there is either merged (see the PR list above) or listed below.
 
 - Enumerate every cap, truncation, filter, and catch in the pipeline; each is
   made loud or proven harmless (six silent-failure bugs were found this month).
-- Repair prompt: forbid capture-then-compare with no intervening action.
 - Doctrine decision on absence-as-count-zero assertions.
-- Token cost per scenario (DOM payload, orientation steps) is the real cost
-  lever, not model price.
 - SIGINT listener leak in the long-lived gateway process.
 - CODEBASE.md is stale and lists missing doc files.
-- A smoke that runs an emitted framework against a local fixture page.
 - The 0.3.5 packaging fixes for qa-core-heal (exports, peer deps, engines).
 - run-report records its own budgets (step budget, explorer sub-ceiling,
   repair-pass budget, per-page planner cost) so the dashboard can show spend
   against limit; today those four are not recorded.
 - runtime emits discovery events (rung, page count, filter result) so the
   live Discovery panel has numbers.
+- shared demo account lockout on practicesoftwaretesting.com: the happy
+  login can be locked by outside traffic; decide whether the run registers
+  its own account.
 
 ## Then: go to market
 
