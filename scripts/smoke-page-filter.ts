@@ -19,8 +19,9 @@ import {
   MAX_PAGES_WITH_FEATURES,
   MAX_PAGES_NO_FEATURES,
 } from '../src/agent/page-filter.js';
-import { capVolatile, plainFeatureMatches, FEATURE_PATH_TOKENS, tokensFor } from '../src/agent/page-filter.js';
-import { writeDiscoveryJson } from '../src/agent/discovery.js';
+import { capVolatile, plainFeatureMatches, FEATURE_PATH_TOKENS, tokensFor, groupByTemplate, pathTemplate, segmentFeature } from '../src/agent/page-filter.js';
+import { writeDiscoveryJson, discoverPages, CRAWL_VOLATILE_CAP, CRAWL_PAGE_CAP } from '../src/agent/discovery.js';
+import { featureTokenMap, ruleContentTokens, type RequirementsMap } from '../src/agent/requirements.js';
 import os from 'node:os';
 import path from 'node:path';
 import { isVolatilePath, type DiscoveredPage } from '../src/agent/discovery.js';
@@ -213,6 +214,103 @@ check('H2. the token table covers product, cart, contact, login and register', [
   check('I4. the login token set has no "auth"; registration and password-recovery sets exist', !FEATURE_PATH_TOKENS['login']!.includes('auth') && FEATURE_PATH_TOKENS['registration']!.includes('create-account') && FEATURE_PATH_TOKENS['password-recovery']!.includes('forgot') && FEATURE_PATH_TOKENS['password-recovery']!.includes('reset') && FEATURE_PATH_TOKENS['password-recovery']!.includes('recover'));
   check('I5. a map with a password-recovery feature tags /auth/forgot-password with it', plainFeatureMatches(f3b41e, ['login', 'password-recovery']).find((p) => p.url.endsWith('/auth/forgot-password'))?.feature === 'password-recovery');
   check('I6. tokensFor resolves a compound feature name by its words', JSON.stringify(tokensFor('user-registration')) === JSON.stringify(FEATURE_PATH_TOKENS['registration']) && tokensFor('contact-form').includes('contact') && JSON.stringify(tokensFor('warranty')) === JSON.stringify(['warranty']));
+}
+
+/* ─── J. one plan per path template; volatile pages never fill the crawl cap; rule content names the feature ── */
+{
+  const ORIGIN = 'https://practicesoftwaretesting.com';
+  const bc = (path: string, anchorPolls?: number[]): DiscoveredPage => ({ url: `${ORIGIN}${path}`, source: 'browser-crawl', ...(anchorPolls ? { anchorPolls } : {}) });
+  // The 5e4394 candidate set: four /category/* siblings (power-tools first
+  // and nav-only, hand-tools second with rendered products), plus the pages
+  // that must stay apart. /auth/login and /auth/register share /auth but
+  // name different features, so they are two templates, not one.
+  const set = [
+    bc('/'),
+    bc('/category/power-tools', [17, 17, 17, 17]),
+    bc('/category/hand-tools', [17, 17, 26, 26]),
+    bc('/category/other', [17, 17, 26, 26]),
+    bc('/category/special-tools', [17, 17, 17, 17]),
+    bc('/rentals', [16, 16]),
+    bc('/contact', [16, 16]),
+    bc('/auth/login', [18, 18]),
+    bc('/auth/register', [18, 18]),
+    { ...bc('/product/01M2TKYPB9C93P8WTG7P7B2307'), volatile: true },
+  ];
+  check('J1. pathTemplate splits a two-segment path into prefix and last segment, and a one-segment path has no template',
+    JSON.stringify(pathTemplate(`${ORIGIN}/category/hand-tools`)) === JSON.stringify({ prefix: '/category', last: 'hand-tools' }) && pathTemplate(`${ORIGIN}/rentals`) === null);
+  check('J2. segmentFeature names login and registration from the token table and nothing for a category slug',
+    segmentFeature('login') === 'login' && segmentFeature('register') === 'registration' && segmentFeature('hand-tools') === null);
+  const g = groupByTemplate(set);
+  const planned = g.pages.map((p) => new URL(p.url).pathname);
+  check('J3. four /category/* pages yield ONE plan: the first sibling with rendered content is the representative',
+    planned.filter((p) => p.startsWith('/category/')).length === 1 && planned.includes('/category/hand-tools'), JSON.stringify(planned));
+  check('J4. the other three siblings are recorded as same template as the representative, never planned',
+    g.sameTemplate.length === 3 && g.sameTemplate.every((p) => p.sameTemplateAs === `${ORIGIN}/category/hand-tools`) && g.sameTemplate.map((p) => new URL(p.url).pathname).sort().join(',') === '/category/other,/category/power-tools,/category/special-tools', JSON.stringify(g.sameTemplate));
+  check('J5. /auth/login and /auth/register are not one template; /, /rentals, /contact and the volatile page pass through',
+    planned.includes('/auth/login') && planned.includes('/auth/register') && planned.includes('/') && planned.includes('/rentals') && planned.includes('/contact') && g.pages.some((p) => p.volatile), JSON.stringify(planned));
+  const fp = await filterPages({ pages: set, features: ['catalogue', 'cart', 'account', 'contact'], apiKey: undefined });
+  check('J6. filterPages plans one page per template and returns the same-template pages apart',
+    fp.pages.filter((p) => p.url.includes('/category/')).length === 1 && fp.sameTemplate.length === 3 && fp.pages.length === 7, JSON.stringify({ pages: fp.pages.map((p) => p.url), same: fp.sameTemplate.map((p) => p.url) }));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-template-'));
+  const file = writeDiscoveryJson(dir, { method: 'browser-crawl', pages: fp.pages, candidates: set.map((p) => { const st = fp.sameTemplate.find((x) => x.url === p.url); return st ? { ...p, sameTemplateAs: st.sameTemplateAs } : p; }), warnings: [] });
+  const written = JSON.parse(fs.readFileSync(file, 'utf8')) as { candidates: Array<{ url: string; sameTemplateAs?: string }> };
+  fs.rmSync(dir, { recursive: true, force: true });
+  check('J7. discovery.json records the same-template page with the representative it shares a template with',
+    written.candidates.find((c) => c.url.endsWith('/category/power-tools'))?.sameTemplateAs === `${ORIGIN}/category/hand-tools` && written.candidates.find((c) => c.url.endsWith('/category/hand-tools'))?.sameTemplateAs === undefined, JSON.stringify(written.candidates.filter((c) => c.sameTemplateAs)));
+
+  // The crawl page cap counts stable paths only: fourteen volatile product
+  // links on the entry page used to fill the cap before /auth/register (one
+  // hop behind /auth/login) was reached. Now at most CRAWL_VOLATILE_CAP of
+  // them are even loaded and register is a candidate.
+  const products = Array.from({ length: 14 }, (_, i) => `/product/01M2TKYPB9C93P8WTG7P7B23${String(i).padStart(2, '0')}`);
+  const bodies: Record<string, string> = {
+    [`${ORIGIN}/`]: [...products.map((p) => `<a href="${p}">p</a>`), '<a href="/auth/login">Sign in</a>'].join(' '),
+    [`${ORIGIN}/auth/login`]: '<a href="/auth/register">Register your account</a>',
+    [`${ORIGIN}/auth/register`]: '',
+  };
+  for (const p of products) bodies[`${ORIGIN}${p}`] = '';
+  const requested: string[] = [];
+  const fetchFn = async (url: string): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> => {
+    requested.push(url);
+    if (url.endsWith('/robots.txt') || url.endsWith('/sitemap.xml') || url.endsWith('sitemap_index.xml')) return { ok: false, status: 404, text: async () => '' };
+    const body = bodies[url];
+    if (body === undefined) return { ok: false, status: 404, text: async () => '' };
+    return { ok: true, status: 200, text: async () => body };
+  };
+  const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn: fetchFn as never, crawlDelayMs: 0 });
+  const found = r.pages.map((p) => new URL(p.url).pathname);
+  check('J8. the crawl rung fired and /auth/register is a candidate although fourteen volatile product links came first',
+    r.method === 'crawl' && found.includes('/auth/register') && found.includes('/auth/login'), JSON.stringify({ method: r.method, found }));
+  check(`J9. at most CRAWL_VOLATILE_CAP (${CRAWL_VOLATILE_CAP}) volatile pages are loaded or collected; the stable cap (${CRAWL_PAGE_CAP}) is never spent on them`,
+    requested.filter((u) => u.includes('/product/')).length <= CRAWL_VOLATILE_CAP && r.pages.filter((p) => p.volatile).length <= CRAWL_VOLATILE_CAP && r.pages.filter((p) => !p.volatile).length <= CRAWL_PAGE_CAP, JSON.stringify({ loaded: requested.filter((u) => u.includes('/product/')).length, volatile: r.pages.filter((p) => p.volatile).length }));
+
+  // SRS features match pages by rule content, not only by name: the toolshop
+  // map calls its login and registration rules "account" (R10 to R12).
+  const toolshop: RequirementsMap = {
+    features: [
+      { name: 'catalogue', description: 'Browse and search products with filters and sorting.', rules: [{ id: 'R2', text: 'Typing a term in the search box and submitting shows only products whose name contains the term.', type: 'behavior' }] },
+      { name: 'cart', description: 'Manage shopping cart items and totals.', rules: [{ id: 'R6', text: 'Adding a product from its detail page increases the cart count shown in the header.', type: 'behavior' }] },
+      { name: 'account', description: 'User login and registration.', rules: [
+        { id: 'R10', text: 'Login with a wrong password shows an error and the user stays on the login page.', type: 'behavior' },
+        { id: 'R11', text: 'Registration with an already used email address is rejected with an error.', type: 'validation' },
+        { id: 'R12', text: 'Submitting the registration form with an empty required field shows a required-field message.', type: 'validation' },
+      ] },
+      { name: 'contact', description: 'Contact form with validation.', rules: [{ id: 'R13', text: 'The contact form rejects submission when the message field is empty and shows a validation message.', type: 'validation' }] },
+    ],
+    roles: ['customer', 'admin'], truncated: false,
+  };
+  const tokens = featureTokenMap(toolshop);
+  check('J10. the account feature\'s rule content adds the login and registration tokens to its own',
+    tokens['account']!.includes('login') && tokens['account']!.includes('register') && tokens['account']!.includes('account'), JSON.stringify(tokens['account']));
+  check('J11. ruleContentTokens reads registration from "Registration ..." and login from "Login with ..."; cart from "cart"; contact from "contact form"',
+    ruleContentTokens(toolshop.features[2]!).includes('signup') && ruleContentTokens(toolshop.features[1]!).includes('basket') && ruleContentTokens(toolshop.features[3]!).includes('contact') && !ruleContentTokens(toolshop.features[3]!).includes('login'), JSON.stringify({ account: ruleContentTokens(toolshop.features[2]!), cart: ruleContentTokens(toolshop.features[1]!), contact: ruleContentTokens(toolshop.features[3]!) }));
+  const auth = [bc('/auth/login'), bc('/auth/register'), bc('/auth/forgot-password'), bc('/contact')];
+  const matched = plainFeatureMatches(auth, toolshop.features.map((f) => f.name), tokens);
+  const tagOf = (p: string): string | null => matched.find((m) => m.url.endsWith(p))?.feature ?? null;
+  check('J12. with the toolshop map, "account" plain-matches /auth/login AND /auth/register; /contact matches contact; forgot-password matches nothing',
+    tagOf('/auth/login') === 'account' && tagOf('/auth/register') === 'account' && tagOf('/contact') === 'contact' && tagOf('/auth/forgot-password') === null, JSON.stringify(matched.map((m) => [m.url, m.feature])));
+  check('J13. without the rule-content tokens the name "account" matches neither auth page (the old behaviour, kept as the baseline)',
+    plainFeatureMatches(auth, ['account']).length === 0);
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

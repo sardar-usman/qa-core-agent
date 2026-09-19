@@ -49,7 +49,7 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
   const exploreStatus: StageStatus = criticStarted || replayStarted || done || finished ? 'done' : explorerStarted ? 'running' : 'pending';
   const explore: RunDetailStages['explore'] = {
     status: exploreStatus,
-    stat: explorerStarted || finished ? `${recorded} recorded · ${plural(toolCalls.length, 'step')} · ${money(usage)}` : 'waiting',
+    stat: explorerStarted || finished ? `${recorded} recorded · ${skipped.length} skipped · ${plural(toolCalls.length, 'step')} · ${money(usage)}` : 'waiting',
     steps: toolCalls.length, scenarios_recorded: recorded, scenarios_shipped: 0, explorer_usd: usage, repair_usd: 0,
     gate_injections: of('gate_injection').map((g) => ({ scenario: String(g.scenario ?? ''), step_index: Number(g.step ?? 0), assertion_type: String(g.assertionType ?? ''), detail: String(g.detail ?? '') })),
     gate_broken: of('gate_broken').map((g) => ({ scenario: String(g.scenario ?? ''), reason: String(g.reason ?? ''), attempts: Number(g.attempts ?? 0) })),

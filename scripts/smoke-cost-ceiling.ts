@@ -267,11 +267,11 @@ const echoedVerdicts = [
 // Reserve $0.90 (15% of $6). The Explorer spent $5.1840 recording 6 scenarios.
 const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0.9, explorerUsd: 5.184, recorded: 6 });
 check('H1. the live shape now RUNS the repair pass', h?.run === true, JSON.stringify(h));
-check('H2. all 5 prefix-echoed rework verdicts match their scenarios', h?.rework.length === 5, String(h?.rework.length));
+check('H2. all 5 prefix-echoed rework verdicts match their scenarios: the reserve funds 1 and names the other 4 as not repaired', h !== null && h.rework.length + h.unfunded.length === 5 && h.rework.length === 1 && h.fundsLabel === 'reserve funds 1 of 5', JSON.stringify({ funded: h?.rework.length, unfunded: h?.unfunded.length }));
 check('H3. the budget is the FULL stated reserve ($0.90), not the reserve minus planner and critic spend',
   h !== null && Math.abs(h.budgetUsd - 0.9) < 1e-9, String(h?.budgetUsd));
-check('H4. the run line states count, the reserve, the per-scenario explorer cost observed, and how many it funds',
-  h?.line === 'repair pass: 5 scenario(s), budget $0.90 (the stated reserve); explorer cost this run $0.8640 per recorded scenario, so the reserve funds about 1 of 5', h?.line);
+check('H4. the run line states the funded count, the reserve, the per-scenario explorer cost observed, the funded name and the unfunded names',
+  (h?.line ?? '').startsWith('repair pass: 1 of 5 rework scenario(s), budget $0.90 (the stated reserve); explorer cost this run $0.8640 per recorded scenario, so the reserve funds 1 of 5; repairing: "') && /; not repaired \(reserve funds 1 of 5\): "/.test(h?.line ?? '') && (h?.unfunded ?? []).every((s) => (h?.line ?? '').includes(`"${s.name}"`)), h?.line);
 
 // No reserve at all: still a line, never silence.
 const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0, explorerUsd: 5.184, recorded: 6 });

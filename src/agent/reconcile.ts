@@ -1,4 +1,5 @@
 import type { RunReport } from './trace.js';
+import { scenarioNameKey } from './rule-coverage.js';
 
 /**
  * Reporting reconciliation.
@@ -110,11 +111,16 @@ export function reconcile(report: RunReport): Reconciliation {
     });
   }
 
-  // 2. Critic — rework/reject verdicts are not sent to Reality-Check.
+  // 2. Critic: rework/reject verdicts are not sent to Reality-Check. A
+  // rework the reserve did not fund names that cause first, so the funnel
+  // and the coverage report say why the scenario was never repaired.
+  const notRepaired = new Map<string, string>();
+  for (const h of report.review?.repair ?? []) if (h.notRepaired) notRepaired.set(scenarioNameKey(h.scenario), h.notRepaired);
   for (const v of report.review?.verdicts ?? []) {
     if (v.verdict === 'pass') continue;
     const why = v.reasons.length > 0 ? `: ${v.reasons.join('; ')}` : '';
-    dropped.push({ name: v.scenario, stage: 'critic', reason: `critic ${v.verdict}${why}` });
+    const cause = v.verdict === 'rework' ? notRepaired.get(scenarioNameKey(v.scenario)) : undefined;
+    dropped.push({ name: v.scenario, stage: 'critic', reason: cause ? `rework, not repaired: ${cause}${why}` : `critic ${v.verdict}${why}` });
   }
 
   // 3. Replay — failed the single fresh-context re-run.
@@ -178,8 +184,15 @@ export function reconcile(report: RunReport): Reconciliation {
   }));
 
   // 7. Skipped: the Explorer explicitly declined a planned scenario with a
-  // reason (skip_scenario). Its own term, never a silent shortfall.
-  const skipped = (report.skipped ?? []).map((s) => ({ name: s.scenario, reason: s.reason }));
+  // reason (skip_scenario). Its own term, never a silent shortfall. A name is
+  // counted ONCE across the terms: the runtime refuses a skip of a scenario
+  // already recorded as a finding (and the reverse), and this pass is the
+  // guard for a report written before that rule (run 5e4394 counted one
+  // scenario as both, and the funnel read "+1 unplanned").
+  const findingKeys = new Set(findings.map((f) => scenarioNameKey(f.name)));
+  const skippedAll = (report.skipped ?? []).map((s) => ({ name: s.scenario, reason: s.reason }));
+  const skipped = skippedAll.filter((s) => !findingKeys.has(scenarioNameKey(s.name)));
+  const doubleCounted = skippedAll.length - skipped.length;
 
   const accountedFor = generated + dropped.length + incomplete.length + findings.length + skipped.length;
   const planned = report.plan?.length ?? accountedFor;
@@ -193,6 +206,8 @@ export function reconcile(report: RunReport): Reconciliation {
   let note: string | undefined;
   if (noPlan) {
     note = 'no Planner plan recorded — reconciled against the pipeline total';
+  } else if (doubleCounted > 0) {
+    note = `${doubleCounted} scenario(s) recorded as both a finding and a skip; counted once, as the finding.`;
   } else if (added > 0) {
     note = `Explorer added ${added} scenario(s) beyond the ${planned} planned (e.g. an a11y check). All ${accountedFor} are named below, so the run still balances.`;
   } else if (shortfall > 0) {

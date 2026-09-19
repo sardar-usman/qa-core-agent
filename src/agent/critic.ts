@@ -564,6 +564,23 @@ export function assignVerdicts(names: string[], verdicts: ScenarioVerdict[]): Ma
 }
 
 /**
+ * Verdicts re-keyed to the recorded scenario names they match, so every
+ * later consumer (the gate, reconciliation drops, the run page rows) keys by
+ * one name. Run 5e4394: the Critic echoed a name without the plan's quotation
+ * marks, the drop was recorded under the echo, and the run page grew a 19th
+ * row for a 16-scenario run. A verdict matching no scenario keeps its name.
+ */
+export function alignVerdictNames(names: string[], verdicts: ScenarioVerdict[]): ScenarioVerdict[] {
+  const assigned = assignVerdicts(names, verdicts);
+  const nameOf = new Map<ScenarioVerdict, string>();
+  for (const [name, v] of assigned) nameOf.set(v, name);
+  return verdicts.map((v) => {
+    const name = nameOf.get(v);
+    return name && name !== v.scenario ? { ...v, scenario: name } : v;
+  });
+}
+
+/**
  * Split the gate three ways instead of two: reject drops for good, rework
  * earns ONE repair pass, pass continues. A scenario with no verdict counts
  * as pass (the Critic did not flag it). Matching is tolerant (see
@@ -614,11 +631,15 @@ export function splitCarriedVerdicts<S extends { name: string }>(
 /** What the repair-pass entry decision resolved to. The line ALWAYS prints. */
 export interface RepairDecision<S> {
   run: boolean;
-  /** The recorded scenarios matched to rework verdicts. */
+  /** The rework scenarios the reserve funds, highest value first: these are re-explored. */
   rework: S[];
-  /** Total ceiling minus actual spend — the budget the repair pass may use. */
+  /** The rework scenarios the reserve does not fund: recorded as dropped "rework, not repaired". */
+  unfunded: S[];
+  /** "reserve funds N of M", the cause recorded on every unfunded drop. */
+  fundsLabel: string;
+  /** The stated reserve, offered whole. */
   budgetUsd: number;
-  /** "repair pass: N scenario(s), budget $X" or "repair pass skipped: <reason>". */
+  /** The one line the runtime always prints: funded and unfunded named, or the skip reason. */
   line: string;
 }
 
@@ -640,10 +661,12 @@ export function decideRepairPass<S extends { name: string }>(opts: {
   explorerUsd: number;
   /** How many scenarios the Explorer recorded, for the per-scenario figure. */
   recorded: number;
+  /** The rule ids a scenario cites (from the plan), for highest-value-first funding. */
+  ruleIdsFor?: (name: string) => string[];
 }): RepairDecision<S> | null {
   const reworkVerdicts = opts.verdicts.filter((v) => v.verdict === 'rework');
   if (reworkVerdicts.length === 0) return null;
-  const { rework } = splitGate(opts.scenarios, opts.verdicts);
+  const { kept, rework } = splitGate(opts.scenarios, opts.verdicts);
   // The pass is offered the full stated reserve. It used to get the reserve
   // minus the planner and critic spend (run ec8eff: $0.81 of a $0.90 reserve),
   // which is not what the console promised at run start.
@@ -652,6 +675,8 @@ export function decideRepairPass<S extends { name: string }>(opts: {
     return {
       run: false,
       rework,
+      unfunded: [],
+      fundsLabel: 'reserve funds 0 of 0',
       budgetUsd,
       line: `repair pass skipped: ${reworkVerdicts.length} rework verdict(s) matched no recorded scenario by name (verdicts: ${reworkVerdicts.map((v) => `"${v.scenario}"`).join(', ')}).`,
     };
@@ -659,24 +684,50 @@ export function decideRepairPass<S extends { name: string }>(opts: {
   if (budgetUsd <= 0) {
     return {
       run: false,
-      rework,
+      rework: [],
+      unfunded: rework,
+      fundsLabel: `reserve funds 0 of ${rework.length}`,
       budgetUsd,
       line: `repair pass skipped: no reserve ($${budgetUsd.toFixed(4)}); ${rework.length} rework scenario(s) dropped.`,
     };
   }
   // The per-scenario figure a reader needs to judge the reserve: what one
-  // recorded scenario cost the Explorer this run, and how many of the rework
-  // scenarios the reserve funds at that price.
+  // recorded scenario cost the Explorer this run, and how many rework
+  // scenarios the reserve funds at that price (floor, never below one). Run
+  // 5e4394 started two of fourteen and let the ceiling pick which two; the
+  // funded set is chosen here, highest value first: a scenario whose cited
+  // rules no kept scenario covers, then the rest in plan order.
   const perScenario = opts.recorded > 0 ? opts.explorerUsd / opts.recorded : null;
-  const funds = perScenario && perScenario > 0 ? Math.floor(budgetUsd / perScenario) : null;
+  const funds = perScenario && perScenario > 0 ? Math.min(rework.length, Math.max(1, Math.floor(budgetUsd / perScenario))) : rework.length;
+  const ruleIdsFor = opts.ruleIdsFor ?? (() => []);
+  const covered = new Set(kept.flatMap((s) => ruleIdsFor(s.name)));
+  const pool = rework.map((s, i) => ({ s, i }));
+  const funded: S[] = [];
+  while (funded.length < funds && pool.length > 0) {
+    let best = 0;
+    let bestValue = -1;
+    for (const [j, x] of pool.entries()) {
+      const value = ruleIdsFor(x.s.name).filter((r) => !covered.has(r)).length;
+      if (value > bestValue) { bestValue = value; best = j; }
+    }
+    const [pick] = pool.splice(best, 1);
+    funded.push(pick!.s);
+    for (const r of ruleIdsFor(pick!.s.name)) covered.add(r);
+  }
+  const unfunded = pool.sort((a, b) => a.i - b.i).map((x) => x.s);
+  const fundsLabel = `reserve funds ${funded.length} of ${rework.length}`;
   const observed = perScenario === null
-    ? 'no per-scenario explorer cost observed'
-    : `explorer cost this run $${perScenario.toFixed(4)} per recorded scenario, so the reserve funds about ${Math.min(funds ?? 0, rework.length)} of ${rework.length}`;
+    ? `no per-scenario explorer cost observed, so all ${rework.length} are repaired`
+    : `explorer cost this run $${perScenario.toFixed(4)} per recorded scenario, so the ${fundsLabel}`;
+  const names = (list: S[]): string => list.map((s) => `"${s.name}"`).join(', ');
+  const notRepaired = unfunded.length > 0 ? `; not repaired (${fundsLabel}): ${names(unfunded)}` : '';
   return {
     run: true,
-    rework,
+    rework: funded,
+    unfunded,
+    fundsLabel,
     budgetUsd,
-    line: `repair pass: ${rework.length} scenario(s), budget $${budgetUsd.toFixed(2)} (the stated reserve); ${observed}`,
+    line: `repair pass: ${funded.length} of ${rework.length} rework scenario(s), budget $${budgetUsd.toFixed(2)} (the stated reserve); ${observed}; repairing: ${names(funded)}${notRepaired}`,
   };
 }
 
@@ -687,6 +738,8 @@ export interface RepairHistoryEntry {
   /** The verdict after the repair pass. Absent when the repair never re-recorded it. */
   second?: Verdict;
   outcome: 'kept' | 'dropped';
+  /** Set when the reserve did not fund this scenario's repair: "reserve funds N of M". The funnel names it as the drop cause. */
+  notRepaired?: string;
 }
 
 /* ─────────────────── repair pass events ─────────────────── */
@@ -730,6 +783,8 @@ export function repairDoneEvent(history: RepairHistoryEntry[], usd: number): Rep
 export function mergeRepairVerdicts(
   original: ScenarioVerdict[],
   repaired: ScenarioVerdict[] | null,
+  /** The rework scenarios the reserve did not fund, with the cause ("reserve funds N of M"). */
+  unfunded?: { names: string[]; reason: string },
 ): { final: ScenarioVerdict[]; history: RepairHistoryEntry[] } {
   const final: ScenarioVerdict[] = [];
   const history: RepairHistoryEntry[] = [];
@@ -738,6 +793,7 @@ export function mergeRepairVerdicts(
   // so sibling rework names never swap verdicts.
   const reworkNames = original.filter((v) => v.verdict === 'rework').map((v) => v.scenario);
   const secondByOriginal = assignVerdicts(reworkNames, repaired ?? []);
+  const unfundedByOriginal = assignVerdicts(reworkNames, (unfunded?.names ?? []).map((scenario) => ({ scenario, verdict: 'rework' as const, reasons: [], required_fixes: [] })));
   for (const v of original) {
     if (v.verdict !== 'rework') {
       final.push(v);
@@ -746,7 +802,7 @@ export function mergeRepairVerdicts(
     const second = secondByOriginal.get(v.scenario);
     if (!second) {
       final.push(v);
-      history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped' });
+      history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped', ...(unfunded && unfundedByOriginal.has(v.scenario) ? { notRepaired: unfunded.reason } : {}) });
       continue;
     }
     final.push(second);

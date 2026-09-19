@@ -130,7 +130,7 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
             {d.candidates.map((p) => (
               <li key={`c-${p.url}`} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 first:border-t-0" data-testid="discovery-candidate">
                 <span className="mono truncate text-fg-2" title={p.url}>{p.url}</span>
-                {d.pages.some((k) => k.url === p.url) ? <Badge variant="pass">kept</Badge> : <Badge variant="neutral">not picked</Badge>}
+                {d.pages.some((k) => k.url === p.url) ? <Badge variant="pass">kept</Badge> : p.same_template_as ? <Badge variant="neutral" data-testid="discovery-same-template" title={p.same_template_as}>same template as {shortPath(p.same_template_as)}</Badge> : <Badge variant="neutral">not picked</Badge>}
                 {p.volatile ? <Badge variant="neutral">volatile</Badge> : null}
               </li>
             ))}
@@ -176,6 +176,11 @@ function Plan({ p }: { p: RunDetailStages['plan'] }) {
       </ul>
     </>
   );
+}
+
+/** The path of a URL, for a compact "same template as /category/hand-tools" label. */
+function shortPath(url: string): string {
+  try { return new URL(url).pathname; } catch { return url; }
 }
 
 function Explore({ e }: { e: RunDetailStages['explore'] }) {

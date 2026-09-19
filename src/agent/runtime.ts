@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js'
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, type PlannedScenario } from './planner.js';
-import { critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
+import { alignVerdictNames, critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -14,6 +14,7 @@ import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCovera
 import type { RequirementsMap } from './requirements.js';
 import { discoverPages, writeDiscoveryJson } from './discovery.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
+import { featureTokenMap } from './requirements.js';
 import {
   CHECKPOINT_VERSION,
   checkpointPath,
@@ -733,15 +734,26 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // intent; both pass through whole.
     // Every page the rung found, before the filter: recorded on the report and
     // in discovery.json so a reader can see what was seen and not picked.
-    const candidates = disc.pages;
+    let candidates = disc.pages;
     let pages = disc.pages;
     let plannerUsd = 0;
     if (FILTERED_SOURCES.has(disc.method)) {
       const featureNames = opts.requirements
         ? opts.requirements.features.map((f) => f.name)
         : opts.features;
-      const filtered = await filterPages({ pages, features: featureNames, apiKey });
+      const filtered = await filterPages({ pages, features: featureNames, apiKey, ...(opts.requirements ? { featureTokens: featureTokenMap(opts.requirements) } : {}) });
       plannerUsd += filtered.costUsd;
+      // One plan per path template: the other members are recorded on the
+      // candidates (discovery.json, the Discovery panel) and never planned.
+      if (filtered.sameTemplate.length > 0) {
+        const byUrl = new Map(filtered.sameTemplate.map((p) => [p.url, p.sameTemplateAs!]));
+        candidates = candidates.map((p) => (byUrl.has(p.url) ? { ...p, sameTemplateAs: byUrl.get(p.url)! } : p));
+        const describe = (u: string): string => { try { return new URL(u).pathname; } catch { return u; } };
+        opts.onEvent?.({
+          type: 'message',
+          text: `discovery: ${filtered.sameTemplate.length} page(s) share a path template with a planned page and are not planned: ${filtered.sameTemplate.map((p) => `${describe(p.url)} (same template as ${describe(p.sameTemplateAs!)})`).join(', ')}`,
+        });
+      }
       if (filtered.method !== 'passthrough') {
         opts.onEvent?.({
           type: 'message',
@@ -1209,7 +1221,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         opts.onEvent?.({ type: 'critic_done', verdicts: carriedVerdicts, usd: 0 });
       } else {
         const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
-        review = { verdicts: [...carriedVerdicts, ...c.verdicts], summary: c.summary };
+        // Verdicts keyed by the recorded scenario name they match, so drops,
+        // coverage and the run page all use one name per scenario.
+        review = { verdicts: [...carriedVerdicts, ...alignVerdictNames(toReview.map((s) => s.name), c.verdicts)], summary: c.summary };
         for (const w of c.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
         if (c.unreviewed.length > 0) {
           opts.onEvent?.({
@@ -1271,15 +1285,21 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // impossible. The budget is the full stated reserve, as promised at run
     // start, and the line states the per-scenario explorer cost observed in
     // this run against it.
+    const ruleIdsByKey = new Map<string, string[]>();
+    for (const p of planResult.scenarios) ruleIdsByKey.set(scenarioNameKey(p.name), p.ruleIds ?? []);
     const decision = decideRepairPass({
       scenarios,
       verdicts: review.verdicts,
       reserveUsd,
       explorerUsd: cost.usd - (cost.repairUsd ?? 0),
       recorded: scenarios.length,
+      ruleIdsFor: (name) => ruleIdsByKey.get(scenarioNameKey(name)) ?? [],
     });
     if (decision) {
       opts.onEvent?.({ type: 'message', text: decision.line });
+      // Every unfunded rework is a repair_scenario event with its cause, so
+      // the live Review panel and events.jsonl name why it was never repaired.
+      for (const s of decision.unfunded) opts.onEvent?.({ type: 'repair_scenario', name: s.name, outcome: 'not re-recorded', reason: `not repaired: ${decision.fundsLabel}` });
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
       let repairUsd = 0;
       if (decision.run) {
@@ -1319,7 +1339,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           if (repair.scenarios.length > 0) {
             const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
-            secondVerdicts = c2.verdicts;
+            secondVerdicts = alignVerdictNames(repair.scenarios.map((s) => s.name), c2.verdicts);
             for (const w of c2.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
             if (c2.unreviewed.length > 0) {
               opts.onEvent?.({ type: 'message', text: `WARNING: the Critic returned no verdict for ${c2.unreviewed.length} repaired scenario(s); held as rework: ${c2.unreviewed.map((n) => `"${n}"`).join(', ')}` });
@@ -1344,12 +1364,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           secondVerdicts = null;
         }
       }
-      const merged = mergeRepairVerdicts(review.verdicts, secondVerdicts);
+      const merged = mergeRepairVerdicts(review.verdicts, secondVerdicts, decision.unfunded.length > 0 ? { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } : undefined);
       review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
       for (const h of merged.history) {
         opts.onEvent?.({
           type: 'message',
-          text: `Repair verdict: "${h.scenario}" rework -> ${h.second ?? 'not re-recorded'} (${h.outcome})`,
+          text: `Repair verdict: "${h.scenario}" rework -> ${h.second ?? (h.notRepaired ? `not repaired (${h.notRepaired})` : 'not re-recorded')} (${h.outcome})`,
         });
       }
       if (decision.run) opts.onEvent?.(repairDoneEvent(merged.history, repairUsd));
@@ -1600,6 +1620,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // Rules cited only by scenarios the ceiling prevented from starting
         // classify planned-not-explored, never planned-but-dropped.
         unexplored: ceilingSalvage?.unexplored,
+        // The drop cause per scenario, so an uncovered rule says why its
+        // citing scenario fell out ("rework, not repaired: reserve funds 2 of 14").
+        dropReasons: new Map(report.reconciliation.dropped.map((d) => [d.name, d.reason])),
       }),
       // Derivation: which checklist categories produced scenarios per feature
       // and which were skipped, with the reason. The considered-not-automated

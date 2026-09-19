@@ -613,6 +613,18 @@ export const TOOL_DEFS = [
  * Matching tolerates the Explorer's small rephrasings, same treatment as
  * attachRuleIds.
  */
+/**
+ * Record a finding unless the scenario is already a skip (or already a
+ * finding): a scenario is one or the other, never both, and the first record
+ * stands. The no-op is logged in the tool result the caller returns.
+ */
+function recordFinding(ctx: ToolContext, finding: ToolContext['findings'][number]): boolean {
+  const key = scenarioNameKey(finding.scenario);
+  if (ctx.skipped.some((s) => scenarioNameKey(s.scenario) === key) || ctx.findings.some((f) => scenarioNameKey(f.scenario) === key)) return false;
+  ctx.findings.push(finding);
+  return true;
+}
+
 function unexploredPlanned(ctx: ToolContext): string[] {
   const begun = [
     ...ctx.scenarios.map((s) => s.name),
@@ -731,7 +743,7 @@ async function recoverOrFinding(
   const url = safeUrl(ctx.page);
   const scenarioName = ctx.current?.name ?? '(unnamed scenario)';
   const from = describeSelector(input);
-  ctx.findings.push({
+  recordFinding(ctx, {
     scenario: scenarioName,
     category: ctx.current?.category,
     expected: `locate element: ${input.intent}`,
@@ -1685,6 +1697,13 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (ctx.skipped.some((s) => s.scenario === planned)) {
           return { ok: false, error: `"${planned}" is already skipped.` };
         }
+        // A scenario is a finding OR a skip, never both: whichever the run
+        // recorded first stands and the second attempt is a no-op the tool
+        // result logs (run 5e4394 counted one scenario as both, so the funnel
+        // read "+1 unplanned").
+        if (ctx.findings.some((f) => scenarioNameKey(f.scenario) === scenarioNameKey(planned))) {
+          return { ok: true, data: { skipped: null, noop: `"${planned}" is already recorded as a finding; the skip is a no-op and the finding stands`, remaining: unexploredPlanned(ctx).length } };
+        }
         ctx.skipped.push({ scenario: planned, reason });
         return { ok: true, data: { skipped: planned, remaining: unexploredPlanned(ctx).length } };
       }
@@ -2145,7 +2164,7 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
     const expected = describeAssertion(input);
     const actual = await captureActualState(ctx.page);
     const scenarioName = ctx.current?.name ?? '(unnamed scenario)';
-    ctx.findings.push({
+    recordFinding(ctx, {
       scenario: scenarioName,
       category: ctx.current?.category,
       expected,

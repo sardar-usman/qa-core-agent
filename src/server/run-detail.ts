@@ -80,8 +80,8 @@ export interface ObservedOnFailure { url: string; target: string | null; message
 
 export interface RunDetailStages {
   discovery: {
-    /** report.discovery.candidates: every page the rung found before the filter (empty on older reports). */
-    candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
+    /** report.discovery.candidates: every page the rung found before the filter (empty on older reports). same_template_as names the planned page a candidate shares its path template with. */
+    candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean; same_template_as: string | null }>;
     status: StageStatus; stat: string;
     method: string | null;
     pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
@@ -379,7 +379,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
 
   const disc = report.discovery;
   const discovery: RunDetailStages['discovery'] = disc
-    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), candidates: (disc.candidates ?? []).map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), warnings: disc.warnings ?? [] }
+    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), candidates: (disc.candidates ?? []).map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true, same_template_as: p.sameTemplateAs ?? null })), warnings: disc.warnings ?? [] }
     : { status: 'not-applicable', stat: 'single page', method: null, pages: [], candidates: [], warnings: [] };
 
   const pageCounts = new Map<string | null, number>();
@@ -403,7 +403,9 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
     : shipped.length;
   const explore: RunDetailStages['explore'] = {
     status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
-    stat: `${recordedCount} recorded · ${shipped.length} shipped · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(4)}`,
+    // One recorded number for the page: the rail stat and the scenarios
+    // table subtitle both read "N recorded · M skipped" from this payload.
+    stat: `${recordedCount} recorded · ${skipped.length} skipped · ${shipped.length} shipped · ${plural(report.steps ?? 0, 'step')} · $${usd(cost.usd).toFixed(4)}`,
     steps: report.steps ?? 0, scenarios_recorded: recordedCount, scenarios_shipped: shipped.length,
     explorer_usd: usd(cost.usd), repair_usd: usd(cost.repairUsd),
     gate_injections: (report.gate?.injections ?? []).map((g) => ({ scenario: g.scenario, step_index: g.stepIndex, assertion_type: g.assertionType, detail: g.detail })),

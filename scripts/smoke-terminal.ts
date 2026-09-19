@@ -410,7 +410,7 @@ const afterLive = await page.evaluate(() => ({
   log: document.querySelector('[data-testid="run-log"]') !== null,
 }));
 check('C15. when run_report arrives the page renders the report: rail statuses come from the report, no pending or running left', afterLive.statuses.length === 6 && !afterLive.statuses.some((s) => s === 'pending' || s === 'running') && afterLive.statuses[5] === 'attention', JSON.stringify(afterLive.statuses));
-check('C16. polish: scenarios subtitle reads "N recorded", the finding card says "URL at the time", rail stats do not truncate', afterLive.subtitle === '2 recorded' && /URL at the time/.test(afterLive.findingLabel) && !/What happened/.test(afterLive.findingLabel) && !afterLive.railTruncate, JSON.stringify({ subtitle: afterLive.subtitle, finding: afterLive.findingLabel.slice(0, 120) }));
+check('C16. polish: scenarios subtitle reads "N recorded · M skipped" (the same numbers as the Explore rail), the finding card says "URL at the time", rail stats do not truncate', afterLive.subtitle === '2 recorded · 0 skipped' && /URL at the time/.test(afterLive.findingLabel) && !/What happened/.test(afterLive.findingLabel) && !afterLive.railTruncate, JSON.stringify({ subtitle: afterLive.subtitle, finding: afterLive.findingLabel.slice(0, 120) }));
 check('C17. the uploaded SRS is listed as an artifact of kind srs; the stored events and the log remain', afterLive.srsArtifact && afterLive.events === liveEvents.length && afterLive.log);
 await page.goto(`${base}/runs/${runId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="stage-view"][data-live="false"]');
