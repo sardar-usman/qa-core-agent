@@ -247,6 +247,44 @@ const skipped: RunReport = {
 const rsk = reconcile(skipped);
 check('W. stability skipped: generated counts as stable, none recovered', rsk.stable === 2 && rsk.recovered === 0 && rsk.balanced);
 
+/* ─── 6. a scenario is a finding OR a skip, counted once; a not-repaired rework names its cause ── */
+{
+  const both: RunReport = {
+    ...clean,
+    scenarios: [scn('A')],
+    plan: [
+      { name: 'A', category: 'happy', rationale: '' },
+      { name: 'searched for a term that matches no products and the list became empty', category: 'edge', rationale: '' },
+      { name: 'C', category: 'happy', rationale: '' },
+    ],
+    stability: undefined,
+    findings: [{ scenario: 'searched for a term that matches no products and the list became empty', category: 'edge', expected: 'locate element: search input', url: 'https://example.com/category/other', messages: [] }],
+    skipped: [
+      { scenario: 'searched for a term that matches no products and the list became empty', reason: 'the search input is covered by an overlay' },
+      { scenario: 'C', reason: 'no rental products exist' },
+    ],
+    review: { verdicts: [], summary: '' },
+  };
+  const rb = reconcile(both);
+  check('AA. a scenario recorded as both a finding and a skip is counted once, as the finding', rb.findings.length === 1 && rb.skipped.length === 1 && rb.skipped[0]?.name === 'C', JSON.stringify({ f: rb.findings.map((f) => f.name), s: rb.skipped.map((x) => x.name) }));
+  check('AB. the funnel balances with no "+N added" term: planned 3 = generated 1 + findings 1 + skipped 1', rb.balanced && rb.planned === 3 && rb.accountedFor === 3 && rb.added === 0, JSON.stringify({ accountedFor: rb.accountedFor, added: rb.added }));
+  check('AC. the note names the double record instead of calling it an unplanned scenario', /recorded as both a finding and a skip; counted once/.test(rb.note ?? '') && !/added/.test(rb.note ?? ''), rb.note ?? 'no note');
+  const notRepaired: RunReport = {
+    ...clean,
+    scenarios: [scn('A')],
+    plan: [{ name: 'A', category: 'happy', rationale: '' }, { name: 'B', category: 'happy', rationale: '' }, { name: 'D', category: 'happy', rationale: '' }],
+    stability: undefined,
+    review: {
+      verdicts: [{ scenario: 'A', verdict: 'pass', reasons: [], required_fixes: [] }, { scenario: 'B', verdict: 'rework', reasons: ['name-changed proves a shuffle'], required_fixes: [] }, { scenario: 'D', verdict: 'rework', reasons: ['weak'], required_fixes: [] }],
+      summary: '',
+      repair: [{ scenario: 'B', first: 'rework', outcome: 'dropped', notRepaired: 'reserve funds 1 of 2' }, { scenario: 'D', first: 'rework', second: 'rework', outcome: 'dropped' }],
+    },
+  };
+  const rn = reconcile(notRepaired);
+  check('AD. a rework the reserve did not fund drops as "rework, not repaired: reserve funds N of M" followed by the critic reasons', rn.dropped.find((d) => d.name === 'B')?.reason === 'rework, not repaired: reserve funds 1 of 2: name-changed proves a shuffle', JSON.stringify(rn.dropped));
+  check('AE. a rework the pass re-recorded and the critic reworked again keeps the plain critic drop', rn.dropped.find((d) => d.name === 'D')?.reason === 'critic rework: weak', JSON.stringify(rn.dropped));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
 console.log('OK: reconciliation balances planned = generated + dropped, names every drop, excludes recovered from stable, counts give-ups as broken.');

@@ -19,7 +19,7 @@ import type { RequirementsMap } from './requirements.js';
 
 export interface RuleCoverage {
   covered: Array<{ ruleId: string; scenarios: string[] }>;
-  uncovered: Array<{ ruleId: string; text: string; reason: 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' }>;
+  uncovered: Array<{ ruleId: string; text: string; reason: 'not-planned' | 'planned-but-dropped' | 'planned-not-explored'; detail?: string }>;
   /** Per-feature checklist derivation record. Present on SRS runs. */
   derivation?: FeatureDerivation[];
 }
@@ -114,10 +114,18 @@ export function computeRuleCoverage(opts: {
    * is honest: nothing was attempted, so nothing was dropped.
    */
   unexplored?: string[];
+  /**
+   * Why each dropped scenario fell out (the reconciliation's drop reasons by
+   * name), so a planned-but-dropped rule carries the cause in `detail`
+   * ("rework, not repaired: reserve funds 2 of 14"), never only the label.
+   */
+  dropReasons?: Map<string, string>;
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
   const unexploredKeys = new Set((opts.unexplored ?? []).map(nameKey));
+  const reasonByKey = new Map<string, string>();
+  for (const [name, reason] of opts.dropReasons ?? []) reasonByKey.set(nameKey(name), reason);
   for (const feature of opts.map.features) {
     for (const rule of feature.rules) {
       const surviving = opts.scenarios.filter((s) => (s.ruleIds ?? []).includes(rule.id));
@@ -132,7 +140,13 @@ export function computeRuleCoverage(opts: {
           : citing.every((p) => unexploredKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
-      uncovered.push({ ruleId: rule.id, text: rule.text, reason });
+      // The cause, not the critic's reasons: "rework, not repaired: reserve
+      // funds 2 of 14" or "critic reject", one entry per distinct cause.
+      const causeOf = (r: string): string => (r.startsWith('rework, not repaired:') ? r.split(':').slice(0, 2).join(':') : r.split(':')[0]!).trim();
+      const detail = reason === 'planned-but-dropped'
+        ? citing.map((p) => reasonByKey.get(nameKey(p.name))).filter((r): r is string => !!r).map(causeOf).filter((r, i, a) => a.indexOf(r) === i).join(' | ')
+        : '';
+      uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }
   return { covered, uncovered };
@@ -145,7 +159,7 @@ export function renderRuleCoverage(coverage: RuleCoverage): string[] {
   if (coverage.uncovered.length > 0) {
     lines.push('  considered, not automated:');
     for (const u of coverage.uncovered) {
-      lines.push(`    • ${u.ruleId} (${u.reason}) — ${u.text}`);
+      lines.push(`    • ${u.ruleId} (${u.reason}${u.detail ? `: ${u.detail}` : ''}) — ${u.text}`);
     }
   }
   if (coverage.derivation && coverage.derivation.length > 0) {

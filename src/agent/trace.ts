@@ -322,8 +322,8 @@ export interface RunReport {
   discovery?: {
     method: string;
     pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
-    /** Every page the winning rung found before the relevance filter (also written to discovery.json). */
-    candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
+    /** Every page the winning rung found before the relevance filter (also written to discovery.json). A page that shares a path template with a planned page carries sameTemplateAs. */
+    candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean; sameTemplateAs?: string }>;
     warnings: string[];
   };
   scenarios: Scenario[];
@@ -388,7 +388,7 @@ export interface RunReport {
      * rework -> pass (kept) or rework -> rework/reject/not-re-recorded
      * (dropped). The verdicts array above holds the FINAL verdicts.
      */
-    repair?: Array<{ scenario: string; first: 'rework'; second?: 'pass' | 'rework' | 'reject'; outcome: 'kept' | 'dropped' }>;
+    repair?: Array<{ scenario: string; first: 'rework'; second?: 'pass' | 'rework' | 'reject'; outcome: 'kept' | 'dropped'; notRepaired?: string }>;
   };
   /**
    * Reality check: each scenario was re-executed in a fresh Playwright context

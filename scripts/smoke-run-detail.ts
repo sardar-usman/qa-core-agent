@@ -136,6 +136,41 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'demoqa.com.json'), JSON.s
 fs.writeFileSync(path.join(root, 'secret.txt'), 'nope');
 
 /* ─── endpoint ─── */
+// The 5e4394 shape: 20 planned, 16 recorded (1 shipped plus 15 critic drops),
+// 3 skipped, 1 finding. The verdict names are the plan names (the runtime
+// aligns the Critic's echo to the recorded name), so the Other-category name
+// with its quotation marks creates no extra row: 19 rows = 16 recorded + 3
+// skipped, and the rail stat and the table subtitle read the same numbers.
+const shapeId = newRunId(new Date('2026-09-18T16:39:02Z'), '5e4394');
+const shapeDir = path.join(output, 'practicesoftwaretesting-com', shapeId);
+fs.mkdirSync(shapeDir, { recursive: true });
+const shapePlan = Array.from({ length: 20 }, (_, i) => `scenario ${i + 1}`);
+shapePlan[7] = 'browsed products in the "Other" category and saw name, image, and price';
+const shapeRecorded = shapePlan.slice(0, 16);
+const shapeSkipped = shapePlan.slice(16, 19);
+const shapeFinding = shapePlan[19]!;
+const shapeVerdicts = shapeRecorded.map((n, i) => ({ scenario: n, verdict: i === 0 ? 'pass' : i === 15 ? 'reject' : 'rework', reasons: ['weak'], required_fixes: [] }));
+const shapeReport = {
+  url: 'https://practicesoftwaretesting.com/', language: 'ts', startedAt: '2026-09-18T16:39:02.000Z', finishedAt: '2026-09-18T17:03:06.000Z', steps: 274,
+  scenarios: [{ name: shapeRecorded[0], feature: 'contact', category: 'negative', steps: [step('https://practicesoftwaretesting.com/contact')] }],
+  cascadeStats: {}, cost: { inputTokens: 211, outputTokens: 33636, cacheReadTokens: 8934340, cacheCreationTokens: 107701, usd: 5.98225625, plannerUsd: 0.030668, criticUsd: 0.075876, repairUsd: 0.9071935 },
+  plan: shapePlan.map((name, i) => ({ name, category: 'happy', rationale: 'r', feature: i < 14 ? 'catalogue' : 'contact', pageUrl: 'https://practicesoftwaretesting.com/category/hand-tools' })),
+  review: { verdicts: shapeVerdicts, summary: 's', repair: shapeVerdicts.filter((v) => v.verdict === 'rework').map((v) => ({ scenario: v.scenario, first: 'rework', outcome: 'dropped' })) },
+  replay: { passed: 1, failed: 0, durationMs: 4066, verdicts: [{ name: shapeRecorded[0], passed: true, durationMs: 3957 }] },
+  stability: { iterations: 3, passed: 1, flaked: 0, flakeRate: 0, durationMs: 14117, recovered: 0, stabilizerCostUsd: 0, verdicts: [{ name: shapeRecorded[0], iterations: 3, passes: 3, stable: true, classification: 'stable', pattern: 'P-P-P', durationMs: 14026 }] },
+  findings: [{ scenario: shapeFinding, category: 'edge', expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: [] }],
+  skipped: shapeSkipped.map((scenario) => ({ scenario, reason: 'no products on this page' })),
+  reconciliation: {
+    planned: 20, generated: 1,
+    dropped: shapeVerdicts.filter((v) => v.verdict !== 'pass').map((v) => ({ name: v.scenario, stage: 'critic', reason: `critic ${v.verdict}: weak` })),
+    incomplete: [], findings: [{ name: shapeFinding, expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: [] }],
+    skipped: shapeSkipped.map((name) => ({ name, reason: 'no products on this page' })),
+    accountedFor: 20, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0,
+  },
+};
+fs.writeFileSync(path.join(shapeDir, 'run-report.json'), JSON.stringify(shapeReport, null, 2));
+fs.writeFileSync(path.join(shapeDir, 'run-meta.json'), JSON.stringify({ source: 'dashboard', flags: {}, writtenAt: 'x' }));
+
 const db = openDatabase(path.join(root, 'data', 'qa-core.sqlite'));
 indexOutput(db, root);
 fs.rmSync(path.join(output, 'saucedemo-com', goneId, 'run-report.json'));
@@ -167,7 +202,7 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SA. every rail stat equals the report field it reads',
     st.discovery.stat === `${report.discovery.pages.length} pages found`
     && st.plan.stat === `${report.plan.length} planned`
-    && st.explore.stat === `${report.reconciliation.generated + report.reconciliation.dropped.filter((d) => d.stage === 'critic' || d.stage === 'replay' || d.stage === 'stability').length} recorded · ${report.scenarios.length} shipped · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
+    && st.explore.stat === `${report.reconciliation.generated + report.reconciliation.dropped.filter((d) => d.stage === 'critic' || d.stage === 'replay' || d.stage === 'stability').length} recorded · ${report.reconciliation.skipped.length} skipped · ${report.scenarios.length} shipped · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
     && st.review.stat === `${vc.pass} pass / ${vc.rework} rework / ${vc.reject} reject`
     && st.verify.stat === `${report.stability.passed} stable / ${report.stability.flaked} flaky`
     && st.summary.stat === `${report.scenarios.length} shipped`,
@@ -188,7 +223,12 @@ if (d.status === 200 && d.body.legacy === false) {
     shape.scenarios = [report.scenarios[0]!];
     shape.reconciliation = { ...report.reconciliation, generated: 1, dropped: [...Array.from({ length: 11 }, (_, i) => ({ name: `c${i}`, stage: 'critic', reason: 'rework' })), ...Array.from({ length: 3 }, (_, i) => ({ name: `r${i}`, stage: 'replay', reason: 'failed' }))] } as typeof report.reconciliation;
     const f3 = buildStages(shape as never, [], 4.9671, 0);
-    check('SG2. the f3b41e shape reads "15 recorded · 1 shipped", never "1 recorded"', f3.explore.scenarios_recorded === 15 && f3.explore.scenarios_shipped === 1 && f3.explore.stat.startsWith('15 recorded · 1 shipped ·'), f3.explore.stat);
+    check('SG2. the f3b41e shape reads "15 recorded · 1 skipped · 1 shipped", never "1 recorded"', f3.explore.scenarios_recorded === 15 && f3.explore.scenarios_shipped === 1 && f3.explore.stat.startsWith('15 recorded · 1 skipped · 1 shipped ·'), f3.explore.stat);
+  }
+  {
+    // The 5e4394 shape through the whole detail builder: one recorded number everywhere.
+    const shape = buildRunDetail(db, root, shapeId);
+    check('SG3. the 5e4394 shape: 19 rows (16 recorded + 3 skipped), the Explore stat reads "16 recorded · 3 skipped", no extra row for the quoted name', shape.status === 200 && shape.body.legacy === false && shape.body.scenarios.length === 19 && shape.body.stages.explore.scenarios_recorded === 16 && shape.body.stages.explore.skipped.length === 3 && shape.body.stages.explore.stat.startsWith('16 recorded · 3 skipped · 1 shipped ·') && shape.body.scenarios.filter((r) => r.name.includes('"Other"')).length === 1 && shape.body.unmatched_verdicts.length === 0, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ rows: shape.body.scenarios.length, stat: shape.body.stages.explore.stat, unmatched: shape.body.unmatched_verdicts }) : JSON.stringify(shape.body));
   }
   check('SG. explore panel: steps, recorded (generated + dropped at critic), shipped, explorer cost, gate injection, skip with reason, heal from report.heals', st.explore.steps === report.steps && st.explore.scenarios_recorded === 3 && st.explore.scenarios_shipped === 2 && st.explore.explorer_usd === report.cost.usd && st.explore.gate_injections.length === 1 && st.explore.gate_injections[0]?.assertion_type === 'toBeVisible' && st.explore.skipped[0]?.reason === 'opens an external site, out of scope' && st.explore.heals[0]?.to === report.heals[0]?.to && st.explore.incomplete.length === 0, JSON.stringify(st.explore));
   check('SH. review panel: verdicts with reasons, journeys from review.repair (kept and dropped), repair count and spend', st.review.verdicts.length === report.review.verdicts.length && st.review.verdicts[0]?.reasons[0] === 'asserts the inventory page' && st.review.journeys.length === 2 && st.review.journeys.find((j) => j.outcome === 'kept')?.second === 'pass' && st.review.journeys.find((j) => j.outcome === 'dropped')?.second === 'reject' && st.review.repair?.count === 2 && st.review.repair?.spent_usd === report.cost.repairUsd && st.review.critic_usd === report.cost.criticUsd, JSON.stringify(st.review));
@@ -386,6 +426,13 @@ await page.waitForSelector('[data-testid="events-section"]');
 check('AD3. page: an empty events.jsonl says "No events recorded"', /No events recorded/.test((await page.textContent('[data-testid="events-section"]')) ?? '') && (await page.$$('[data-testid="event-row"]')).length === 0, (await page.textContent('[data-testid="events-section"]')) ?? '');
 const attentionRail = await page.evaluate(() => { const item = document.querySelector('[data-testid="rail-item"][data-stage="summary"]'); const status = item?.querySelector('[data-testid="rail-status"]'); return { status: item?.getAttribute('data-status'), cls: status?.className ?? '', text: status?.textContent, color: status ? getComputedStyle(status).color : '', findingColor: getComputedStyle(document.documentElement).getPropertyValue('--finding').trim(), reworkColor: getComputedStyle(document.documentElement).getPropertyValue('--rework').trim() }; });
 check('SB3. page: the attention rail item carries the finding colour class, not the warning class', attentionRail.status === 'attention' && /text-finding/.test(attentionRail.cls) && !/text-rework/.test(attentionRail.cls) && attentionRail.text === 'to review', JSON.stringify(attentionRail));
+// The 5e4394 shape on the page: the scenarios table subtitle and the Explore rail stat read the same recorded and skipped numbers.
+await page.goto(`http://127.0.0.1:${PORT}/runs/${shapeId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="scenarios-subtitle"]');
+const shapeSubtitle = (await page.textContent('[data-testid="scenarios-subtitle"]')) ?? '';
+const shapeRail = (await page.textContent('[data-testid="rail-item"][data-stage="explore"]')) ?? '';
+const shapeRows = (await page.$$('[data-testid="scenarios-table"] tbody tr')).length;
+check('SG4. page: the table subtitle reads "16 recorded · 3 skipped", the Explore rail carries the same, and the table has 19 rows', shapeSubtitle === '16 recorded · 3 skipped' && /16 recorded · 3 skipped/.test(shapeRail) && shapeRows === 19, JSON.stringify({ shapeSubtitle, shapeRail, shapeRows }));
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-detail"][data-legacy="true"]');

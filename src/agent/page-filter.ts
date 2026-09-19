@@ -45,6 +45,86 @@ export function capVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
 }
 
 /**
+ * The template a path belongs to: the parent prefix and the last segment,
+ * for paths with two or more segments. /category/hand-tools and
+ * /category/power-tools share the prefix /category and differ only in the
+ * last segment: one template, one plan (run 5e4394 planned four such pages
+ * separately and repeated ten scenarios, $1.87 of $5.08 exploration).
+ */
+export function pathTemplate(url: string): { prefix: string; last: string } | null {
+  let segments: string[];
+  try {
+    segments = new URL(url).pathname.toLowerCase().split('/').filter(Boolean);
+  } catch {
+    return null;
+  }
+  if (segments.length < 2) return null;
+  return { prefix: '/' + segments.slice(0, -1).join('/'), last: segments[segments.length - 1]! };
+}
+
+/**
+ * The feature a single path segment plainly names, from the token table, or
+ * null. Two siblings under one prefix that name DIFFERENT features
+ * (/auth/login, /auth/register) are not one template.
+ */
+export function segmentFeature(segment: string): string | null {
+  for (const [feature, tokens] of Object.entries(FEATURE_PATH_TOKENS)) {
+    if (tokens.some((tok) => segment === tok || segment.startsWith(`${tok}-`) || segment.startsWith(`${tok}_`))) return feature;
+  }
+  return null;
+}
+
+/** A browser-crawl page whose anchor count grew past its first reading rendered content beyond the shell. */
+function hasRenderedContent(p: DiscoveredPage): boolean {
+  const polls = p.anchorPolls;
+  if (!polls || polls.length === 0) return false;
+  return Math.max(...polls) > polls[0]!;
+}
+
+export interface TemplateGrouping {
+  /** The pages to plan: one representative per template plus every page outside a template, in discovery order. */
+  pages: DiscoveredPage[];
+  /** The other members of each template, each carrying sameTemplateAs = the representative's URL. Never planned. */
+  sameTemplate: DiscoveredPage[];
+}
+
+/**
+ * One plan per path template. Stable pages whose paths differ only in the
+ * last segment under a shared prefix are grouped, unless their last segments
+ * plainly name different features. The representative is the first member
+ * with rendered content (a browser-crawl page whose anchors grew past the
+ * shell), else the first member. Volatile pages are left to capVolatile.
+ * Exported for the smoke.
+ */
+export function groupByTemplate(pages: DiscoveredPage[]): TemplateGrouping {
+  const groups = new Map<string, DiscoveredPage[]>();
+  const keyOf = new Map<DiscoveredPage, string>();
+  for (const p of pages) {
+    if (p.volatile) continue;
+    const t = pathTemplate(p.url);
+    if (!t) continue;
+    const feature = segmentFeature(t.last);
+    const key = feature ? `${t.prefix}#${feature}` : t.prefix;
+    keyOf.set(p, key);
+    groups.set(key, [...(groups.get(key) ?? []), p]);
+  }
+  const representative = new Map<string, DiscoveredPage>();
+  for (const [key, members] of groups) {
+    if (members.length < 2) continue;
+    representative.set(key, members.find(hasRenderedContent) ?? members[0]!);
+  }
+  const out: DiscoveredPage[] = [];
+  const sameTemplate: DiscoveredPage[] = [];
+  for (const p of pages) {
+    const key = keyOf.get(p);
+    const rep = key ? representative.get(key) : undefined;
+    if (rep && rep !== p) sameTemplate.push({ ...p, sameTemplateAs: rep.url });
+    else out.push(p);
+  }
+  return { pages: out, sameTemplate };
+}
+
+/**
  * Path tokens that plainly name a feature. A candidate whose path segment
  * equals or starts with one of a feature's tokens is kept BEFORE the model
  * pick, tagged with that feature: a page called /auth/register serves the
@@ -88,9 +168,14 @@ export function tokensFor(feature: string): string[] {
  * Candidates whose path plainly matches a feature name, each tagged with the
  * feature. Exported so the smoke locks it.
  */
-export function plainFeatureMatches(pages: DiscoveredPage[], features?: string[]): DiscoveredPage[] {
+export function plainFeatureMatches(pages: DiscoveredPage[], features?: string[], featureTokens?: Record<string, string[]>): DiscoveredPage[] {
   const names = (features ?? []).map((f) => f.trim()).filter((f) => f.length > 0);
   if (names.length === 0) return [];
+  // The name's own tokens plus whatever the feature's rule content names
+  // (featureTokenMap in requirements.ts): an SRS feature called "account"
+  // whose rules speak of login and registration matches /auth/login and
+  // /auth/register, which its name alone never would.
+  const tokensOf = (f: string): string[] => [...new Set([...tokensFor(f), ...(featureTokens?.[f] ?? [])])];
   const out: DiscoveredPage[] = [];
   for (const p of pages) {
     let segments: string[];
@@ -99,7 +184,7 @@ export function plainFeatureMatches(pages: DiscoveredPage[], features?: string[]
     } catch {
       continue;
     }
-    const feature = names.find((f) => tokensFor(f).some((tok) => segments.some((seg) => seg === tok || seg.startsWith(`${tok}-`) || seg.startsWith(`${tok}_`))));
+    const feature = names.find((f) => tokensOf(f).some((tok) => segments.some((seg) => seg === tok || seg.startsWith(`${tok}-`) || seg.startsWith(`${tok}_`))));
     if (feature && !out.some((o) => o.url === p.url)) out.push({ ...p, feature: p.feature ?? feature });
   }
   return out;
@@ -112,6 +197,8 @@ export interface FilterPagesOptions {
   pages: DiscoveredPage[];
   /** Feature list from the SRS map or --features. Drives per-feature picking. */
   features?: string[];
+  /** Extra path tokens per feature, from the SRS rule content (featureTokenMap). */
+  featureTokens?: Record<string, string[]>;
   apiKey?: string;
   model?: string;
 }
@@ -121,6 +208,8 @@ export interface FilterPagesResult {
   /** llm = Haiku picked; fallback = deterministic; passthrough = under the cap. */
   method: 'llm' | 'fallback' | 'passthrough';
   costUsd: number;
+  /** Pages that share a path template with a planned page: recorded, shown, never planned. */
+  sameTemplate: DiscoveredPage[];
 }
 
 /** The cap that applies for a given feature list. */
@@ -175,23 +264,28 @@ Rules:
  */
 export async function filterPages(opts: FilterPagesOptions): Promise<FilterPagesResult> {
   const cap = pageCapFor(opts.features);
-  if (opts.pages.length <= cap) {
+  // One plan per path template: the cap and the pick see one representative
+  // per template, and the other members are recorded, never planned.
+  const grouped = groupByTemplate(opts.pages);
+  const { sameTemplate } = grouped;
+  const candidates = grouped.pages;
+  if (candidates.length <= cap) {
     // Under the cap the set passes through, but the one-volatile-page rule
     // still applies: three generated-id detail pages are one template.
-    return { pages: capVolatile(opts.pages), method: 'passthrough', costUsd: 0 };
+    return { pages: capVolatile(candidates), method: 'passthrough', costUsd: 0, sameTemplate };
   }
   // Plain feature matches are kept before any pick and never trimmed: the
   // model chooses only among the rest, for the room left under the cap.
-  const kept = plainFeatureMatches(opts.pages, opts.features);
+  const kept = plainFeatureMatches(candidates, opts.features, opts.featureTokens);
   const keptUrls = new Set(kept.map((p) => p.url));
-  const rest = opts.pages.filter((p) => !keptUrls.has(p.url));
+  const rest = candidates.filter((p) => !keptUrls.has(p.url));
   const room = Math.max(0, cap - kept.length);
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0 };
+    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0, sameTemplate };
   }
   if (room === 0) {
-    return { pages: capVolatile(kept), method: 'fallback', costUsd: 0 };
+    return { pages: capVolatile(kept), method: 'fallback', costUsd: 0, sameTemplate };
   }
 
   try {
@@ -221,11 +315,11 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
 
     const picked = parsePickResponse(text, rest, room);
     if (picked.length === 0) {
-      return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd };
+      return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd, sameTemplate };
     }
-    return { pages: capVolatile([...kept, ...picked]), method: 'llm', costUsd };
+    return { pages: capVolatile([...kept, ...picked]), method: 'llm', costUsd, sameTemplate };
   } catch {
-    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0 };
+    return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0, sameTemplate };
   }
 }
 

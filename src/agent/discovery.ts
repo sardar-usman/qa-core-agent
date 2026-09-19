@@ -60,6 +60,13 @@ export interface DiscoveredPage {
    * catalogue).
    */
   anchorPolls?: number[];
+  /**
+   * Set by the page filter on a page that shares a path template with a
+   * planned page (/category/power-tools when /category/hand-tools is the
+   * representative): the representative's URL. Recorded in discovery.json
+   * and shown on the Discovery panel, never planned.
+   */
+  sameTemplateAs?: string;
 }
 
 // The generated-id shapes live in volatile-id.ts, shared with the gate's RULE 6.
@@ -101,8 +108,14 @@ export interface DiscoveryResult {
 export const DISCOVERY_UA = 'qa-core-agent-discovery';
 /** Cap on pages taken from a sitemap (shallow paths preferred when trimming). */
 export const SITEMAP_PAGE_CAP = 30;
-/** Cap on pages the crawl collects. */
+/** Cap on STABLE pages the crawl collects. Volatile generated-id pages never count against it. */
 export const CRAWL_PAGE_CAP = 15;
+/**
+ * How many volatile generated-id pages the crawl loads at all. They are one
+ * template (the page filter keeps one), and run 5e4394 spent seven of its
+ * fifteen loads on product pages and never reached /auth/register.
+ */
+export const CRAWL_VOLATILE_CAP = 3;
 /** How many link hops from the entry page the crawl follows. */
 export const CRAWL_MAX_DEPTH = 2;
 /** Pause between crawl fetches. One page at a time, never parallel. */
@@ -533,9 +546,15 @@ async function walkCrawl(opts: {
   const queue: Array<{ u: URL; depth: number }> = [{ u: entry, depth: 0 }];
   let loads = 0;
   let failures = 0;
+  // The page cap counts stable paths only; volatile generated-id pages are
+  // collected apart, and past their own small cap they are not even loaded.
+  let stableCount = 0;
+  let volatileCount = 0;
 
-  while (queue.length > 0 && collected.length < CRAWL_PAGE_CAP) {
+  while (queue.length > 0 && stableCount < CRAWL_PAGE_CAP) {
     const { u, depth } = queue.shift()!;
+    const volatile = isVolatilePath(u.pathname);
+    if (volatile && volatileCount >= CRAWL_VOLATILE_CAP) continue;
     if (loads > 0 && delayMs > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
@@ -555,6 +574,7 @@ async function walkCrawl(opts: {
       continue;
     }
     collected.push(u);
+    if (volatile) volatileCount++; else stableCount++;
     if (anchorPolls) pollsByUrl.set(u.toString(), anchorPolls);
     if (depth >= CRAWL_MAX_DEPTH) continue;
     for (const href of hrefs) {
@@ -575,7 +595,8 @@ async function walkCrawl(opts: {
     warnings.push(`${label}: found no additional same-origin pages beyond the entry; falling through.`);
     return [];
   }
-  return collected.slice(0, CRAWL_PAGE_CAP).map((u): DiscoveredPage => {
+  // Stable pages never exceed the cap by construction; volatile ones ride along.
+  return collected.map((u): DiscoveredPage => {
     const polls = pollsByUrl.get(u.toString());
     return { url: u.toString(), source, ...(polls ? { anchorPolls: polls } : {}) };
   });

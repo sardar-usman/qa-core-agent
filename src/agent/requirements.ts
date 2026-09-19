@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import { FEATURE_PATH_TOKENS, tokensFor } from './page-filter.js';
 import { normalizeFeatureName } from './parse-features.js';
 
 /**
@@ -262,6 +263,43 @@ export async function buildRequirementsMap(
 }
 
 /** Total rule count across every feature of a map. */
+/**
+ * What a feature's RULE CONTENT names, whatever the feature is called. The
+ * toolshop map calls its login and registration rules "account" (R10 to
+ * R12): the name matches /account only, the rules match /auth/login and
+ * /auth/register. Each pattern maps to a token set from the page filter.
+ */
+const RULE_CONTENT_TOKENS: Array<{ re: RegExp; feature: string }> = [
+  { re: /\bregist|\bsign[\s-]?up\b|create (?:an? )?account/i, feature: 'registration' },
+  { re: /\blog[\s-]?in\b|\bsign[\s-]?in\b/i, feature: 'login' },
+  { re: /\bforgot\b|\breset\b|\brecover/i, feature: 'password-recovery' },
+  { re: /\bcart\b|\bbasket\b|\bcheckout\b/i, feature: 'cart' },
+  { re: /\bcontact\b/i, feature: 'contact' },
+  { re: /\bsearch/i, feature: 'search' },
+];
+
+/** The path tokens a feature's description and rules plainly name. Exported for the smoke. */
+export function ruleContentTokens(feature: Pick<RequirementFeature, 'description' | 'rules'>): string[] {
+  const text = [feature.description ?? '', ...feature.rules.map((r) => r.text)].join(' ');
+  const out = new Set<string>();
+  for (const { re, feature: f } of RULE_CONTENT_TOKENS) {
+    if (!re.test(text)) continue;
+    for (const t of FEATURE_PATH_TOKENS[f] ?? []) out.add(t);
+  }
+  return [...out];
+}
+
+/**
+ * Path tokens per feature name: the name's own tokens plus the rule-content
+ * ones. The page filter's plain matcher takes this so a page is kept for a
+ * feature by what its rules say, not only by what it is called.
+ */
+export function featureTokenMap(map: RequirementsMap): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const f of map.features) out[f.name] = [...new Set([...tokensFor(f.name), ...ruleContentTokens(f)])];
+  return out;
+}
+
 export function countRules(map: RequirementsMap): number {
   return map.features.reduce((n, f) => n + f.rules.length, 0);
 }

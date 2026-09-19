@@ -61,6 +61,14 @@ check('C1. both skips are accepted', skip1.ok === true && skip2.ok === true, JSO
 check('C2. skips are recorded with their reasons',
   ctx.skipped.length === 2 && ctx.skipped[0]?.reason.includes('not present') === true);
 const dup = await runTool(ctx, { name: 'skip_scenario', input: { name: PLANNED[2], reason: 'again' } });
+// A scenario is a finding OR a skip, never both: with a finding already
+// recorded for a planned name, skip_scenario is a logged no-op and the
+// finding stands (run 5e4394 counted one scenario as both).
+ctx.findings.push({ scenario: PLANNED[1]!, expected: 'locate element: search input', url: 'https://example.com/', messages: [] });
+const skipAfterFinding = await runTool(ctx, { name: 'skip_scenario', input: { name: PLANNED[1], reason: 'overlay covers the input' } });
+check('B5. skip_scenario on a scenario already recorded as a finding is a no-op that says so, and records no skip',
+  skipAfterFinding.ok === true && /already recorded as a finding/.test(String((skipAfterFinding.data as { noop?: string } | undefined)?.noop ?? '')) && !ctx.skipped.some((s) => s.scenario === PLANNED[1]), JSON.stringify(skipAfterFinding));
+ctx.findings.pop(); // leave the rest of this smoke's state as it was
 check('C3. skipping the same scenario twice is rejected', dup.ok === false);
 const accepted = await runTool(ctx, { name: 'finish', input: { summary: 'all covered or skipped' } });
 check('C4. finish is accepted after 2 explored + 2 skipped', accepted.ok === true, accepted.error);

@@ -121,7 +121,7 @@ export function RunDetailPage() {
           <StageView stages={detail.stages} findings={detail.findings} unmatched={detail.unmatched_verdicts} />
 
           <section className="flex flex-col gap-2" data-testid="scenarios-section">
-            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3" data-testid="scenarios-subtitle">{detail.scenarios.length} recorded</span></h2>
+            <h2 className="text-m font-semibold">Scenarios <span className="text-s font-normal text-fg-3" data-testid="scenarios-subtitle">{detail.stages.explore.scenarios_recorded} recorded · {detail.stages.explore.skipped.length} skipped</span></h2>
             {detail.scenarios.length === 0 ? <EmptyState title="No scenarios recorded">The report holds no plan, verdicts or emitted scenarios for this run.</EmptyState> : (
               <Table data-testid="scenarios-table">
                 <TableHeader>

@@ -14,6 +14,7 @@
  */
 import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, type ScenarioVerdict } from '../src/agent/critic.js';
 import { reconcile } from '../src/agent/reconcile.js';
+import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RunReport } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -145,11 +146,56 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   const rw = (scenario: string) => ({ scenario, verdict: 'rework' as const, reasons: ['weak'], required_fixes: ['fix'] });
   const d = decideRepairPass({ scenarios: [{ name: 'alpha' }, { name: 'beta' }], verdicts: [rw('alpha'), rw('beta')], reserveUsd: 0.3, explorerUsd: 0.4, recorded: 4 });
   check('H1. the budget offered is the reserve itself', d?.run === true && Math.abs(d.budgetUsd - 0.3) < 1e-9, JSON.stringify(d));
-  check('H2. the line states the reserve and the observed per-scenario explorer cost against it', d?.line === 'repair pass: 2 scenario(s), budget $0.30 (the stated reserve); explorer cost this run $0.1000 per recorded scenario, so the reserve funds about 2 of 2', d?.line);
+  check('H2. the line states the reserve, the observed per-scenario explorer cost, and names what is repaired', d?.line === 'repair pass: 2 of 2 rework scenario(s), budget $0.30 (the stated reserve); explorer cost this run $0.1000 per recorded scenario, so the reserve funds 2 of 2; repairing: "alpha", "beta"', d?.line);
   const thin = decideRepairPass({ scenarios: [{ name: 'alpha' }, { name: 'beta' }], verdicts: [rw('alpha'), rw('beta')], reserveUsd: 0.3, explorerUsd: 2.0, recorded: 2 });
-  check('H3. a reserve smaller than one scenario says it funds 0 of N, so the reader sees the shortfall', /funds about 0 of 2/.test(thin?.line ?? ''), thin?.line);
+  check('H3. a reserve smaller than one scenario still funds one (the minimum) and names the other as not repaired', thin?.rework.length === 1 && thin?.unfunded.length === 1 && /reserve funds 1 of 2/.test(thin?.line ?? '') && /not repaired \(reserve funds 1 of 2\): "beta"/.test(thin?.line ?? ''), thin?.line);
   const none = decideRepairPass({ scenarios: [{ name: 'alpha' }], verdicts: [rw('alpha')], reserveUsd: 0.3, explorerUsd: 0, recorded: 0 });
-  check('H4. with nothing recorded the line says no per-scenario cost was observed', /no per-scenario explorer cost observed/.test(none?.line ?? ''), none?.line);
+  check('H4. with nothing recorded the line says no per-scenario cost was observed and repairs everything', /no per-scenario explorer cost observed, so all 1 are repaired/.test(none?.line ?? '') && none?.rework.length === 1 && none?.unfunded.length === 0, none?.line);
+}
+
+/* ─── I. the 5e4394 shape: 14 rework, $0.90 reserve, $0.32 per scenario ── */
+// The reserve funds floor(0.90 / 0.32) = 2 of 14. The two are chosen highest
+// value first: scenarios whose cited rules no kept scenario covers. The other
+// twelve are named on the decision line and recorded as dropped "rework, not
+// repaired: reserve funds 2 of 14", so the funnel and coverage say why.
+{
+  const rw = (scenario: string) => ({ scenario, verdict: 'rework' as const, reasons: ['weak'], required_fixes: ['fix'] });
+  const rules: Record<string, string[]> = {
+    'viewed hand-tools': ['R1', 'R5'], 'sorted hand-tools': ['R4'], 'toggled eco hand-tools': ['R3'], 'loaded power-tools': ['R1'],
+    'sorted power-tools': ['R4'], 'filtered eco power-tools': ['R3'], 'clicked a product power-tools': ['R5'], 'browsed other': ['R1', 'R3'],
+    'sorted other': ['R4'], 'clicked a product other': [], 'submitted the contact form': [], 'rejected an email without @': ['R14'],
+    'listed rental products': ['R1'], 'logged in with valid credentials': [], 'rejected an empty message': ['R13'],
+  };
+  const names = Object.keys(rules);
+  const scenarios = names.map((name) => ({ name }));
+  const verdicts = [...names.filter((n) => n !== 'rejected an empty message').map(rw), { scenario: 'rejected an empty message', verdict: 'pass' as const, reasons: [], required_fixes: [] }];
+  const d = decideRepairPass({ scenarios, verdicts, reserveUsd: 0.9, explorerUsd: 0.32 * 16, recorded: 16, ruleIdsFor: (n) => rules[n] ?? [] });
+  check('I1. 14 rework at $0.32 against a $0.90 reserve: 2 funded, 12 unfunded, the label says so', d?.run === true && d.rework.length === 2 && d.unfunded.length === 12 && d.fundsLabel === 'reserve funds 2 of 14', JSON.stringify({ funded: d?.rework.map((s) => s.name), label: d?.fundsLabel }));
+  const funded = d?.rework.map((s) => s.name) ?? [];
+  check('I2. the funded two cover otherwise-uncovered rules: the first covers two (R1, R5), the second the next uncovered rule (R4)', funded[0] === 'viewed hand-tools' && funded[1] === 'sorted hand-tools', JSON.stringify(funded));
+  check('I3. R13 (covered by the kept scenario) adds no value; a scenario citing no rule is never funded ahead of one that covers a rule', !funded.includes('clicked a product other') && !funded.includes('logged in with valid credentials'));
+  check('I4. the decision line names every funded and every unfunded scenario with the cause',
+    (d?.line ?? '').startsWith('repair pass: 2 of 14 rework scenario(s), budget $0.90 (the stated reserve); explorer cost this run $0.3200 per recorded scenario, so the reserve funds 2 of 14; repairing: "viewed hand-tools", "sorted hand-tools"; not repaired (reserve funds 2 of 14): ') && d!.unfunded.every((s) => d!.line.includes(`"${s.name}"`)), d?.line);
+  console.log('   ' + d?.line);
+  // The unfunded twelve drop with the cause on the history and in the funnel.
+  const merged = mergeRepairVerdicts(verdicts, [{ scenario: 'viewed hand-tools', verdict: 'pass', reasons: [], required_fixes: [] }], { names: d!.unfunded.map((s) => s.name), reason: d!.fundsLabel });
+  check('I5. the funded and re-recorded scenario is kept; the funded one the pass never re-recorded drops with no cause; every unfunded one carries notRepaired',
+    merged.history.find((h) => h.scenario === 'viewed hand-tools')?.outcome === 'kept' && merged.history.find((h) => h.scenario === 'sorted hand-tools')?.notRepaired === undefined && merged.history.filter((h) => h.notRepaired === 'reserve funds 2 of 14').length === 12, JSON.stringify(merged.history));
+  const report = {
+    scenarios: [{ name: 'rejected an empty message', ruleIds: ['R13'] }, { name: 'viewed hand-tools', ruleIds: ['R1', 'R5'] }],
+    plan: names.map((n) => ({ name: n, category: 'happy', rationale: 'r', ruleIds: rules[n] })),
+    review: { verdicts: merged.final, summary: '', repair: merged.history },
+  } as unknown as RunReport;
+  const rec = reconcile(report);
+  const unfundedDrop = rec.dropped.find((x) => x.name === 'sorted power-tools');
+  check('I6. reconciliation names the cause on every unfunded drop: "rework, not repaired: reserve funds 2 of 14"', rec.dropped.filter((x) => x.reason.startsWith('rework, not repaired: reserve funds 2 of 14')).length === 12 && unfundedDrop?.reason.startsWith('rework, not repaired: reserve funds 2 of 14: weak') === true, JSON.stringify(unfundedDrop));
+  check('I7. the funnel balances: planned 15 = generated 2 + dropped 13', rec.balanced && rec.planned === 15 && rec.generated === 2 && rec.dropped.length === 13, JSON.stringify({ planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length }));
+  const coverage = computeRuleCoverage({
+    map: { features: [{ name: 'catalogue', description: '', rules: [{ id: 'R1', text: 'lists', type: 'behavior' }, { id: 'R4', text: 'sorts', type: 'behavior' }, { id: 'R3', text: 'filters', type: 'behavior' }] }], roles: [], truncated: false },
+    planned: report.plan as never, scenarios: report.scenarios as never,
+    dropReasons: new Map(rec.dropped.map((x) => [x.name, x.reason])),
+  });
+  check('I8. rule coverage names the cause on a planned-but-dropped rule whose citing scenarios were not repaired, and R1 (kept by the repaired scenario) is covered', coverage.uncovered.find((u) => u.ruleId === 'R3')?.detail === 'rework, not repaired: reserve funds 2 of 14' && coverage.uncovered.find((u) => u.ruleId === 'R4')?.detail === 'critic rework | rework, not repaired: reserve funds 2 of 14' && coverage.covered.some((c) => c.ruleId === 'R1'), JSON.stringify(coverage));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
