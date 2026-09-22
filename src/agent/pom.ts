@@ -1142,8 +1142,10 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
       return `await expect(${loc}).toBeChecked(${opts ? `{ ${opts} }` : ''});`;
     }
-    case 'toHaveURL':
-      return `await expect(page).toHaveURL(new RegExp(${q(a.pattern)}));`;
+    case 'toHaveURL': {
+      const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
+      return `await expect(page).toHaveURL(new RegExp(${q(a.pattern)})${opts});`;
+    }
     case 'toBeHidden': {
       // Absence assertion. Force .first() so a selector matching several hidden
       // nodes (or none) never trips strict mode. An absent element has no page

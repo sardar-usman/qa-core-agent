@@ -155,7 +155,7 @@ check('M. eventForUi trims only tool payloads', trimmed.data === undefined && (t
 /* ─── 4. The rendering that invited the quote ─── */
 
 const rendered = describeStep(scenarios[2]!.steps[3]!);
-check('N. toHaveURL renders as a quoted regex string, never /pattern//', rendered === 'assert URL matches regex "saucedemo\\\\.com/"' && !rendered.includes('//'), rendered);
+check('N. toHaveURL renders as a quoted regex string, never /pattern//', rendered === 'assert URL matches regex "saucedemo\\\\.com/" [no-timeout]' && !rendered.includes('//'), rendered);
 
 /* ─── 5. A response nothing can parse keeps the raw text on the report ─── */
 

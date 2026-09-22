@@ -164,7 +164,7 @@ check('F4. skipped scenarios are listed with reasons', lines.includes('skipped (
   check('H5. the reconciliation builder THROWS on a name recorded in two buckets, naming the name and both buckets', /is recorded as both dropped at critic and skipped/.test(threw) && threw.includes(PLANNED[1]!), threw || 'did not throw');
   const warnings: string[] = [];
   const guarded = reconcile(doubled, { onDuplicate: (m) => warnings.push(m) });
-  check('H6. with a handler it warns once and counts the name once, in the earliest bucket: planned 4 = generated 1 + dropped 1 + skipped 2, no "+1 added"', warnings.length === 1 && guarded.accountedFor === 4 && guarded.added === 0 && guarded.balanced && guarded.dropped.length === 1 && guarded.skipped.length === 2 && /recorded in two buckets; counted once/.test(guarded.note ?? ''), JSON.stringify({ warnings, accountedFor: guarded.accountedFor, added: guarded.added, note: guarded.note }));
+  check('H6. with a handler it warns once and counts the name once, in the earliest bucket: planned 4 = generated 1 + dropped 1 + skipped 2, no "+1 added"', warnings.length === 1 && guarded.accountedFor === 4 && guarded.added === 0 && guarded.balanced && guarded.dropped.length === 1 && guarded.skipped.length === 2 && /recorded in two buckets, counted once in the earliest: "/.test(guarded.note ?? '') && (guarded.note ?? '').includes(PLANNED[1]!), JSON.stringify({ warnings, accountedFor: guarded.accountedFor, added: guarded.added, note: guarded.note }));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

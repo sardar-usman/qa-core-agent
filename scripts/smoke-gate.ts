@@ -143,7 +143,17 @@ const r2AtFloorSteps: TraceStep[] = [
 check('AJ2. RULE 2 — timeout exactly at the 5000 floor is not re-injected', runGate(makeScenario(r2AtFloorSteps)).injections.length === 0);
 
 check('AK. RULE 2 — no injection when no action steps', runGate(makeScenario([{ kind: 'assert', name: 'v', assertion: { type: 'toBeVisible', target: { level: 'role', arg: { role: 'heading', name: 'Home' }, intent: 'h' } } }])).injections.length === 0);
-check('AL. RULE 2 — toHaveURL not injected', runGate(makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }])).injections.length === 0);
+check('AL. RULE 2: toHaveURL without a timeout is not injected (it behaves as before)', runGate(makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }])).injections.length === 0);
+// A toHaveURL the model gave a timeout gets the same floor and cap as every
+// other timeout-bearing type (run 591732 passed 15000, which was never
+// recorded; now it is, and 3000 or 60000 are corrected like any other).
+const urlLow = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home', timeout: 3000 } }]);
+const urlLowResult = runGate(urlLow);
+check('AL2. RULE 2: a toHaveURL timeout below the floor is raised to 5000 and logged', urlLowResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was 3000/.test(i.detail)) && (urlLow.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(urlLowResult.injections));
+const urlHigh = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home', timeout: 60000 } }]);
+const urlHighResult = runGate(urlHigh);
+check('AL3. RULE 2: a toHaveURL timeout above the ceiling is lowered to 15000 and logged', urlHighResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was 60000/.test(i.detail)) && (urlHigh.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === ASYNC_TIMEOUT_CEILING, JSON.stringify(urlHighResult.injections));
+check('AL4. RULE 2: a toHaveURL timeout of 15000 is kept as recorded', runGate(makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home', timeout: 15000 } }])).injections.length === 0);
 
 /* ─── RULE 3: stable selectors always allowed, even on animated elements ─── */
 

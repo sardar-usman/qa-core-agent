@@ -207,6 +207,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   // once in the earliest bucket.
   const seen = new Map<string, string>();
   let doubleCounted = 0;
+  const doubleNames: string[] = [];
   const claim = (bucket: string, name: string): boolean => {
     const key = scenarioNameKey(name);
     const first = seen.get(key);
@@ -215,6 +216,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
       if (!opts.onDuplicate) throw new Error(msg);
       opts.onDuplicate(msg);
       doubleCounted++;
+      doubleNames.push(`"${name}" (${first} and ${bucket})`);
       return false;
     }
     seen.set(key, bucket);
@@ -245,7 +247,8 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   if (noPlan) {
     note = 'no Planner plan recorded — reconciled against the pipeline total';
   } else if (doubleCounted > 0) {
-    note = `${doubleCounted} scenario(s) recorded in two buckets; counted once, in the earliest (see the warning line).`;
+    // The names live on the artifact, not only on the console warning line.
+    note = `${doubleCounted} scenario(s) recorded in two buckets, counted once in the earliest: ${doubleNames.join('; ')}.`;
   } else if (added > 0) {
     note = `Explorer added ${added} scenario(s) beyond the ${planned} planned (e.g. an a11y check). All ${accountedFor} are named below, so the run still balances.`;
   } else if (shortfall > 0) {

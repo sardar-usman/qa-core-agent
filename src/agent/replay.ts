@@ -479,7 +479,8 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promis
     }
     case 'toHaveURL': {
       const re = new RegExp(a.pattern);
-      await pollUntil(timeoutMs, async () => re.test(page.url()), `toHaveURL: ${page.url()} did not match ${a.pattern}`);
+      const effectiveTimeout = a.timeout ?? timeoutMs;
+      await pollUntil(effectiveTimeout, async () => re.test(page.url()), `toHaveURL: ${page.url()} did not match ${a.pattern}`);
       return;
     }
     case 'toBeHidden': {

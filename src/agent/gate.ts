@@ -246,10 +246,12 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
       // Every timeout-bearing assertion type is floored, including
       // toBeHidden (absence waits for the element to leave) and toHaveCount
       // (counts settle after async actions). toHaveURL has no element and
-      // polls on its own. The floor applies after an action; the ceiling
-      // applies always.
-      if (a.type === 'toHaveURL') continue;
+      // polls on its own, so a toHaveURL WITHOUT a timeout is left as it is;
+      // one the model gave a timeout gets the same floor and cap as every
+      // other type. The floor applies after an action; the ceiling applies
+      // always.
       const current = (a as { timeout?: number }).timeout;
+      if (a.type === 'toHaveURL' && current === undefined) continue;
       if (hasAction && (!current || current < ASYNC_TIMEOUT_FLOOR)) {
         (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
         injections.push({

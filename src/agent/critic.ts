@@ -78,6 +78,8 @@ Flagging rules — apply to every scenario:
 
 4. Missing outcome assertion: a scenario where the key action (submit, navigate, toggle) has no assertion on its outcome is "rework" or "reject".
 
+A fill rendered as <generated:email>, <generated:token> or <generated:password> is a value the framework generates fresh on every run by design (a unique registration email, a unique username, a strong password); it is never a hardcoded literal and never a rule 6 violation.
+
 5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-read from a second element ("re-read at ...") for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
 ${ASSERTION_DOCTRINE}
@@ -234,7 +236,10 @@ export function describeStep(step: TraceStep): string {
   switch (step.kind) {
     case 'navigate': return `navigate(${step.url})`;
     case 'click':    return `click(${where(step.target)})`;
-    case 'fill':     return `fill(${where(step.target)}, ${renderValueForCritic(step.value)})`;
+    // A generated fill renders as its generator, never the literal it
+    // produced this run: run 591732's Critic read a fresh unique email as a
+    // hardcoded generated id and reworked the scenario for it.
+    case 'fill':     return `fill(${where(step.target)}, ${step.generate ? `<generated:${step.generate}>` : renderValueForCritic(step.value)})`;
     case 'press':    return `press(${step.key} on ${where(step.target)})`;
     case 'select_option': return `select_option(${where(step.target)}, ${step.by}=${renderValueForCritic(step.option)})`;
     case 'set_checked':   return `set_checked(${where(step.target)}, ${step.checked ? 'check' : 'uncheck'})`;
@@ -261,17 +266,23 @@ export function describeStep(step: TraceStep): string {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
           return `assert ${where(a.target)} ${a.checked ? 'checked' : 'not checked'}${t}`;
         }
-        case 'toHaveURL':
+        case 'toHaveURL': {
           // Rendered as a quoted pattern string, not /pattern/: a pattern
           // ending in "/" used to read as a doubled trailing slash and drew a
-          // false rework.
-          return `assert URL matches regex ${JSON.stringify(a.pattern)}`;
+          // false rework. The recorded timeout renders like every other type.
+          const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
+          return `assert URL matches regex ${JSON.stringify(a.pattern)}${t}`;
+        }
         case 'toBeHidden': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
           return `assert ${where(a.target)} hidden/absent${t}`;
         }
-        case 'toHaveCount':
-          return a.atLeast ? `assert ${where(a.target)} count>=${a.count} [polls]` : `assert ${where(a.target)} count=${a.count}`;
+        case 'toHaveCount': {
+          // The recorded timeout renders here too: run 591732's Critic
+          // reworked a count=0 that carried timeout 10000 as a one-shot read.
+          const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
+          return a.atLeast ? `assert ${where(a.target)} count>=${a.count} [polls]${t}` : `assert ${where(a.target)} count=${a.count}${t}`;
+        }
         case 'toHaveAttribute': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
           return a.pattern ? `assert ${where(a.target)} ${a.attribute} matching /${a.pattern}/${t}` : `assert ${where(a.target)} ${a.attribute}="${a.value}"${t}`;

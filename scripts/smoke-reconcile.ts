@@ -272,7 +272,7 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
   const rb = reconcile(both, { onDuplicate: (m) => warned.push(m) });
   check('AA. with the runtime handler a scenario recorded as both a finding and a skip is counted once, as the finding, and the warning names it', rb.findings.length === 1 && rb.skipped.length === 1 && rb.skipped[0]?.name === 'C' && warned.length === 1, JSON.stringify({ f: rb.findings.map((f) => f.name), s: rb.skipped.map((x) => x.name), warned }));
   check('AB. the funnel balances with no "+N added" term: planned 3 = generated 1 + findings 1 + skipped 1', rb.balanced && rb.planned === 3 && rb.accountedFor === 3 && rb.added === 0, JSON.stringify({ accountedFor: rb.accountedFor, added: rb.added }));
-  check('AC. the note names the double record instead of calling it an unplanned scenario', /recorded in two buckets; counted once/.test(rb.note ?? '') && !/added/.test(rb.note ?? ''), rb.note ?? 'no note');
+  check('AC. the note names the double record instead of calling it an unplanned scenario', /recorded in two buckets, counted once in the earliest: "searched for a term/.test(rb.note ?? '') && !/added/.test(rb.note ?? ''), rb.note ?? 'no note');
   const notRepaired: RunReport = {
     ...clean,
     scenarios: [scn('A')],
