@@ -110,11 +110,15 @@ await withPage(ambiguousHtml, async (page) => {
 /* ─── Text fallback rejects empty / very-short text ──────────────────── */
 
 await withPage(errorHtml, async (page) => {
-  // Short fragments would match too much. The cascade requires >=4 chars
-  // before trying getByText so trivial fragments don't trigger false matches.
+  // Short fragments would match too much. The cascade requires >=3 chars
+  // for an explicit text hint before trying getByText, so trivial fragments
+  // don't trigger false matches (the intent-as-text last resort needs 4).
   const r1 = await resolve(page, { intent: 'x', text: 'ab' });
-  check('L. text <4 chars is ignored (avoids matching everything)',
+  check('L. text under 3 chars is ignored (avoids matching everything)',
     r1 === null || r1.level !== 'css' || (typeof r1.arg === 'string' && !r1.arg.startsWith('text=')));
+  check('L2. a 2-character text hint never resolves through the text tier', r1 === null || r1.level !== 'text', JSON.stringify(r1));
+  const r3 = await resolve(page, { intent: 'x', text: 'Epi' });
+  check('L3. a 3-character text hint resolves through the text tier', r3 !== null && r3.level === 'text' && r3.arg === 'Epi', JSON.stringify(r3));
 
   const r2 = await resolve(page, { intent: 'x', text: '' });
   check('M. empty text is ignored', r2 === null);

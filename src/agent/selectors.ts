@@ -86,9 +86,20 @@ const ROLE_PATTERNS: Array<[RegExp, string]> = [
   [/textbox|input|field|email|password|user(name)?/i, 'textbox'],
 ];
 
+/**
+ * Words that name a message, not a control. "login error message" is the
+ * message of the login flow, not the Login button: such an intent never
+ * guesses button or link (run 5e4394 and smoke-data-test-attribute check M,
+ * where an assertion on a missing error message resolved to the one button
+ * on the page and passed).
+ */
+const MESSAGE_INTENT_RE = /\b(error|message|alert|validation|toast|status|notice)s?\b/i;
+
 function guessRole(intent: string): string | undefined {
   for (const [re, role] of ROLE_PATTERNS) {
-    if (re.test(intent)) return role;
+    if (!re.test(intent)) continue;
+    if ((role === 'button' || role === 'link') && MESSAGE_INTENT_RE.test(intent)) return undefined;
+    return role;
   }
   return undefined;
 }
@@ -262,9 +273,17 @@ export function parsePiercingSelector(css?: string): { frameChain: string[]; inn
  * needed.
  */
 async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedLocator | null> {
-  const role = spec.role ?? guessRole(spec.intent);
+  // A stated role is an explicit hint; a guessed one is a heuristic whose
+  // nameless fallback runs last, and only for a hint-less intent (step 11).
+  const guessedRole = spec.role ? undefined : guessRole(spec.intent);
+  const role = spec.role ?? guessedRole;
   const name = spec.label ?? spec.intent;
   const ambiguousCandidates: Candidate[] = [];
+  // An explicit locating hint: when the model said WHERE (testid, css, xpath
+  // or the visible text) and every hint misses, the answer is null, never a
+  // nameless guess. The retry cap and the finding path (invariant 24) then
+  // apply instead of a silent wrong element.
+  const hasLocatingHint = [spec.testid, spec.css, spec.xpath, spec.text].some((h) => typeof h === 'string' && h.trim().length > 0);
 
   // Hints usable for filter-based disambiguation when a level multi-matches.
   const filterHints: string[] = [];
@@ -313,16 +332,18 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
       }
     }
 
-    // 1b. Nameless fallback — only for the guessed role, only when all named
-    //     variants failed. Resolves elements like role="progressbar" that have
-    //     no accessible name on the page. Only wins when exactly one element
-    //     has that role (otherwise pushed to ambiguousCandidates as usual).
-    if (role) {
-      const r0 = role as Parameters<Page['getByRole']>[0];
+    // 1b. Nameless try of a STATED role: the model said the role, so an
+    //     element with that role and no accessible name (role="progressbar"
+    //     without aria-label) is what it asked for. A GUESSED role gets no
+    //     nameless try here: that ran before every explicit hint and handed
+    //     an assertion on a missing error message the page's one button
+    //     (smoke-data-test-attribute check M). It runs last, step 11.
+    if (spec.role) {
+      const r0 = spec.role as Parameters<Page['getByRole']>[0];
       const wn = await tryCandidate({
         locator: page.getByRole(r0),
         level: 'role',
-        arg: { role },
+        arg: { role: spec.role },
       });
       if (wn) return wn;
     }
@@ -478,6 +499,21 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
     const byXPath = page.locator(`xpath=${spec.xpath}`);
     const w = await tryCandidate({ locator: byXPath, level: 'xpath', arg: spec.xpath });
     if (w) return w;
+  }
+
+  // 11. Nameless fallback of the GUESSED role, after every explicit hint and
+  //     every intent-derived tier, and only for a hint-less intent: "submit
+  //     button" on a page whose one button has no matching name still finds
+  //     it. With a testid, css, xpath or text hint that all missed, the
+  //     fallback is not used at all and the resolve returns null.
+  if (guessedRole && !hasLocatingHint) {
+    const r0 = guessedRole as Parameters<Page['getByRole']>[0];
+    const wn = await tryCandidate({
+      locator: page.getByRole(r0),
+      level: 'role',
+      arg: { role: guessedRole },
+    });
+    if (wn) return wn;
   }
 
   // Nothing resolved uniquely. If we have ambiguous candidates, take the
