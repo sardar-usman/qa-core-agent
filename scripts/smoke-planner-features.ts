@@ -1,3 +1,4 @@
+// @smoke-live: live Planner (Haiku) calls and a real browser load of https://the-internet.herokuapp.com
 /**
  * Live smoke that proves the Planner actually responds to the `features`
  * option — i.e. `--features login,cart` actually changes WHAT the agent

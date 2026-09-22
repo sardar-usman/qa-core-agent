@@ -117,6 +117,15 @@ Toolshop runs, same site, same SRS, same $6 ceiling:
 | 3 5e4394 | Sept 18 | #21, #22 | 7 | 20 | 16 | 1 | $6.09 | completed | docs/audit/run-5e4394-diagnosis.md |
 | 4 | NEXT | #23, #24 | | | | | | same command | first run where the tools can do what the doctrine asks |
 
+Run 4 bar, set before the run: 4 or more shipped and zero rework
+verdicts asking for a capability #23 added = hypothesis confirmed.
+2 to 3 shipped with new rework reasons = partial. 0 to 1 shipped =
+the bottleneck is not the tool surface; record as an audit finding,
+do not re-run to improve the number. Run 4 is blocked until the
+resolver defect (a nameless role fallback wins over an explicit
+testid or css hint, so an assertion on a missing element can resolve
+to the Login button and pass) is fixed.
+
 Run 3: twelve of fourteen reworks asked for tool capabilities that did not
 exist (assert_compare ignored its target hints; numeric relations could not
 parse currency; no pattern, toBeChecked or minimum-count assertions).
@@ -147,6 +156,10 @@ item ranked there is either merged (see the PR list above) or listed below.
 - shared demo account lockout on practicesoftwaretesting.com: the happy
   login can be locked by outside traffic; decide whether the run registers
   its own account.
+- Dropped scenarios keep only their name and verdict on the run-report;
+  their recorded steps are lost, so a drop cannot be diagnosed from the
+  artefact alone. Decide whether to keep dropped traces (redacted) on
+  the report.
 
 ## Then: go to market
 

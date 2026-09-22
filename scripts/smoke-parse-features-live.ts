@@ -1,3 +1,4 @@
+// @smoke-live: live Haiku call, about $0.001 per run
 /**
  * Exercises the Haiku-backed natural-language path in parse-features.ts.
  * Live API call — ~$0.001 per run. Don't ship to CI without an env-gated skip.
