@@ -81,10 +81,13 @@ await withPage(errorHtml, async (page) => {
   check('H. resolves via text fallback when only intent + text are given',
     r !== null, JSON.stringify(r));
   if (r) {
-    check('I. recorded level is css (using text=... selector form)',
-      r.level === 'css');
-    check('J. recorded arg uses Playwright text= syntax',
-      typeof r.arg === 'string' && r.arg === 'text=Username and password do not match');
+    // The text tier is a cascade level of its own now (level 'text', the
+    // visible copy as the arg; emitLocatorCall renders getByText), not a
+    // css level with Playwright's text= syntax as this lock first said.
+    check('I. recorded level is the text tier',
+      r.level === 'text', JSON.stringify(r));
+    check('J. recorded arg is the visible text the tier matched',
+      typeof r.arg === 'string' && r.arg === 'Username and password do not match', JSON.stringify(r.arg));
   }
 });
 
