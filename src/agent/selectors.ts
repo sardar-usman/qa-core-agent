@@ -86,9 +86,20 @@ const ROLE_PATTERNS: Array<[RegExp, string]> = [
   [/textbox|input|field|email|password|user(name)?/i, 'textbox'],
 ];
 
+/**
+ * Words that name a message, not a control. "login error message" is the
+ * message of the login flow, not the Login button: such an intent never
+ * guesses button or link (run 5e4394 and smoke-data-test-attribute check M,
+ * where an assertion on a missing error message resolved to the one button
+ * on the page and passed).
+ */
+const MESSAGE_INTENT_RE = /\b(error|message|alert|validation|toast|status|notice)s?\b/i;
+
 function guessRole(intent: string): string | undefined {
   for (const [re, role] of ROLE_PATTERNS) {
-    if (re.test(intent)) return role;
+    if (!re.test(intent)) continue;
+    if ((role === 'button' || role === 'link') && MESSAGE_INTENT_RE.test(intent)) return undefined;
+    return role;
   }
   return undefined;
 }
@@ -262,9 +273,22 @@ export function parsePiercingSelector(css?: string): { frameChain: string[]; inn
  * needed.
  */
 async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedLocator | null> {
-  const role = spec.role ?? guessRole(spec.intent);
+  // A stated role is an explicit hint; a guessed one is a heuristic whose
+  // nameless fallback runs last, and only for a hint-less intent (step 11).
+  const guessedRole = spec.role ? undefined : guessRole(spec.intent);
+  const role = spec.role ?? guessedRole;
   const name = spec.label ?? spec.intent;
   const ambiguousCandidates: Candidate[] = [];
+  // An explicit locating hint: when the model said WHERE (testid, css, xpath
+  // or the visible text) and every hint misses, the answer is null, never a
+  // nameless guess. The retry cap and the finding path (invariant 24) then
+  // apply instead of a silent wrong element.
+  const hasLocatingHint = [spec.testid, spec.css, spec.xpath, spec.text].some((h) => typeof h === 'string' && h.trim().length > 0);
+  // Intent-derived candidates (a label, placeholder, alt or title guessed
+  // from the intent, the smart css, the intent as text, the nameless role
+  // tries) run only for a hint-less call. When the model said where and
+  // every hint missed, the answer is null before any of them runs.
+  const intentTiers = !hasLocatingHint;
 
   // Hints usable for filter-based disambiguation when a level multi-matches.
   const filterHints: string[] = [];
@@ -313,16 +337,21 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
       }
     }
 
-    // 1b. Nameless fallback — only for the guessed role, only when all named
-    //     variants failed. Resolves elements like role="progressbar" that have
-    //     no accessible name on the page. Only wins when exactly one element
-    //     has that role (otherwise pushed to ambiguousCandidates as usual).
-    if (role) {
-      const r0 = role as Parameters<Page['getByRole']>[0];
+    // 1b. Nameless try of a STATED role: the model said the role, so an
+    //     element with that role and no accessible name (role="progressbar"
+    //     without aria-label) is what it asked for, but only for a hint-less
+    //     call: a stated role whose name missed is a weaker hint than a
+    //     testid, css, xpath or text hint the model also supplied, and with
+    //     one of those present and missed the answer is null. A GUESSED role
+    //     gets no nameless try here: that ran before every explicit hint and
+    //     handed an assertion on a missing error message the page's one
+    //     button (smoke-data-test-attribute check M). It runs last, step 11.
+    if (spec.role && intentTiers) {
+      const r0 = spec.role as Parameters<Page['getByRole']>[0];
       const wn = await tryCandidate({
         locator: page.getByRole(r0),
         level: 'role',
-        arg: { role },
+        arg: { role: spec.role },
       });
       if (wn) return wn;
     }
@@ -337,9 +366,11 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
     const w2 = await tryCandidate({ locator: fuzzy, level: 'label', arg: spec.label });
     if (w2) return w2;
   }
-  const byLabelFromIntent = page.getByLabel(spec.intent);
-  const labelW = await tryCandidate({ locator: byLabelFromIntent, level: 'label', arg: spec.intent });
-  if (labelW) return labelW;
+  if (intentTiers) {
+    const byLabelFromIntent = page.getByLabel(spec.intent);
+    const labelW = await tryCandidate({ locator: byLabelFromIntent, level: 'label', arg: spec.intent });
+    if (labelW) return labelW;
+  }
 
   // 3. getByPlaceholder — covers modern forms that use placeholder text instead
   //    of <label>. Tries the explicit label hint first (because the agent
@@ -351,9 +382,9 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
       if (s && !placeholderCandidates.includes(s)) placeholderCandidates.push(s);
     };
     addPh(spec.label);
-    addPh(spec.intent);
+    if (intentTiers) addPh(spec.intent);
     addPh(spec.label ? stripGenericSuffixes(spec.label) : null);
-    addPh(spec.intent ? stripGenericSuffixes(spec.intent) : null);
+    if (intentTiers) addPh(spec.intent ? stripGenericSuffixes(spec.intent) : null);
     for (const ph of placeholderCandidates) {
       const exact = page.getByPlaceholder(ph, { exact: true });
       const w = await tryCandidate({ locator: exact, level: 'placeholder', arg: ph });
@@ -394,7 +425,7 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
       if (s && !altCandidates.includes(s)) altCandidates.push(s);
     };
     addAlt(spec.label);
-    addAlt(spec.intent);
+    if (intentTiers) addAlt(spec.intent);
     for (const alt of altCandidates) {
       const exact = page.getByAltText(alt, { exact: true });
       const w = await tryCandidate({ locator: exact, level: 'alt', arg: alt });
@@ -413,7 +444,7 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
       if (s && !titleCandidates.includes(s)) titleCandidates.push(s);
     };
     addTitle(spec.label);
-    addTitle(spec.intent);
+    if (intentTiers) addTitle(spec.intent);
     for (const t of titleCandidates) {
       const byTitle = page.getByTitle(t);
       const w = await tryCandidate({ locator: byTitle, level: 'title', arg: t });
@@ -454,7 +485,7 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
     }
   }
 
-  const smartCss = buildSmartCssFromIntent(spec.intent);
+  const smartCss = intentTiers ? buildSmartCssFromIntent(spec.intent) : null;
   if (smartCss) {
     const byCss = page.locator(smartCss);
     const w = await tryCandidate({ locator: byCss, level: 'css', arg: smartCss });
@@ -463,7 +494,7 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
 
   // 9. getByText with intent as last resort (for elements whose only stable
   //    identifier is their visible text and no explicit text hint was given).
-  if (spec.intent.trim().length >= 4 && !spec.text && !spec.label) {
+  if (intentTiers && spec.intent.trim().length >= 4 && !spec.label) {
     const txt = spec.intent.trim();
     const exact = page.getByText(txt, { exact: true });
     const w = await tryCandidate({ locator: exact, level: 'text', arg: txt });
@@ -478,6 +509,21 @@ async function resolveInScope(page: Scope, spec: ResolveSpec): Promise<ResolvedL
     const byXPath = page.locator(`xpath=${spec.xpath}`);
     const w = await tryCandidate({ locator: byXPath, level: 'xpath', arg: spec.xpath });
     if (w) return w;
+  }
+
+  // 11. Nameless fallback of the GUESSED role, after every explicit hint and
+  //     every intent-derived tier, and only for a hint-less intent: "submit
+  //     button" on a page whose one button has no matching name still finds
+  //     it. With a testid, css, xpath or text hint that all missed, the
+  //     fallback is not used at all and the resolve returns null.
+  if (guessedRole && !hasLocatingHint) {
+    const r0 = guessedRole as Parameters<Page['getByRole']>[0];
+    const wn = await tryCandidate({
+      locator: page.getByRole(r0),
+      level: 'role',
+      arg: { role: guessedRole },
+    });
+    if (wn) return wn;
   }
 
   // Nothing resolved uniquely. If we have ambiguous candidates, take the
@@ -557,7 +603,9 @@ function buildSmartCssFromIntent(intent: string): string | null {
   if (/\bsearch\b/.test(lc))                        return 'input[type="search"]';
   if (/\b(phone|telephone|tel)\b/.test(lc))         return 'input[type="tel"]';
   if (/\burl\b/.test(lc))                           return 'input[type="url"]';
-  if (/\bsubmit\b/.test(lc))                        return 'button[type="submit"], input[type="submit"]';
+  // The same message-word rule as guessRole: an intent naming a message
+  // never derives a button css ("submit error message" is the message).
+  if (/\bsubmit\b/.test(lc) && !MESSAGE_INTENT_RE.test(intent)) return 'button[type="submit"], input[type="submit"]';
   return null;
 }
 

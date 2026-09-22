@@ -23,10 +23,24 @@ export async function recoverResolve(
   input: ResolveInput,
 ): Promise<ResolvedLocator | null> {
   const relaxed: ResolveInput = { intent: input.intent };
-  let r = await resolve(page, relaxed);
+  let r = namedOnly(await resolve(page, relaxed));
   for (let i = 0; i < 3 && !r; i++) {
     await new Promise((res) => setTimeout(res, 200));
-    r = await resolve(page, relaxed);
+    r = namedOnly(await resolve(page, relaxed));
   }
+  return r;
+}
+
+/**
+ * Recovery accepts only NAMED matches. By intent alone the cascade may end
+ * on the nameless fallback of a guessed role (the page's one button for a
+ * "submit button" intent). For the model's own resolve that is a fair last
+ * resort; for a recovery it would swap the element the model asked for with
+ * whatever shares its role, and a recovery to the wrong element is worse
+ * than no recovery. A nameless role match therefore counts as not found.
+ */
+function namedOnly(r: ResolvedLocator | null): ResolvedLocator | null {
+  if (!r) return null;
+  if (r.level === 'role' && typeof r.arg === 'object' && r.arg !== null && !('name' in r.arg)) return null;
   return r;
 }

@@ -121,10 +121,8 @@ Run 4 bar, set before the run: 4 or more shipped and zero rework
 verdicts asking for a capability #23 added = hypothesis confirmed.
 2 to 3 shipped with new rework reasons = partial. 0 to 1 shipped =
 the bottleneck is not the tool surface; record as an audit finding,
-do not re-run to improve the number. Run 4 is blocked until the
-resolver defect (a nameless role fallback wins over an explicit
-testid or css hint, so an assertion on a missing element can resolve
-to the Login button and pass) is fixed.
+do not re-run to improve the number. Resolver defect fixed in PR #26;
+run 4 unblocked.
 
 Run 3: twelve of fourteen reworks asked for tool capabilities that did not
 exist (assert_compare ignored its target hints; numeric relations could not
@@ -160,6 +158,9 @@ item ranked there is either merged (see the PR list above) or listed below.
   their recorded steps are lost, so a drop cannot be diagnosed from the
   artefact alone. Decide whether to keep dropped traces (redacted) on
   the report.
+- reconciliation.dropped carries the Critic's echo of a scenario
+  name (one run 3 drop lost its quotation marks); identity fields
+  must carry the plan's canonical name (standing rule 1).
 
 ## Then: go to market
 
