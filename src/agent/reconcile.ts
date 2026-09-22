@@ -97,8 +97,19 @@ export interface Reconciliation {
   note?: string;
 }
 
+export interface ReconcileOptions {
+  /**
+   * A name found in more than one bucket (a finding and a skip, a drop and a
+   * skip). Without a handler the builder THROWS, so a smoke fixture with a
+   * double record fails loudly; the runtime passes a handler that prints a
+   * warning line and the builder then counts the name once, in the earliest
+   * bucket, never as "+N added".
+   */
+  onDuplicate?: (message: string) => void;
+}
+
 /** Build the reconciliation purely from a finished RunReport. */
-export function reconcile(report: RunReport): Reconciliation {
+export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Reconciliation {
   const generated = report.scenarios.length;
   const dropped: DroppedScenario[] = [];
 
@@ -189,10 +200,37 @@ export function reconcile(report: RunReport): Reconciliation {
   // already recorded as a finding (and the reverse), and this pass is the
   // guard for a report written before that rule (run 5e4394 counted one
   // scenario as both, and the funnel read "+1 unplanned").
-  const findingKeys = new Set(findings.map((f) => scenarioNameKey(f.name)));
   const skippedAll = (report.skipped ?? []).map((s) => ({ name: s.scenario, reason: s.reason }));
-  const skipped = skippedAll.filter((s) => !findingKeys.has(scenarioNameKey(s.name)));
-  const doubleCounted = skippedAll.length - skipped.length;
+  // One name, one bucket. The buckets in pipeline order: generated, dropped,
+  // incomplete, findings, skipped. A name seen again in a later bucket is a
+  // double record: reported loudly (thrown without a handler), then counted
+  // once in the earliest bucket.
+  const seen = new Map<string, string>();
+  let doubleCounted = 0;
+  const claim = (bucket: string, name: string): boolean => {
+    const key = scenarioNameKey(name);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      const msg = `reconciliation: "${name}" is recorded as both ${first} and ${bucket}; a scenario belongs to one bucket (counted once, as ${first})`;
+      if (!opts.onDuplicate) throw new Error(msg);
+      opts.onDuplicate(msg);
+      doubleCounted++;
+      return false;
+    }
+    seen.set(key, bucket);
+    return true;
+  };
+  for (const s of report.scenarios) claim('generated', s.name);
+  const droppedOnce = dropped.filter((d) => claim(`dropped at ${d.stage}`, d.name));
+  dropped.length = 0;
+  dropped.push(...droppedOnce);
+  const incompleteOnce = incomplete.filter((i) => claim('incomplete', i.name));
+  incomplete.length = 0;
+  incomplete.push(...incompleteOnce);
+  const findingsOnce = findings.filter((f) => claim('a finding', f.name));
+  findings.length = 0;
+  findings.push(...findingsOnce);
+  const skipped = skippedAll.filter((s) => claim('skipped', s.name));
 
   const accountedFor = generated + dropped.length + incomplete.length + findings.length + skipped.length;
   const planned = report.plan?.length ?? accountedFor;
@@ -207,7 +245,7 @@ export function reconcile(report: RunReport): Reconciliation {
   if (noPlan) {
     note = 'no Planner plan recorded — reconciled against the pipeline total';
   } else if (doubleCounted > 0) {
-    note = `${doubleCounted} scenario(s) recorded as both a finding and a skip; counted once, as the finding.`;
+    note = `${doubleCounted} scenario(s) recorded in two buckets; counted once, in the earliest (see the warning line).`;
   } else if (added > 0) {
     note = `Explorer added ${added} scenario(s) beyond the ${planned} planned (e.g. an a11y check). All ${accountedFor} are named below, so the run still balances.`;
   } else if (shortfall > 0) {
