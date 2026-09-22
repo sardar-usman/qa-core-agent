@@ -203,7 +203,7 @@ const truncated = `[
 const k6 = parseVerdicts(truncated);
 check('K6. a response cut off mid-array salvages the complete verdicts and drops the partial one', k6.length === 2 && k6[1]?.scenario === 'second', JSON.stringify(k6));
 check('K7. toHaveURL renders as a quoted regex string (no /pattern// artefact)',
-  describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }) === 'assert URL matches regex "saucedemo\\\\.com/"',
+  describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }) === 'assert URL matches regex "saucedemo\\\\.com/" [no-timeout]',
   describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'saucedemo\\.com/' } }));
 
 /* ─── L. the Critic sees selectors ─────────────────────────────────────────── */
@@ -220,7 +220,7 @@ check('L2. an ambiguous css selector renders .first(), as the spec will',
   l2 === 'capture text of first product name = page.locator("a[data-test^=\\"product-\\"] h5").first() -> cap_first', l2);
 const l3 = describeStep({ kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '.inventory_list', intent: 'inventory page marker (should be absent)' }, count: 0, timeout: 5000 } });
 check('L3. the live shape: the count assertion names its css locator',
-  l3 === 'assert inventory page marker (should be absent) = page.locator(".inventory_list") count=0', l3);
+  l3 === 'assert inventory page marker (should be absent) = page.locator(".inventory_list") count=0 [timeout:5000ms]', l3);
 const l4 = describeStep({ kind: 'assert', name: 'h', assertion: { type: 'toHaveText', target: { level: 'role', arg: { role: 'heading', name: 'Sample Heading' }, intent: 'frame heading', frameChain: ['iframe#frame1'] }, text: 'Sample Heading', timeout: 5000 } });
 check('L4. a frame chain renders page.frameLocator(...) before the level call',
   l4.includes('frame heading = page.frameLocator("iframe#frame1").getByRole("heading", {"name":"Sample Heading"})'), l4);
@@ -242,6 +242,19 @@ check('L6d. a minimum count renders as count>=N', l6d.includes('count>=1'), l6d)
 const l6e = describeStep({ kind: 'assert', name: 'k', assertion: { type: 'toBeChecked', target: { level: 'css', arg: '#eco', intent: 'eco filter' }, checked: true, timeout: 5000 } });
 check('L6e. a checked assertion renders its state', l6e.includes('eco filter = page.locator("#eco") checked'), l6e);
 check('L6f. the Critic prompt says a compare line polls and never needs a timeout, and names the tool forms', CRITIC_SYSTEM_PROMPT.includes('[polls Nms]') && CRITIC_SYSTEM_PROMPT.includes('toHaveCount with atLeast') && CRITIC_SYSTEM_PROMPT.includes('toBeChecked'));
+// Run 591732: the Critic reworked two scenarios for what it could not see. A
+// toHaveCount with timeout 10000 rendered as a bare count=0, a toHaveURL
+// with the model's 15000 had no timeout field to render, and a generated
+// email rendered as its literal, so the Critic called it a hardcoded id.
+const rCount = describeStep({ kind: 'assert', name: 'c', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '.card:not(:has-text("ECO"))', intent: 'non-eco cards' }, count: 0, timeout: 10000 } });
+const rUrl = describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/auth/login', timeout: 15000 } });
+const rFill = describeStep({ kind: 'fill', target: { level: 'testid', arg: 'email', intent: 'email input' }, value: 'qa.user.muctxhqd23em1vt@example.com', generate: 'email' });
+console.log('   ' + rCount + '\n   ' + rUrl + '\n   ' + rFill);
+check('L9a. a toHaveCount with a recorded timeout renders it', rCount === 'assert non-eco cards = page.locator(".card:not(:has-text(\\"ECO\\"))") count=0 [timeout:10000ms]', rCount);
+check('L9b. a toHaveURL with a recorded timeout renders it', rUrl === 'assert URL matches regex "/auth/login" [timeout:15000ms]', rUrl);
+check('L9c. a generated fill renders its generator, never the literal it produced', rFill === 'fill(email input = page.getByTestId("email"), <generated:email>)' && !rFill.includes('qa.user'), rFill);
+check('L9d. a toHaveCount and a toHaveURL without a timeout say so, like every other type', describeStep({ kind: 'assert', name: 'c', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '.card', intent: 'cards' }, count: 0 } }).endsWith('count=0 [no-timeout]') && describeStep({ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/x' } }).endsWith('[no-timeout]'));
+check('L9e. the Critic prompt states that <generated:*> values are fresh per run by design and not rule 6 violations', CRITIC_SYSTEM_PROMPT.includes('<generated:email>') && CRITIC_SYSTEM_PROMPT.includes('never a rule 6 violation'));
 // The Critic prompt fixture (the gateway smoke's login trace shape) rendered
 // through describeStep: no line may carry a bare "element".
 const fixtureLines = [

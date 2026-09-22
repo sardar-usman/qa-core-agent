@@ -1938,10 +1938,13 @@ async function executeAssertion(
       const escaped = escapeRegex(input.pattern);
       await expect(ctx.page).toHaveURL(new RegExp(escaped), assertTimeout);
       if (ctx.current) {
+        // The model's timeout is recorded when it passed one, so the Critic
+        // sees it and the emitted spec waits as long as the model asked.
+        const urlTimeout = typeof input.timeout === 'number' && Number.isFinite(input.timeout) && input.timeout > 0 ? Math.round(input.timeout) : undefined;
         pushStep(ctx, {
           kind: 'assert',
           name: `URL contains "${input.pattern}"`,
-          assertion: { type: 'toHaveURL', pattern: escaped },
+          assertion: { type: 'toHaveURL', pattern: escaped, ...(urlTimeout !== undefined ? { timeout: urlTimeout } : {}) },
         });
       }
       return { ok: true };

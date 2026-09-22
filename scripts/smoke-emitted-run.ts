@@ -173,7 +173,8 @@ function scenarios(): Scenario[] {
       { kind: 'navigate', url: `${base}/` },
       { kind: 'capture', varName: 'cap_listingName', source: 'text', target: cardName, intent: 'first card name' },
       { kind: 'click', target: firstCard },
-      { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'detail' } },
+      // The model's URL timeout is recorded and emitted: expect(page).toHaveURL(pattern, { timeout }).
+      { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: 'detail', timeout: 15000 } },
       { kind: 'assert_compare', varName: 'cap_listingName', relation: 'equal', source: 'text', target: cardName, intent: 'first card name', readVar: 'cap_listingName_now', readTarget: detailHeading },
     ] },
     { name: 'the token id regenerates on click', category: 'happy', feature: 'token', steps: [
@@ -264,6 +265,8 @@ for (const language of ['ts', 'js'] as const) {
   try {
     const report = buildReport(language);
     scaffold({ report, outDir, siteName: 'toolshop-fixture' });
+    const catalogueSpec = fs.readFileSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`), 'utf8');
+    check(`${language}: the emitted toHaveURL carries the recorded timeout`, /toHaveURL\(new RegExp\("detail"\), \{ timeout: 15000 \}\)/.test(catalogueSpec), catalogueSpec.split('\n').filter((l) => /toHaveURL/.test(l)).join(' | '));
     check(`${language}: scaffold wrote the config, a spec per feature and the a11y spec`,
       fs.existsSync(path.join(outDir, `playwright.config.${language}`))
       && fs.existsSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`))

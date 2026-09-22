@@ -200,8 +200,10 @@ function emitAssertion(a: Assertion): string[] {
       const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
       return [`await expect(${loc(a.target)}).toBeChecked(${opts ? `{ ${opts} }` : ''});`];
     }
-    case 'toHaveURL':
-      return [`await expect(page).toHaveURL(new RegExp(${q(a.pattern)}));`];
+    case 'toHaveURL': {
+      const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
+      return [`await expect(page).toHaveURL(new RegExp(${q(a.pattern)})${opts});`];
+    }
     case 'toBeHidden': {
       // Absence assertion. Force .first() so a selector that matches several
       // hidden nodes (or none) never trips strict mode. toBeHidden passes both

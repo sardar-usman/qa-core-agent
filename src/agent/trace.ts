@@ -243,7 +243,13 @@ export type Assertion =
    */
   | { type: 'toHaveText'; target: SelectorRecord; text: string; pattern?: string; timeout?: number }
   | { type: 'toContainText'; target: SelectorRecord; text: string; pattern?: string; timeout?: number }
-  | { type: 'toHaveURL'; pattern: string }
+  /**
+   * URL assertion. The pattern is an escaped substring. `timeout` is the
+   * model's value when it passed one (run 591732 passed 15000 and the field
+   * did not exist, so the Critic reworked the scenario for a missing
+   * timeout); absent, replay and the emitted spec use their defaults.
+   */
+  | { type: 'toHaveURL'; pattern: string; timeout?: number }
   /**
    * Count assertion. `count: 0` is the absence form — built directly from
    * hints without resolving, so it can assert a selector matches nothing.

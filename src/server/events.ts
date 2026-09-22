@@ -9,6 +9,26 @@ import type { AgentEvent } from '../agent/runtime.js';
  * it. This runs AFTER the runtime parsed the critic's response, so nothing
  * here can affect what parseVerdicts saw.
  */
+/**
+ * How much of a get_dom result the on-disk event log keeps. A get_dom result
+ * is a few KB (headings, inputs, buttons, links of one page), and the
+ * diagnosis of run 591732 could not tell from the 200-character preview
+ * whether the model had seen the three rental product names. 64 KB keeps the
+ * whole result on any real page and bounds a pathological DOM; every other
+ * tool result keeps the 200-character preview the UI shows.
+ */
+export const GET_DOM_LOG_CAP = 64 * 1024;
+
+/** The on-disk shape of an event: the UI shape, except that a get_dom result keeps its full text up to GET_DOM_LOG_CAP. */
+export function eventForDisk(e: AgentEvent): object {
+  if (e.type === 'tool_result' && e.name === 'get_dom') {
+    const { data, ...rest } = e;
+    const preview = data === undefined ? undefined : JSON.stringify(data).slice(0, GET_DOM_LOG_CAP);
+    return preview === undefined ? rest : { ...rest, preview };
+  }
+  return eventForUi(e);
+}
+
 export function eventForUi(e: AgentEvent): object {
   if (e.type === 'tool_result') {
     const { data, ...rest } = e;
@@ -40,7 +60,7 @@ export function appendRunEvent(runDir: string, e: AgentEvent, now: Date = new Da
   if (SKIP_ON_DISK.has(e.type)) return;
   try {
     fs.mkdirSync(runDir, { recursive: true });
-    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...eventForUi(e) }) + '\n');
+    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...eventForDisk(e) }) + '\n');
   } catch { /* a failed log line never fails the run */ }
 }
 
