@@ -1287,13 +1287,19 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // this run against it.
     const ruleIdsByKey = new Map<string, string[]>();
     for (const p of planResult.scenarios) ruleIdsByKey.set(scenarioNameKey(p.name), p.ruleIds ?? []);
+    const stepsByKey = new Map(scenarios.map((s) => [scenarioNameKey(s.name), s.steps.length]));
     const decision = decideRepairPass({
       scenarios,
       verdicts: review.verdicts,
       reserveUsd,
+      // The budget is the whole ceiling minus what the run has spent at this
+      // point (explorer, planner, critic), never below the reserve.
+      ceilingUsd: maxUsd,
+      spentUsd: cost.usd + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0),
       explorerUsd: cost.usd - (cost.repairUsd ?? 0),
       recorded: scenarios.length,
       ruleIdsFor: (name) => ruleIdsByKey.get(scenarioNameKey(name)) ?? [],
+      stepsFor: (name) => stepsByKey.get(scenarioNameKey(name)) ?? 1,
     });
     if (decision) {
       opts.onEvent?.({ type: 'message', text: decision.line });
@@ -1606,7 +1612,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // Reporting reconciliation — planned === generated + dropped, with every
   // dropped scenario named. Attached so the CLI, gateway, and run-report.json
   // all share one auditable funnel.
-  report.reconciliation = reconcile(report);
+  // A name in two funnel buckets is a run problem said out loud, never a
+  // "+1 added" that balances the identity by accident.
+  report.reconciliation = reconcile(report, { onDuplicate: (m) => opts.onEvent?.({ type: 'message', text: `WARNING: ${m}` }) });
 
   // Rule coverage: classify every stated rule as covered, planned-but-dropped,
   // or not-planned. Attached to the report and written to its own file so the

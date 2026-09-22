@@ -1704,8 +1704,21 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (ctx.findings.some((f) => scenarioNameKey(f.scenario) === scenarioNameKey(planned))) {
           return { ok: true, data: { skipped: null, noop: `"${planned}" is already recorded as a finding; the skip is a no-op and the finding stands`, remaining: unexploredPlanned(ctx).length } };
         }
+        // Skipping the scenario IN PROGRESS discards its open trace: nothing
+        // ships, no finding, the skip is its one record. Run 4 (591732) left
+        // the trace open, begin_scenario was then refused, and the model closed
+        // it with a vacuous assertion that the Critic rejected, so the name sat
+        // in two funnel buckets. Skipping a DIFFERENT planned scenario records
+        // that skip and leaves the current one open.
+        let discarded = false;
+        if (ctx.current && scenarioNameKey(ctx.current.name) === scenarioNameKey(planned)) {
+          ctx.current = null;
+          ctx.captures.clear();
+          ctx._blockUntilNewScenario = false;
+          discarded = true;
+        }
         ctx.skipped.push({ scenario: planned, reason });
-        return { ok: true, data: { skipped: planned, remaining: unexploredPlanned(ctx).length } };
+        return { ok: true, data: { skipped: planned, ...(discarded ? { discarded: 'the scenario in progress was discarded; nothing recorded for it but this skip' } : {}), remaining: unexploredPlanned(ctx).length } };
       }
       case 'finish': {
         // Plan enforcement: the Explorer must not abandon the plan silently.

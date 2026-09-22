@@ -134,6 +134,39 @@ check('F4. skipped scenarios are listed with reasons', lines.includes('skipped (
   check('G6. the funnel balances: planned 2 = skipped 2, nothing vanishes', gRec.balanced === true && gRec.accountedFor === 2 && gRec.skipped.length === 2, JSON.stringify(gRec));
 }
 
+/* ─── H. skip_scenario while a scenario is in progress ─────────────────────── */
+// Run 4 (591732): the model skipped the scenario it had open, the trace stayed
+// open, begin_scenario was refused, and it closed the scenario with a vacuous
+// assertion the Critic rejected, so one name sat in two funnel buckets.
+{
+  const hctx = createContext(stubPage, 40);
+  hctx.plannedNames = [...PLANNED];
+  await runTool(hctx, { name: 'begin_scenario', input: { name: PLANNED[1], category: 'negative' } });
+  check('H1. a scenario is in progress', hctx.current?.name === PLANNED[1]);
+  const other = await runTool(hctx, { name: 'skip_scenario', input: { name: PLANNED[3], reason: 'lockout needs accounts we do not have' } });
+  check('H2. skipping a DIFFERENT planned scenario records that skip and leaves the current one open', other.ok === true && hctx.current?.name === PLANNED[1] && hctx.skipped.length === 1 && hctx.skipped[0]?.scenario === PLANNED[3], JSON.stringify(other));
+  const self = await runTool(hctx, { name: 'skip_scenario', input: { name: PLANNED[1], reason: 'the guard replaces the duplicate email, so the case cannot be exercised' } });
+  check('H3. skipping the scenario IN PROGRESS discards its open trace: nothing to ship, no finding, the skip recorded once', self.ok === true && hctx.current === null && hctx.scenarios.length === 0 && hctx.findings.length === 0 && hctx.skipped.filter((x) => x.scenario === PLANNED[1]).length === 1 && /discarded/.test(String((self.data as { discarded?: string }).discarded ?? '')), JSON.stringify(self));
+  const next = await runTool(hctx, { name: 'begin_scenario', input: { name: PLANNED[2], category: 'negative' } });
+  check('H4. begin_scenario is accepted straight after (nothing left open, no block)', next.ok === true && hctx.current?.name === PLANNED[2], JSON.stringify(next));
+  hctx.current = null;
+  // The reconciliation builder rejects a name in two buckets loudly: it throws
+  // without a handler (a smoke fixture with a double record fails), and with the
+  // runtime's handler it warns and counts the name once, in the earliest bucket.
+  const doubled = {
+    scenarios: [done(PLANNED[0]!)],
+    plan: PLANNED.map((name) => ({ name, category: 'happy', rationale: 'r' })),
+    review: { verdicts: [{ scenario: PLANNED[1], verdict: 'reject', reasons: ['vacuous'], required_fixes: [] }], summary: '' },
+    skipped: [{ scenario: PLANNED[1], reason: 'the guard replaces the email' }, { scenario: PLANNED[2], reason: 'x' }, { scenario: PLANNED[3], reason: 'y' }],
+  } as unknown as RunReport;
+  let threw = '';
+  try { reconcile(doubled); } catch (e) { threw = (e as Error).message; }
+  check('H5. the reconciliation builder THROWS on a name recorded in two buckets, naming the name and both buckets', /is recorded as both dropped at critic and skipped/.test(threw) && threw.includes(PLANNED[1]!), threw || 'did not throw');
+  const warnings: string[] = [];
+  const guarded = reconcile(doubled, { onDuplicate: (m) => warnings.push(m) });
+  check('H6. with a handler it warns once and counts the name once, in the earliest bucket: planned 4 = generated 1 + dropped 1 + skipped 2, no "+1 added"', warnings.length === 1 && guarded.accountedFor === 4 && guarded.added === 0 && guarded.balanced && guarded.dropped.length === 1 && guarded.skipped.length === 2 && /recorded in two buckets; counted once/.test(guarded.note ?? ''), JSON.stringify({ warnings, accountedFor: guarded.accountedFor, added: guarded.added, note: guarded.note }));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
 console.log('OK: finish cannot abandon the plan silently, skip_scenario records reasons, and the reconciliation identity includes skipped.');

@@ -267,15 +267,53 @@ const echoedVerdicts = [
 // Reserve $0.90 (15% of $6). The Explorer spent $5.1840 recording 6 scenarios.
 const h = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0.9, explorerUsd: 5.184, recorded: 6 });
 check('H1. the live shape now RUNS the repair pass', h?.run === true, JSON.stringify(h));
-check('H2. all 5 prefix-echoed rework verdicts match their scenarios: the reserve funds 1 and names the other 4 as not repaired', h !== null && h.rework.length + h.unfunded.length === 5 && h.rework.length === 1 && h.fundsLabel === 'reserve funds 1 of 5', JSON.stringify({ funded: h?.rework.length, unfunded: h?.unfunded.length }));
-check('H3. the budget is the FULL stated reserve ($0.90), not the reserve minus planner and critic spend',
-  h !== null && Math.abs(h.budgetUsd - 0.9) < 1e-9, String(h?.budgetUsd));
-check('H4. the run line states the funded count, the reserve, the per-scenario explorer cost observed, the funded name and the unfunded names',
-  (h?.line ?? '').startsWith('repair pass: 1 of 5 rework scenario(s), budget $0.90 (the stated reserve); explorer cost this run $0.8640 per recorded scenario, so the reserve funds 1 of 5; repairing: "') && /; not repaired \(reserve funds 1 of 5\): "/.test(h?.line ?? '') && (h?.unfunded ?? []).every((s) => (h?.line ?? '').includes(`"${s.name}"`)), h?.line);
+// With no ceiling and spend given, the budget is the reserve alone: $0.90 at
+// $0.8640 per explored scenario, a repair estimated at half ($0.4320), funds 2.
+check('H2. all 5 prefix-echoed rework verdicts match their scenarios: the reserve alone funds 2 (cheapest first) and names the other 3 as not repaired', h !== null && h.rework.length + h.unfunded.length === 5 && h.rework.length === 2 && h.fundsLabel === 'budget funds 2 of 5', JSON.stringify({ funded: h?.rework.length, unfunded: h?.unfunded.length }));
+check('H3. with no ceiling given the budget is the FULL stated reserve ($0.90), never the reserve minus planner and critic spend',
+  h !== null && Math.abs(h.budgetUsd - 0.9) < 1e-9 && Math.abs(h.remainingUsd - 0.9) < 1e-9, String(h?.budgetUsd));
+check('H4. the run line states the funded count, the remaining and the reserve, the per-scenario explorer cost and the repair estimate, the funded names and the unfunded names',
+  (h?.line ?? '').startsWith('repair pass: 2 of 5 rework scenario(s), budget $0.90 (ceiling minus spend $0.90 remaining, reserve $0.90 the floor); explorer cost this run $0.8640 per recorded scenario, a repair estimated at $0.4320 (half, scaled by step count), so the budget funds 2 of 5 cheapest first; repairing: "') && /; not repaired \(budget funds 2 of 5\): "/.test(h?.line ?? '') && (h?.unfunded ?? []).every((s) => (h?.line ?? '').includes(`"${s.name}"`)), h?.line);
 
-// No reserve at all: still a line, never silence.
-const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0, explorerUsd: 5.184, recorded: 6 });
-check('H5. a zero reserve skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no reserve'), hBroke?.line);
+// No reserve and nothing left: still a line, never silence.
+const hBroke = decideRepairPass({ scenarios: liveScenarios, verdicts: echoedVerdicts, reserveUsd: 0, ceilingUsd: 6, spentUsd: 6.2, explorerUsd: 5.184, recorded: 6 });
+check('H5. a zero budget skips WITH a printed reason', hBroke?.run === false && hBroke.line.startsWith('repair pass skipped: no budget'), hBroke?.line);
+
+/* ─── J. the budget is the ceiling minus spend, never below the reserve ────── */
+// Run 4 (591732): ceiling $6.00, explorer $4.4710, planner $0.0297, critic
+// $0.0540, reserve $0.90, 7 reworks among 13 recorded. The reserve was used
+// as a cap: 2 of 7 funded, $1.43 of the ceiling unspent at the end. The
+// budget is now what the run has left ($1.4453 at these numbers), and a
+// repair estimated at half the explorer's per-scenario cost funds all 7.
+{
+  const names7 = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+  const run4 = decideRepairPass({
+    scenarios: names7.map((name) => ({ name })),
+    verdicts: names7.map(rw),
+    reserveUsd: 0.9, ceilingUsd: 6.0, spentUsd: 4.471 + 0.0297 + 0.054, explorerUsd: 4.471, recorded: 13,
+  });
+  check('J1. run 4 numbers: the budget is the ceiling minus spend ($1.4453), above the $0.90 reserve', run4 !== null && Math.abs(run4.budgetUsd - (6.0 - 4.471 - 0.0297 - 0.054)) < 1e-9 && Math.abs(run4.remainingUsd - run4.budgetUsd) < 1e-9, JSON.stringify({ budget: run4?.budgetUsd, remaining: run4?.remainingUsd }));
+  check('J2. run 4 numbers: all 7 reworks are funded (7 x $0.1720 = $1.20 within $1.4453), none left unrepaired', run4?.run === true && run4.rework.length === 7 && run4.unfunded.length === 0 && run4.fundsLabel === 'budget funds 7 of 7', run4?.line);
+  check('J3. the line prints both numbers, the remaining and the reserve', (run4?.line ?? '').includes('budget $1.45 (ceiling minus spend $1.45 remaining, reserve $0.90 the floor)'), run4?.line);
+  // Exploration spent to its sub-ceiling ($5.10 of $6.00) plus planner and
+  // critic: $0.82 left, below the reserve. The reserve is the floor, so the
+  // pass gets exactly $0.90.
+  const atSub = decideRepairPass({
+    scenarios: names7.map((name) => ({ name })),
+    verdicts: names7.map(rw),
+    reserveUsd: 0.9, ceilingUsd: 6.0, spentUsd: 5.1 + 0.03 + 0.05, explorerUsd: 5.1, recorded: 13,
+  });
+  check('J4. exploration at its sub-ceiling: the budget is exactly the reserve ($0.90), the floor exploration cannot eat', atSub !== null && Math.abs(atSub.budgetUsd - 0.9) < 1e-9 && Math.abs(atSub.remainingUsd - 0.82) < 1e-9, JSON.stringify({ budget: atSub?.budgetUsd, remaining: atSub?.remainingUsd }));
+  check('J5. at the reserve, a repair estimated at $0.1962 funds 4 of 7, cheapest first, and names the other 3', atSub?.rework.length === 4 && atSub.unfunded.length === 3 && atSub.fundsLabel === 'budget funds 4 of 7', atSub?.line);
+  // Cheapest first: a scenario with more recorded steps is a costlier repair.
+  const stepped = decideRepairPass({
+    scenarios: [{ name: 'long' }, { name: 'short' }, { name: 'medium' }],
+    verdicts: ['long', 'short', 'medium'].map(rw),
+    reserveUsd: 0.3, ceilingUsd: 1.0, spentUsd: 0.7, explorerUsd: 1.2, recorded: 3,
+    stepsFor: (n) => (n === 'long' ? 30 : n === 'short' ? 6 : 12),
+  });
+  check('J6. funding is cheapest first by the step-scaled estimate: short, then medium; the long one is unfunded', JSON.stringify(stepped?.rework.map((s) => s.name)) === JSON.stringify(['short', 'medium']) && stepped?.unfunded[0]?.name === 'long', stepped?.line);
+}
 
 // Verdict names that match nothing: still a line naming the orphans.
 const hAlien = decideRepairPass({ scenarios: liveScenarios, verdicts: [rw('a verdict about something else entirely')], reserveUsd: 0.9, explorerUsd: 1, recorded: 5 });

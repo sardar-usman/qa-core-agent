@@ -631,14 +631,18 @@ export function splitCarriedVerdicts<S extends { name: string }>(
 /** What the repair-pass entry decision resolved to. The line ALWAYS prints. */
 export interface RepairDecision<S> {
   run: boolean;
-  /** The rework scenarios the reserve funds, highest value first: these are re-explored. */
+  /** The rework scenarios the budget funds, cheapest first: these are re-explored. */
   rework: S[];
-  /** The rework scenarios the reserve does not fund: recorded as dropped "rework, not repaired". */
+  /** The rework scenarios the budget does not fund: recorded as dropped "rework, not repaired". */
   unfunded: S[];
-  /** "reserve funds N of M", the cause recorded on every unfunded drop. */
+  /** "budget funds N of M", the cause recorded on every unfunded drop. */
   fundsLabel: string;
-  /** The stated reserve, offered whole. */
+  /** The repair budget: the ceiling minus the spend at the decision, never below the reserve. */
   budgetUsd: number;
+  /** The ceiling minus the spend at the decision (what the run had left), before the reserve floor. */
+  remainingUsd: number;
+  /** The estimated cost of one repair, or null when nothing was recorded. */
+  estimatePerRepairUsd: number | null;
   /** The one line the runtime always prints: funded and unfunded named, or the skip reason. */
   line: string;
 }
@@ -655,79 +659,90 @@ export interface RepairDecision<S> {
 export function decideRepairPass<S extends { name: string }>(opts: {
   scenarios: S[];
   verdicts: ScenarioVerdict[];
-  /** The stated repair reserve (ceiling times the reserve fraction): the whole of it is offered. */
+  /** The stated repair reserve (ceiling times the reserve fraction): the FLOOR of the budget, never its cap. */
   reserveUsd: number;
+  /** The whole cost ceiling. With `spentUsd` it gives what the run has left at the decision. */
+  ceilingUsd?: number;
+  /** Everything spent so far at the decision (explorer, planner, critic). */
+  spentUsd?: number;
   /** What the Explorer spent recording the scenarios under review, for the per-scenario figure. */
   explorerUsd: number;
   /** How many scenarios the Explorer recorded, for the per-scenario figure. */
   recorded: number;
-  /** The rule ids a scenario cites (from the plan), for highest-value-first funding. */
+  /** The rule ids a scenario cites (from the plan), the tiebreaker between equally cheap repairs. */
   ruleIdsFor?: (name: string) => string[];
+  /** The recorded step count of a scenario, which scales its repair estimate; equal when unknown. */
+  stepsFor?: (name: string) => number;
 }): RepairDecision<S> | null {
   const reworkVerdicts = opts.verdicts.filter((v) => v.verdict === 'rework');
   if (reworkVerdicts.length === 0) return null;
   const { kept, rework } = splitGate(opts.scenarios, opts.verdicts);
-  // The pass is offered the full stated reserve. It used to get the reserve
-  // minus the planner and critic spend (run ec8eff: $0.81 of a $0.90 reserve),
-  // which is not what the console promised at run start.
-  const budgetUsd = opts.reserveUsd;
+  // The budget is what the run has left at the decision (the whole ceiling
+  // minus actual spend), never below the stated reserve: the reserve is the
+  // floor exploration cannot eat, not a cap. Run 4 (591732) had $1.83 left
+  // at the decision, was offered the $0.90 reserve as a cap, funded 2 of 7
+  // reworks, and ended with $1.43 of its ceiling unspent.
+  const remainingUsd = opts.ceilingUsd !== undefined && opts.spentUsd !== undefined ? Math.max(0, opts.ceilingUsd - opts.spentUsd) : opts.reserveUsd;
+  const budgetUsd = Math.max(opts.reserveUsd, remainingUsd);
+  const base = { budgetUsd, remainingUsd, estimatePerRepairUsd: null as number | null };
   if (rework.length === 0) {
     return {
-      run: false,
-      rework,
-      unfunded: [],
-      fundsLabel: 'reserve funds 0 of 0',
-      budgetUsd,
+      run: false, rework, unfunded: [], fundsLabel: 'budget funds 0 of 0', ...base,
       line: `repair pass skipped: ${reworkVerdicts.length} rework verdict(s) matched no recorded scenario by name (verdicts: ${reworkVerdicts.map((v) => `"${v.scenario}"`).join(', ')}).`,
     };
   }
   if (budgetUsd <= 0) {
     return {
-      run: false,
-      rework: [],
-      unfunded: rework,
-      fundsLabel: `reserve funds 0 of ${rework.length}`,
-      budgetUsd,
-      line: `repair pass skipped: no reserve ($${budgetUsd.toFixed(4)}); ${rework.length} rework scenario(s) dropped.`,
+      run: false, rework: [], unfunded: rework, fundsLabel: `budget funds 0 of ${rework.length}`, ...base,
+      line: `repair pass skipped: no budget ($${budgetUsd.toFixed(4)} remaining, reserve $${opts.reserveUsd.toFixed(2)}); ${rework.length} rework scenario(s) dropped.`,
     };
   }
-  // The per-scenario figure a reader needs to judge the reserve: what one
-  // recorded scenario cost the Explorer this run, and how many rework
-  // scenarios the reserve funds at that price (floor, never below one). Run
-  // 5e4394 started two of fourteen and let the ceiling pick which two; the
-  // funded set is chosen here, highest value first: a scenario whose cited
-  // rules no kept scenario covers, then the rest in plan order.
+  // The estimate: a repair re-records from the recorded steps, without the
+  // orientation and discovery work exploration paid for, so it is costed at
+  // HALF the observed explorer cost per recorded scenario (the three audit
+  // runs paid $0.15, $0.45 and $0.19 per started repair against $0.26, $0.32
+  // and $0.31 per explored scenario), scaled by the scenario's recorded step
+  // count against the mean when the step counts are known. Funding is
+  // cheapest first, so a thin budget repairs as many scenarios as it can;
+  // equally cheap repairs are ordered by the rules no kept scenario covers,
+  // then plan order. At least one is always funded.
   const perScenario = opts.recorded > 0 ? opts.explorerUsd / opts.recorded : null;
-  const funds = perScenario && perScenario > 0 ? Math.min(rework.length, Math.max(1, Math.floor(budgetUsd / perScenario))) : rework.length;
+  const stepsFor = opts.stepsFor ?? (() => 1);
+  const stepCounts = rework.map((s) => Math.max(1, stepsFor(s.name)));
+  const meanSteps = stepCounts.reduce((a, b) => a + b, 0) / stepCounts.length;
+  const estimateOf = (i: number): number | null => (perScenario === null ? null : (perScenario / 2) * (stepCounts[i]! / meanSteps));
   const ruleIdsFor = opts.ruleIdsFor ?? (() => []);
   const covered = new Set(kept.flatMap((s) => ruleIdsFor(s.name)));
-  const pool = rework.map((s, i) => ({ s, i }));
+  const valueOf = (s: S): number => ruleIdsFor(s.name).filter((r) => !covered.has(r)).length;
+  // Greedy: each pick is the cheapest remaining repair; among equally cheap
+  // ones the most rules no kept or already-picked scenario covers, then plan
+  // order; the picked scenario's rules then count as covered for the next pick.
+  const pool = rework.map((s, i) => ({ s, i, cost: estimateOf(i) ?? 0 }));
   const funded: S[] = [];
-  while (funded.length < funds && pool.length > 0) {
-    let best = 0;
-    let bestValue = -1;
-    for (const [j, x] of pool.entries()) {
-      const value = ruleIdsFor(x.s.name).filter((r) => !covered.has(r)).length;
-      if (value > bestValue) { bestValue = value; best = j; }
+  const unfunded: S[] = [];
+  let committed = 0;
+  while (pool.length > 0) {
+    pool.sort((a, b) => a.cost - b.cost || valueOf(b.s) - valueOf(a.s) || a.i - b.i);
+    const next = pool.shift()!;
+    if (perScenario === null || funded.length === 0 || committed + next.cost <= budgetUsd) {
+      funded.push(next.s);
+      committed += next.cost;
+      for (const r of ruleIdsFor(next.s.name)) covered.add(r);
+    } else {
+      unfunded.push(next.s);
     }
-    const [pick] = pool.splice(best, 1);
-    funded.push(pick!.s);
-    for (const r of ruleIdsFor(pick!.s.name)) covered.add(r);
   }
-  const unfunded = pool.sort((a, b) => a.i - b.i).map((x) => x.s);
-  const fundsLabel = `reserve funds ${funded.length} of ${rework.length}`;
-  const observed = perScenario === null
-    ? `no per-scenario explorer cost observed, so all ${rework.length} are repaired`
-    : `explorer cost this run $${perScenario.toFixed(4)} per recorded scenario, so the ${fundsLabel}`;
+  unfunded.sort((a, b) => rework.indexOf(a) - rework.indexOf(b));
+  const fundsLabel = `budget funds ${funded.length} of ${rework.length}`;
+  const estimate = perScenario === null ? null : perScenario / 2;
   const names = (list: S[]): string => list.map((s) => `"${s.name}"`).join(', ');
+  const observed = estimate === null
+    ? `no per-scenario explorer cost observed, so all ${rework.length} are repaired`
+    : `explorer cost this run $${perScenario!.toFixed(4)} per recorded scenario, a repair estimated at $${estimate.toFixed(4)} (half, scaled by step count), so the ${fundsLabel} cheapest first`;
   const notRepaired = unfunded.length > 0 ? `; not repaired (${fundsLabel}): ${names(unfunded)}` : '';
   return {
-    run: true,
-    rework: funded,
-    unfunded,
-    fundsLabel,
-    budgetUsd,
-    line: `repair pass: ${funded.length} of ${rework.length} rework scenario(s), budget $${budgetUsd.toFixed(2)} (the stated reserve); ${observed}; repairing: ${names(funded)}${notRepaired}`,
+    run: true, rework: funded, unfunded, fundsLabel, budgetUsd, remainingUsd, estimatePerRepairUsd: estimate,
+    line: `repair pass: ${funded.length} of ${rework.length} rework scenario(s), budget $${budgetUsd.toFixed(2)} (ceiling minus spend $${remainingUsd.toFixed(2)} remaining, reserve $${opts.reserveUsd.toFixed(2)} the floor); ${observed}; repairing: ${names(funded)}${notRepaired}`,
   };
 }
 

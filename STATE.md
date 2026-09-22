@@ -115,14 +115,11 @@ Toolshop runs, same site, same SRS, same $6 ceiling:
 | 1 ec8eff | Sept 15 | baseline | 3 | 10 | 6 | 0 | $6.08 | stopped at ceiling | docs/audit/run-ec8eff-diagnosis.md |
 | 2 f3b41e | Sept 18 | #18 to #20 | 7 | 18 | 15 | 1 | $4.97 | completed | docs/audit/run-f3b41e-diagnosis.md |
 | 3 5e4394 | Sept 18 | #21, #22 | 7 | 20 | 16 | 1 | $6.09 | completed | docs/audit/run-5e4394-diagnosis.md |
-| 4 | NEXT | #23, #24 | | | | | | same command | first run where the tools can do what the doctrine asks |
+| 4 591732 | Sept 22 | #23 to #26 | 7 | 20 | 13 | 5 | $4.57 | completed | docs/audit/run-591732-diagnosis.md |
 
-Run 4 bar, set before the run: 4 or more shipped and zero rework
-verdicts asking for a capability #23 added = hypothesis confirmed.
-2 to 3 shipped with new rework reasons = partial. 0 to 1 shipped =
-the bottleneck is not the tool surface; record as an audit finding,
-do not re-run to improve the number. Resolver defect fixed in PR #26;
-run 4 unblocked.
+Run 4 verdict: hypothesis confirmed (5 shipped, zero tool-capability
+reworks). Framework ran 6 of 6 in a clean install. Next: PR fixes 1 to 3,
+then run 5. Run 5 bar: 8 or more shipped, 7 or more rules, same command.
 
 Run 3: twelve of fourteen reworks asked for tool capabilities that did not
 exist (assert_compare ignored its target hints; numeric relations could not
@@ -161,6 +158,21 @@ item ranked there is either merged (see the PR list above) or listed below.
 - reconciliation.dropped carries the Critic's echo of a scenario
   name (one run 3 drop lost its quotation marks); identity fields
   must carry the plan's canonical name (standing rule 1).
+- Critic rendering: describeStep shows no timeout on toHaveCount, the
+  toHaveURL assertion records no timeout at all, and a generated fill
+  renders as a literal, so run 4 reworked two scenarios for what was
+  recorded (run 591732 finding 2).
+- Credential guard versus a duplicate-email test: the guard replaced the
+  existing email the R11 scenario typed, so the rule cannot be covered
+  (finding 4).
+- Planning waste: recovery-page scenarios planned as registration, the
+  entry page planned as a second login page, cart rules with no page the
+  crawl can reach (finding 5).
+- testid hints recorded as css because the site uses data-test; emit
+  getByTestId with testIdAttribute instead (finding 7).
+- Explorer start-up waste: an orientation load of the entry page before
+  the first planned scenario although the plan names each page
+  (finding 8).
 
 ## Then: go to market
 
