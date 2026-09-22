@@ -92,8 +92,45 @@ check('D2. recovery by intent still finds a NAMED match (the Login button by nam
 const d3 = await recoverResolve(page, { intent: 'login error message', testid: 'error' });
 check('D3. recovery of a missing error message returns null (finding path), never the button', d3 === null, JSON.stringify(d3));
 
+/* ─── E. a page whose ONLY button is type="submit" and named Login ─────── */
+// The smart-css tier (button[type=submit] from a "submit" intent) is an
+// intent-derived tier: it runs only for a hint-less call and never for a
+// message-shaped intent, so a missed testid on this page returns null too.
+const submitPage = `<!doctype html><html><body>
+<form><input type="text" data-test="username" placeholder="Username"><button type="submit" data-test="login-button">Login</button></form>
+<script>
+  window.showError = function () { var h = document.createElement('h3'); h.setAttribute('data-test', 'error'); h.textContent = 'Epic sadface: Username and password do not match'; document.body.appendChild(h); };
+</script>
+</body></html>`;
+await page.setContent(submitPage, { waitUntil: 'load' });
+const e1 = await resolve(page, { intent: 'login error message', testid: 'error' });
+check('E1. submit page: "login error message" with testid "error", element absent, returns null (no smart-css button either)', e1 === null, JSON.stringify(e1));
+await page.evaluate(() => setTimeout(() => (window as unknown as { showError: () => void }).showError(), 500));
+const e2First = await resolve(page, { intent: 'login error message', testid: 'error' });
+let e2 = e2First;
+for (let i = 0; i < 8 && !e2; i++) { await page.waitForTimeout(200); e2 = await resolve(page, { intent: 'login error message', testid: 'error' }); }
+check('E2. the same call with the element rendered late resolves the error element, never the button', e2First === null && e2 !== null && (await e2.locator.getAttribute('data-test')) === 'error', JSON.stringify({ first: e2First, then: e2 && { level: e2.level, arg: e2.arg } }));
+await page.setContent(submitPage, { waitUntil: 'load' });
+const e3 = await resolve(page, { intent: 'submit button' });
+check('E3. hint-less "submit button" resolves the one submit button (the smart-css tier, button[type=submit], reaches it before the nameless fallback; either tier is fine)', e3 !== null && (await e3.locator.getAttribute('data-test')) === 'login-button' && e3.level === 'css' && String(e3.arg).startsWith('button[type="submit"]'), JSON.stringify(e3 && { level: e3.level, arg: e3.arg }));
+const e4 = await resolve(page, { intent: 'submit error message' });
+check('E4. a message-shaped intent never derives the submit button css', e4 === null, JSON.stringify(e4));
+const e5 = await resolve(page, { intent: 'submit button', css: '#stale-submit' });
+check('E5. "submit button" with a css hint that misses returns null even though the smart css would find the submit button', e5 === null, JSON.stringify(e5));
+
+/* ─── F. a STATED role with a name that misses is weaker than a strong hint ── */
+await page.setContent(oneButton, { waitUntil: 'load' });
+const f1 = await resolve(page, { intent: 'login error message', role: 'button', label: 'Error', testid: 'error' });
+check('F1. role button, name Error, testid error, element absent: null (no nameless stated-role try with a stronger hint present)', f1 === null, JSON.stringify(f1));
+await page.setContent(oneButton.replace('</form>', '</form><div data-test="error">Error: invalid credentials</div>'), { waitUntil: 'load' });
+const f2 = await resolve(page, { intent: 'login error message', role: 'button', label: 'Error', testid: 'error' });
+check('F2. the same call with the element present resolves the error element, not the button', f2 !== null && (await f2.locator.getAttribute('data-test')) === 'error', JSON.stringify(f2 && { level: f2.level, arg: f2.arg }));
+await page.setContent(oneButton, { waitUntil: 'load' });
+const f3 = await resolve(page, { intent: 'the only control', role: 'button' });
+check('F3. role button with no name and no other hints: the button (the nameless stated try still serves hint-less calls)', f3 !== null && f3.level === 'role' && JSON.stringify(f3.arg) === JSON.stringify({ role: 'button' }), JSON.stringify(f3 && { level: f3.level, arg: f3.arg }));
+
 await browser.close();
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the nameless guessed-role fallback runs last and only for hint-less intents, explicit hints that miss return null, message intents never guess a control, and recovery accepts only named matches.');
+console.log('OK: intent-derived tiers (smart css, intent as text, the nameless role tries) run only for hint-less calls, explicit hints that miss return null, message intents never guess or derive a control, a stated role\'s nameless try yields to stronger hints, and recovery accepts only named matches.');
