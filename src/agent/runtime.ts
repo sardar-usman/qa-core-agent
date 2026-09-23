@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, type PlannedScenario } from './planner.js';
+import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, type PlannedScenario } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
@@ -701,6 +701,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // True when planning stopped at a scenario cap (per-page or global). Turns
   // derivation skips into 'budget' instead of 'no-matching-control'.
   let planCapHit = false;
+  // Scenarios the page-fit pass dropped (they named a control the page
+  // snapshot does not show). Never in the plan; the derivation report names
+  // the category they would have filled as skipped for 'page-fit'.
+  let pageFitRejected: PlannedScenario[] = [];
 
   if (opts.resume) {
     // ── Resume: restore instead of re-doing ─────────────────────────────────
@@ -779,13 +783,20 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     cpState.phase = 'discovery';
     saveCheckpoint();
 
+    // An SRS feature with rules but no page tagged for it can only report
+    // not-planned; say so now, at plan time, and never invent a URL for it.
+    for (const f of unreachableFeatures(opts.requirements, pages)) {
+      opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
+    }
+
     // Per-page planning: up to PER_PAGE_SCENARIO_CAP scenarios per page,
     // GLOBAL_PLAN_CAP total. Cost is itemized per page. A page whose plan
     // fails is skipped with a message; the other pages still plan.
-    const combined: PlannedScenario[] = [];
+    let combined: PlannedScenario[] = [];
     const combinedDropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> = [];
     const combinedRejected: Array<{ scenario: PlannedScenario; reason: string }> = [];
     const combinedCitationDrops: Array<{ scenario: string; ruleId: string; reason: string }> = [];
+    const pageFeatureOf = (url: string | undefined): string | undefined => pages.find((p) => p.url === url)?.feature;
     let fillableMax = 0;
     for (const [idx, pg] of pages.entries()) {
       if (combined.length >= GLOBAL_PLAN_CAP) {
@@ -832,6 +843,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         ...(pg.volatile ? { volatilePage: true } : {}),
         ...(pg.feature && !s.feature ? { feature: pg.feature } : {}),
       }));
+      // Page fit: each drop is named with its page, and the scenario never
+      // reaches the plan, so the funnel stays balanced.
+      for (const r of p.pageFitRejected) {
+        opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}` });
+        pageFitRejected.push({ ...r.scenario, pageUrl: pg.url, ...(pg.feature && !r.scenario.feature ? { feature: pg.feature } : {}) });
+      }
       if (scen.length > PER_PAGE_SCENARIO_CAP) {
         planCapHit = true;
         opts.onEvent?.({
@@ -842,9 +859,20 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       }
       const room = GLOBAL_PLAN_CAP - combined.length;
       if (scen.length > room) { planCapHit = true; scen = scen.slice(0, room); }
+      // The same feature + category + intent planned on two pages is one
+      // scenario: the copy on the page tagged for its feature wins, else the
+      // first in ladder order. The dropped copy never reaches the plan.
+      const cross = dedupeAcrossPages(combined, scen, pg, pageFeatureOf);
+      for (const d of cross.dropped) {
+        const keptOn = d.duplicateOf.pageUrl ?? pg.url;
+        const droppedOn = d.scenario.pageUrl ?? pg.url;
+        opts.onEvent?.({ type: 'message', text: `Rejected cross-page duplicate: "${d.scenario.name}" on ${droppedOn} (same feature, category and intent as the scenario kept on ${keptOn})` });
+      }
+      combined = cross.existing;
+      scen = cross.incoming;
       // Names unique across pages: skip_scenario, verdict matching and the
-      // funnel key on the name, so a duplicate from another page gets the
-      // feature or path appended.
+      // funnel key on the name, so a genuinely different scenario that shares
+      // a name with one from another page gets the feature or path appended.
       const unique = uniqueScenarioNames(combined, scen, pg);
       for (const r of unique.renames) {
         opts.onEvent?.({ type: 'message', text: `Renamed duplicate scenario: "${r.from}" -> "${r.to}" (the same name was planned on another page)` });
@@ -940,6 +968,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     }
 
     planResult = { scenarios: p.scenarios, usd: p.costUsd, fillableFields: p.fillableFields };
+    pageFitRejected = p.pageFitRejected.map((r) => r.scenario);
     // Phase boundary: plan done.
     cpState.plan = p.scenarios;
     cpState.fillableFields = p.fillableFields;
@@ -947,6 +976,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     cpState.phase = 'planning';
     saveCheckpoint();
     opts.onEvent?.({ type: 'plan_done', scenarios: p.scenarios, usd: p.costUsd });
+    for (const r of p.pageFitRejected) {
+      opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${opts.url}: ${r.reason}` });
+    }
     for (const d of p.dropped) {
       opts.onEvent?.({
         type: 'message',
@@ -1639,6 +1671,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         map: opts.requirements,
         planned: planResult.scenarios,
         budgetHit: planCapHit,
+        pageFitRejected,
       }),
     };
     for (const line of renderRuleCoverage(report.ruleCoverage)) {

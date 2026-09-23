@@ -40,7 +40,7 @@ export const DERIVATION_CATEGORIES: DerivationCategory[] = [
   'state-transition',
 ];
 
-export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable';
+export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable' | 'page-fit';
 
 /**
  * Which checklist categories produced scenarios for one feature, and which
@@ -229,6 +229,11 @@ export function categoryApplicable(feature: { rules: Array<{ text: string; type:
  *   - not-applicable      — the feature's rules give the category no basis
  *   - budget              — applicable, nothing produced, and the run hit a
  *                           scenario cap (per-page or global)
+ *   - page-fit            : applicable, and the Planner did derive a scenario
+ *                           for it, but the page-fit pass dropped that
+ *                           scenario because it named a control the page
+ *                           snapshot does not show (a first-name field on a
+ *                           password-reset form)
  *   - no-matching-control — applicable, nothing produced, no cap hit; the page
  *                           most likely lacks the control the category needs
  */
@@ -237,10 +242,13 @@ export function computeDerivation(opts: {
   planned: DerivableScenario[];
   /** True when planning stopped at a scenario cap. Turns skips into 'budget'. */
   budgetHit?: boolean;
+  /** Scenarios the page-fit pass rejected; a category they would have filled skips as 'page-fit'. */
+  pageFitRejected?: DerivableScenario[];
 }): FeatureDerivation[] {
   const out: FeatureDerivation[] = [];
   for (const feature of opts.map.features) {
     const mine = opts.planned.filter((s) => s.feature === feature.name);
+    const unfit = (opts.pageFitRejected ?? []).filter((s) => s.feature === feature.name);
     const cited = new Set<string>();
     for (const s of mine) for (const id of s.ruleIds ?? []) cited.add(id);
     const produced: FeatureDerivation['produced'] = [];
@@ -253,6 +261,8 @@ export function computeDerivation(opts: {
       }
       if (!categoryApplicable(feature, category)) {
         skipped.push({ category, reason: 'not-applicable' });
+      } else if (unfit.some((s) => classifyDerivationCategory(s) === category)) {
+        skipped.push({ category, reason: 'page-fit' });
       } else {
         skipped.push({ category, reason: opts.budgetHit ? 'budget' : 'no-matching-control' });
       }
