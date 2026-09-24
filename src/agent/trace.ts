@@ -535,6 +535,29 @@ export interface RunReport {
    * planned === generated + dropped + incomplete + findings + skipped.
    */
   skipped?: Array<{ scenario: string; reason: string }>;
+  /**
+   * The emitted-spec check: the written framework run once with Playwright
+   * against the live site, after the framework is written and before the
+   * zip. Every test's result lands here. `inconclusive` with a `reason` when
+   * the stage was skipped (--no-emitted-check), not run (the run stopped
+   * early), or could not judge the framework (the site was down, every test
+   * failed including the a11y check, the run timed out). Run 51d535 shipped
+   * a framework that failed 3 of 6 on a clean install after 20 green
+   * executions; nothing in the pipeline had executed the emitted spec.
+   */
+  emittedRun?: {
+    tests: Array<{ name: string; status: 'passed' | 'failed' | 'skipped'; error?: string; file?: string; attempts?: number }>;
+    durationMs: number;
+    inconclusive?: boolean;
+    reason?: string;
+  };
+  /**
+   * Scenarios whose emitted test failed twice in the emitted-spec check,
+   * dropped from the framework with the Playwright error text. Part of the
+   * reconciliation identity:
+   * planned === generated + dropped + incomplete + findings + skipped + emitted_failed.
+   */
+  emittedFailed?: Array<{ scenario: string; error: string }>;
   reconciliation?: import('./reconcile.js').Reconciliation;
   /**
    * Rule coverage against the requirements map (SRS runs only). Also written

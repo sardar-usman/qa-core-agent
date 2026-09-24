@@ -40,6 +40,12 @@ export interface ExploreRequest {
   /** Stage 5b Stabilizer. */
   stabilize: boolean;
   stabilizeAttempts: number;
+  /**
+   * The emitted-spec check: run the written framework once with Playwright
+   * against the live site before the zip (default true). --no-emitted-check
+   * skips it and the report says so.
+   */
+  emittedCheck: boolean;
   /** Review mode: pause after the Planner and write plan.csv. CLI only. */
   review: boolean;
   /** Resume from a reviewed plan.csv. CLI only. */
@@ -143,6 +149,8 @@ export const EXPLORE_FLAGS: ReadonlyArray<{ flag: string; takesValue: boolean; m
   { flag: '--stabilize', takesValue: false, mcp: 'stabilize', gateway: true, form: 'stabilize' },
   { flag: '--no-stabilize', takesValue: false, mcp: 'stabilize', gateway: true, form: 'stabilize' },
   { flag: '--stabilize-attempts', takesValue: true, mcp: 'stabilizeAttempts', gateway: true, form: 'stabilizeAttempts' },
+  { flag: '--emitted-check', takesValue: false, mcp: 'emittedCheck', gateway: true },
+  { flag: '--no-emitted-check', takesValue: false, mcp: 'emittedCheck', gateway: true },
   { flag: '--ceiling', takesValue: true, mcp: 'ceilingUsd', gateway: true, form: 'ceiling' },
   { flag: '--repair-reserve', takesValue: true, mcp: 'repairReserve', gateway: true, form: 'repairReserve' },
   { flag: '--max-steps', takesValue: true, mcp: 'maxSteps', gateway: true, form: 'maxSteps' },
@@ -168,6 +176,7 @@ export function defaultExploreRequest(): ExploreRequest {
     stabilityIterations: 3,
     stabilize: true,
     stabilizeAttempts: 3,
+    emittedCheck: true,
     review: false,
     langProvided: false,
     pomProvided: false,
@@ -221,6 +230,8 @@ export function parseExploreTokens(tokens: string[]): ParseRequestResult {
       }
       case '--no-stabilize': req.stabilize = false; break;
       case '--stabilize': req.stabilize = true; break;
+      case '--no-emitted-check': req.emittedCheck = false; break;
+      case '--emitted-check': req.emittedCheck = true; break;
       case '--stabilize-attempts': {
         const n = Number(need(a, i));
         if (!Number.isInteger(n) || n < 1) return { ok: false, error: `--stabilize-attempts expects a positive integer (got "${tokens[i + 1] ?? ''}")` };

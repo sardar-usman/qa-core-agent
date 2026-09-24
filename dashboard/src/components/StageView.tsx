@@ -340,13 +340,16 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
   );
 }
 
-const FUNNEL_ROWS: Array<{ key: 'planned' | 'generated' | 'dropped' | 'incomplete' | 'findings' | 'skipped'; label: string; cls: string }> = [
+const FUNNEL_ROWS: Array<{ key: 'planned' | 'generated' | 'dropped' | 'incomplete' | 'findings' | 'skipped' | 'emitted_failed'; label: string; cls: string }> = [
   { key: 'planned', label: 'planned', cls: 'bg-accent' },
   { key: 'generated', label: 'shipped', cls: 'bg-pass' },
   { key: 'dropped', label: 'dropped', cls: 'bg-reject' },
   { key: 'incomplete', label: 'incomplete', cls: 'bg-neutral' },
   { key: 'findings', label: 'findings', cls: 'bg-finding' },
   { key: 'skipped', label: 'skipped', cls: 'bg-neutral' },
+  // The emitted-spec check bucket: shown only when it holds a scenario, since
+  // a report from before the stage existed has no such term.
+  { key: 'emitted_failed', label: 'emitted failed', cls: 'bg-reject' },
 ];
 
 function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findings: RunDetailFinding[]; live: boolean }) {
@@ -361,9 +364,10 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
       </div>
     );
   }
-  const f = sm.funnel;
+  const f = sm.funnel ? { ...sm.funnel, emitted_failed: sm.funnel.emitted_failed ?? 0 } : null;
   const shown = f ? FUNNEL_ROWS.filter((r) => r.key === 'planned' || f[r.key] > 0) : [];
-  const zero = f ? FUNNEL_ROWS.filter((r) => r.key !== 'planned' && f[r.key] === 0) : [];
+  const zero = f ? FUNNEL_ROWS.filter((r) => r.key !== 'planned' && r.key !== 'emitted_failed' && f[r.key] === 0) : [];
+  const ec = sm.emitted_check ?? null;
   const denom = f ? Math.max(1, f.planned) : 1;
   const cs = sm.cost_split;
   const parts: Array<{ key: string; usd: number; opacity: string }> = [
@@ -392,12 +396,20 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
           ))}
           {zero.length ? <div className="mt-1 text-s text-fg-2" data-testid="funnel-zero">{zero.map((r) => `${r.label} 0`).join(' · ')}</div> : null}
           <div className="mt-2 flex flex-wrap gap-3 text-s">
-            <span className="mono text-fg-2" data-testid="funnel-eq">{f.planned} = {f.generated} + {f.dropped} + {f.incomplete} + {f.findings} + {f.skipped}</span>
+            <span className="mono text-fg-2" data-testid="funnel-eq">{f.planned} = {f.generated} + {f.dropped} + {f.incomplete} + {f.findings} + {f.skipped}{f.emitted_failed ? ` + ${f.emitted_failed}` : ''}</span>
             <span className={f.balanced ? 'text-pass' : 'text-rework'} data-testid="funnel-balanced">{f.balanced ? 'balanced' : 'not balanced'}</span>
             {f.added ? <span className="text-fg-2">+{f.added} unplanned</span> : null}
           </div>
         </div>
       )}
+      {ec ? (
+        <div className="mt-2 text-s" data-testid="emitted-check">
+          <span className="text-fg-2">Emitted-spec check: </span>
+          {ec.inconclusive
+            ? <span className="text-rework">inconclusive{ec.reason ? `, ${ec.reason}` : ''}</span>
+            : <span className={ec.failed > 0 ? 'text-reject' : 'text-pass'}>{ec.passed} of {ec.total} passed{ec.failed ? `, ${ec.failed} failed twice and dropped` : ''} ({(ec.duration_ms / 1000).toFixed(1)}s)</span>}
+        </div>
+      ) : null}
 
       <SubLabel>Cost split</SubLabel>
       <div data-testid="cost-split">

@@ -444,7 +444,8 @@ export const TOOL_DEFS = [
       'To assert the CURRENT value of a form field (an input you filled, a textarea, a select), use toHaveValue with the expected value, NOT toHaveAttribute("value", ...). Typed text lives on the value PROPERTY, so toHaveAttribute reads empty; toHaveValue reads the property. ' +
       'FORMAT instead of literal: toHaveText, toContainText and toHaveAttribute take `regex` (a regex source such as "^\\$\\d+\\.\\d{2}$" for a price, "^\\S+ \\S+$" for a name-shaped string, "\\S" for non-empty) in place of text/value; the element must MATCH it. Use this for catalogue data (a price is rendered, a name is present) where a literal would rot. ' +
       'MINIMUM count: toHaveCount with `atLeast` (e.g. atLeast: 1) proves at least that many elements and polls; it never pins the catalogue count. ' +
-      'CHECKED state: toBeChecked asserts a checkbox or radio is checked (pass checked: false for not checked).',
+      'CHECKED state: toBeChecked asserts a checkbox or radio is checked (pass checked: false for not checked). ' +
+      'ALWAYS pass `intent`: a short name for the element ("thank you message", "first product price"). It becomes the page-object field name in the emitted framework. When you omit it, one is derived from the hints (the testid words, the label, the role and its name, the text, the css testid / id / words) and recorded; "element" is never recorded.',
     input_schema: {
       type: 'object',
       properties: {
@@ -452,7 +453,7 @@ export const TOOL_DEFS = [
           type: 'string',
           enum: ['toBeVisible', 'toBeHidden', 'toHaveText', 'toContainText', 'toHaveURL', 'toHaveCount', 'toHaveAttribute', 'toHaveValue', 'toBeChecked'],
         },
-        intent: { type: 'string' },
+        intent: { type: 'string', description: 'A short name for the element under test, e.g. "thank you message". Becomes the page-object field name. Derived from testid, label, role and text, or css when omitted; never "element".' },
         role: { type: 'string' },
         label: { type: 'string' },
         testid: { type: 'string' },
@@ -476,14 +477,15 @@ export const TOOL_DEFS = [
       'Read a REAL runtime value off an element and store it in a named variable for a later assert_compare. ' +
       'This is how you test "a value changes" features (a regenerating id, a rotating token, an incrementing counter) WITHOUT inventing a literal: capture the value now, perform an action, then assert_compare how it changed. ' +
       'source="attribute" reads an attribute (pass attribute, e.g. "id" or "aria-valuenow"); source="text" reads the trimmed text; source="count" reads how many elements match. ' +
-      'The captured value is whatever the page actually holds at run time. Pair every capture with an assert_compare on the same `name`.',
+      'The captured value is whatever the page actually holds at run time. Pair every capture with an assert_compare on the same `name`. ' +
+      'ALWAYS pass `intent`, a short name for the element read ("first product price"); when omitted it is derived from the hints (testid, label, role and text, css) and recorded, never "element".',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'A short variable name to store the value under (e.g. "oldId", "startCount"). Reuse it in assert_compare.' },
         source: { type: 'string', enum: ['attribute', 'text', 'count'], description: 'What to read: an attribute value, the element text, or the match count.' },
         attribute: { type: 'string', description: 'Attribute name when source="attribute" (e.g. id, aria-valuenow, data-token).' },
-        intent: { type: 'string' },
+        intent: { type: 'string', description: 'A short name for the element read, e.g. "first product price". Derived from the hints when omitted; never "element".' },
         role: { type: 'string' },
         label: { type: 'string' },
         testid: { type: 'string' },
@@ -501,14 +503,15 @@ export const TOOL_DEFS = [
       'With NO element hints it re-reads the element you captured from. With hints (css / testid / role / label / text) it re-reads THAT element instead, so you can compare two different elements: capture the listing name, click through, assert_compare {name, relation:"equal", css:"h1"} against the detail heading; capture the first price after a sort, then assert_compare {relation:"greater", css:"<second card price>"}. For "absent" the captured value itself becomes the selector (e.g. the old id), so no element hint is needed. ' +
       '"greater" and "less" parse the first number out of formatted text ("$1,299.00" compares as 1299, "42%" as 42) and fail loudly when a side holds no number. ' +
       'A compare of equal/unchanged on the SAME element with no action since the capture is rejected as circular: act first, or use changed. ' +
-      'Use this after capture + an action to prove the feature actually did something. A test that cannot tell the value changed is worthless.',
+      'Use this after capture + an action to prove the feature actually did something. A test that cannot tell the value changed is worthless. ' +
+      'When you pass element hints, ALSO pass `intent` naming that element ("detail page heading"); when omitted it is derived from the hints and recorded, never "element".',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'The capture variable name to compare against.' },
         relation: { type: 'string', enum: ['changed', 'unchanged', 'equal', 'greater', 'less', 'before', 'after', 'absent'] },
         attribute: { type: 'string', description: 'Attribute name when the capture read an attribute. Omit for absent (the captured value is matched as-is).' },
-        intent: { type: 'string' },
+        intent: { type: 'string', description: 'A short name for the element re-read, e.g. "detail page heading". Derived from the hints when omitted; never "element".' },
         role: { type: 'string' },
         label: { type: 'string' },
         testid: { type: 'string' },
@@ -902,6 +905,45 @@ async function selectByMode(
  * verbatim. Most absence checks pass a `css` id (a hardcoded static selector
  * that should now match nothing). Throws only when no usable hint is given.
  */
+/** Intents the tools used to default to. Never recorded any more: a field named after one collapsed every intent-less locator into it (run 51d535). */
+const PLACEHOLDER_INTENTS = new Set(['element', 'elements', 'target', 're-read element']);
+
+/**
+ * The intent a step is recorded under. The model's own intent when it gave a
+ * real one; otherwise derived from the hints, most specific first: the
+ * testid's words, the label, the role with its name, the text, the css
+ * selector's testid / id / words. A recorded intent is the page-object
+ * field's name, so a placeholder is never recorded: run 51d535's model called
+ * assert() without an intent, the tool wrote "element", and every intent-less
+ * assertion in a feature shared one field. Exported for the smoke.
+ */
+export function deriveIntent(
+  input: { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string },
+  fallback: 'element' | 'elements' | 're-read element' = 'element',
+): string {
+  const given = (input.intent ?? '').trim();
+  if (given && !PLACEHOLDER_INTENTS.has(given.toLowerCase())) return given;
+  const words = (s: string): string => s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean).slice(0, 5).join(' ').toLowerCase();
+  const plural = fallback === 'elements';
+  if (input.testid && input.testid.trim()) return words(input.testid);
+  if (input.label && input.label.trim()) return words(input.label) || input.label.trim();
+  if (input.role && input.role.trim()) {
+    const name = (input.text ?? '').trim();
+    return name ? `${words(name)} ${input.role.trim()}` : `${input.role.trim()}${plural ? 's' : ''}`;
+  }
+  if (input.text && input.text.trim()) return `${words(input.text)} text`;
+  if (input.css && input.css.trim()) {
+    const css = input.css.trim();
+    const testid = css.match(/\[data-test(?:id)?\s*[\^$*]?=\s*["']?([A-Za-z0-9_-]+)/);
+    if (testid) return words(testid[1]!);
+    const id = css.match(/#([A-Za-z0-9_-]+)/);
+    if (id) return words(id[1]!);
+    const slug = words(css.replace(/::?[a-z-]+(\([^)]*\))?/g, ' ').replace(/\[[^\]]*\]/g, ' '));
+    if (slug) return plural ? `${slug} elements` : slug;
+  }
+  return fallback === 'element' ? 'unnamed target' : fallback === 'elements' ? 'unnamed targets' : 'unnamed re-read target';
+}
+
 function recordFromHints(input: {
   intent?: string;
   role?: string;
@@ -910,7 +952,7 @@ function recordFromHints(input: {
   css?: string;
   text?: string;
 }): SelectorRecord {
-  const intent = input.intent ?? 'element';
+  const intent = deriveIntent(input);
   // Most specific first: explicit css/xpath, then testid, then role(+name),
   // then label, then visible text. Mirrors the cascade's notion of specificity
   // without running it against the live DOM.
@@ -1360,7 +1402,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           // the same wait, see awaitCaptureReady in replay.ts). Poll to >=1
           // match first; on timeout fall through and read whatever is there,
           // so a legitimately empty list still captures 0.
-          record = recordFromHints({ ...(call.input as object), intent: String(call.input.intent ?? 'elements') });
+          record = recordFromHints({ ...(call.input as object), intent: deriveIntent(call.input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string }, 'elements') });
           const loc = baseLocator(ctx.page, record);
           const deadline = Date.now() + ADAPTIVE_FLOOR_MS;
           while ((await loc.count()) === 0 && Date.now() < deadline) {
@@ -1369,7 +1411,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           value = String(await loc.count());
         } else {
           const resolved = await resolveAndRecord(ctx, {
-            intent: String(call.input.intent ?? 'element'),
+            intent: deriveIntent(call.input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string }),
             role: call.input.role as string | undefined,
             label: call.input.label as string | undefined,
             testid: call.input.testid as string | undefined,
@@ -1407,7 +1449,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         let readTarget: SelectorRecord | undefined;
         if (hasHints) {
           const hints = {
-            intent: String(call.input.intent ?? 're-read element'),
+            intent: deriveIntent(call.input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string }, 're-read element'),
             role: call.input.role as string | undefined,
             label: call.input.label as string | undefined,
             testid: call.input.testid as string | undefined,
@@ -1874,7 +1916,7 @@ async function executeAssertion(
   const probe = { timeout: ADAPTIVE_CEILING_MS };
   switch (input.type) {
     case 'toBeVisible': {
-      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       const t0 = Date.now();
       await expect(loc).toBeVisible(probe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
@@ -1894,7 +1936,7 @@ async function executeAssertion(
       // it must not double as one, or the element would be looked up by the
       // pattern source. The pattern form locates by the other hints only.
       const hints = pattern ? { ...input, text: undefined } : input;
-      const { record, loc } = await resolveAndRecord(ctx, { ...hints, intent: input.intent ?? 'element' });
+      const { record, loc } = await resolveAndRecord(ctx, { ...hints, intent: deriveIntent(hints) });
       const t0 = Date.now();
       if (pattern) {
         // A format assertion: the same RegExp the emitted spec passes.
@@ -1920,7 +1962,7 @@ async function executeAssertion(
       // NOT checked. Never toHaveAttribute("checked", ...): the attribute is
       // the default, the property is the state.
       const checked = input.checked !== false;
-      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       const t0 = Date.now();
       await expect(loc).toBeChecked({ checked, ...probe });
       const observed = recordedTimeout(ctx, input.timeout, t0);
@@ -1955,7 +1997,7 @@ async function executeAssertion(
         // structural fact that survives a reseed; the exact count does not.
         const minimum = Math.max(0, Math.round(Number(input.atLeast)));
         if (!Number.isFinite(minimum)) return { ok: false, error: 'toHaveCount atLeast must be a number.' };
-        const record = recordFromHints({ ...input, intent: input.intent ?? 'elements' });
+        const record = recordFromHints({ ...input, intent: deriveIntent(input, 'elements') });
         const countLoc = baseLocator(ctx.page, record);
         const t0 = Date.now();
         await expect.poll(async () => countLoc.count(), probe).toBeGreaterThanOrEqual(minimum);
@@ -1984,7 +2026,7 @@ async function executeAssertion(
         });
         return { ok: true };
       }
-      const { record } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const { record } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       // toHaveCount needs the multi-match locator; .first() would collapse the
       // count to 1 and any count > 1 assertion would be impossible.
       const countLoc = baseLocator(ctx.page, record);
@@ -2022,7 +2064,7 @@ async function executeAssertion(
       const pattern = regexSource(input.regex);
       if (pattern instanceof Error) return { ok: false, error: pattern.message };
       if (input.value == null && !pattern) return { ok: false, error: 'toHaveAttribute needs value, or regex for a format.' };
-      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       const t0 = Date.now();
       if (pattern) await expect(loc).toHaveAttribute(input.attribute, new RegExp(pattern), probe);
       else await expect(loc).toHaveAttribute(input.attribute, input.value!, probe);
@@ -2040,7 +2082,7 @@ async function executeAssertion(
       // The current value of a form field lives on the value PROPERTY, not the
       // value attribute. toHaveValue reads the property, so it sees typed text
       // and a selected option. Use this, never toHaveAttribute("value", ...).
-      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: input.intent ?? 'element' });
+      const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       // A fill-and-verify assertion can only be correct if it asserts the EXACT
       // string that was filled. The recorded fill step is the single source of
       // truth: a value the model re-types may be longer, truncated, or — for a
@@ -2134,7 +2176,7 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
   // so the model is steered at once instead of at end_scenario (the gate
   // applies the same rule again on the recorded trace).
   if (ctx.current && (input.type === 'toHaveText' || input.type === 'toContainText' || input.type === 'toHaveValue' || input.type === 'toHaveCount')) {
-    const record = recordFromHints({ ...(input as object), intent: input.intent ?? 'element' });
+    const record = recordFromHints({ ...(input as object), intent: deriveIntent(input) });
     const r7Pattern = regexSource(input.regex);
     if (r7Pattern instanceof Error) return { ok: false, error: r7Pattern.message };
     const shape = input.type === 'toHaveCount'
