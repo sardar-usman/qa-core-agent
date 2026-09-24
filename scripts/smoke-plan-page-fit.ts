@@ -20,8 +20,16 @@
  *   - the derivation report names a page-fit drop as `page-fit`
  *   - an SRS feature with rules and no page prints its one line
  *
- * Pure in-code fixtures. No network. No LLM. No browser.
+ *   - a navigation scenario (clicked, opened, landed, ...) is judged only on
+ *     its first action's controls, never on the price it reads after
+ *   - the whole-document flags are computed in the browser over the full
+ *     page, so a price past the text sample and a search box past the
+ *     inputs cap still count
+ *
+ * In-code fixtures plus one local page in headless Chromium for the flags.
+ * No network. No LLM.
  */
+import { chromium } from 'playwright';
 import {
   pageFitReason,
   rejectPageFit,
@@ -30,9 +38,13 @@ import {
   uniqueScenarioNames,
   unreachableFeatures,
   unreachableFeatureLine,
+  snapshotPage,
+  NAV_VERB_RE,
+  TOP_TEXT_SAMPLE_CHARS,
   type PageFitSnapshot,
   type PlannedScenario,
 } from '../src/agent/planner.js';
+import { installEvalShim } from '../src/agent/eval-shim.js';
 import { computeDerivation } from '../src/agent/rule-coverage.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
@@ -132,8 +144,15 @@ check('B3. a search scenario is rejected (no search box on the page)',
   pageFitReason(sc('searched for a term and saw only matching products in results', 'happy', 'catalogue'), rentals)?.control === 'search');
 check('B4. a sort scenario is rejected (no sort control on the page)',
   pageFitReason(sc('sorted by price low to high and products reordered by ascending cost', 'happy', 'catalogue'), rentals)?.control === 'sort');
-check('B5. a price asserted on the detail page is judged against the planned page and rejected',
-  pageFitReason(sc('clicked a product and landed on its detail page showing matching name and price', 'edge', 'catalogue'), rentals)?.control === 'price');
+check('B5. a navigation scenario is not judged on the price it reads after the click: KEPT on the rentals listing',
+  pageFitReason(sc('clicked a product and landed on its detail page showing matching name and price', 'edge', 'catalogue'), rentals) === null);
+check('B6. the same price asserted on the listing itself is still dropped',
+  pageFitReason(sc('loaded the rentals page and saw products with a price', 'happy', 'catalogue'), rentals)?.control === 'price');
+check('B7. a navigation scenario is still judged on its first action when the name says so: "clicked the sort dropdown" needs a sort control',
+  pageFitReason(sc('clicked the sort dropdown and the detail page opened in price order', 'happy', 'catalogue'), rentals)?.control === 'sort');
+check('B8. every listed navigation verb triggers the exemption',
+  ['clicked', 'click', 'opens', 'opened', 'landed', 'lands', 'navigates', 'navigated', 'goes to', 'detail page'].every((v) => NAV_VERB_RE.test(normalizeWords(`user ${v} the item and saw the price`)))
+  && !NAV_VERB_RE.test(normalizeWords('loaded the rentals page and saw a price')));
 
 /* ─── C. the hand-tools listing: sort select, checkboxes, prices, pages ────── */
 check('C1. a sort scenario is kept (the Sort label and the select are there)',
@@ -151,6 +170,46 @@ check('C5. a search scenario is rejected on the category page (the search box is
 const noPriceWord: PageFitSnapshot = { ...handTools, inputs: [], buttons: nav, textSample: 'Combination Pliers $14.15 Pliers $12.01' };
 check('C6. a "$14.15" in the raw text evidences a price with no "price" word anywhere',
   pageFitReason(sc('saw a price on every card', 'happy', 'catalogue'), noPriceWord) === null);
+
+/* ─── C2. whole-document flags, read in the browser over the full page ─────── */
+// A listing whose first 3000 characters are nav and filter text and whose
+// first price sits after them. The text sample (2000 chars) never reaches
+// the price; the flag computed over the whole document does.
+{
+  const filterWords = Array.from({ length: 120 }, (_, i) => `<label><input type="checkbox" name="brand_${i}"> Brand number ${i} tools</label>`).join('\n');
+  const html = `<!doctype html><html><body>
+    <nav>Home Categories Contact Sign in EN</nav>
+    <h2>Category: Hand Tools</h2>
+    <aside><h3>Filters</h3>${filterWords}</aside>
+    <main>
+      <a class="card" href="/product/1"><h5>Combination Pliers</h5><span data-test="product-price">$14.15</span></a>
+      <a class="card" href="/product/2"><h5>Pliers</h5><span data-test="product-price">$12.01</span></a>
+    </main>
+  </body></html>`;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const ctx = await browser.newContext();
+    await installEvalShim(ctx);
+    const page = await ctx.newPage();
+    await page.setContent(html);
+    const snap = await snapshotPage(page);
+    check('C7. the fixture is real: the text sample is capped and holds no price, the inputs list is capped',
+      snap.textSample.length === TOP_TEXT_SAMPLE_CHARS && !/\$\d/.test(snap.textSample) && snap.inputs.length === 25, `sample ${snap.textSample.length} chars, inputs ${snap.inputs.length}`);
+    check('C8. hasPrice is computed over the whole document', snap.flags.hasPrice === true, JSON.stringify(snap.flags));
+    check('C9. hasFilter is true (checkboxes) and hasSort, hasSearch, hasPagination are false on this fixture',
+      snap.flags.hasFilter === true && snap.flags.hasSort === false && snap.flags.hasSearch === false && snap.flags.hasPagination === false, JSON.stringify(snap.flags));
+    check('C10. a price scenario is KEPT on that page', pageFitReason(sc('saw a price on every product card', 'happy', 'catalogue'), snap) === null);
+    check('C11. a sort scenario is still dropped on that page (no sort control anywhere in the document)',
+      pageFitReason(sc('sorted the products by price', 'happy', 'catalogue'), snap)?.control === 'sort');
+    // The same page with a search box past the inputs cap: the flag sees it.
+    await page.setContent(html.replace('</main>', '<input id="search" placeholder="Search products"></main>'));
+    const withSearch = await snapshotPage(page);
+    check('C12. hasSearch sees a search box past the 25-input cap', withSearch.flags.hasSearch === true && withSearch.inputs.length === 25, JSON.stringify(withSearch.flags));
+    check('C13. a search scenario is kept on that page', pageFitReason(sc('searched for pliers and only matching cards stayed', 'happy', 'catalogue'), withSearch) === null);
+  } finally {
+    await browser.close();
+  }
+}
 
 /* ─── D. matching is on normalized words with synonyms ────────────────────── */
 check('D1. normalizeWords splits camelCase and snake_case: firstName / first_name / First-Name -> first name',

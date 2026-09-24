@@ -1663,6 +1663,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // The drop cause per scenario, so an uncovered rule says why its
         // citing scenario fell out ("rework, not repaired: reserve funds 2 of 14").
         dropReasons: new Map(report.reconciliation.dropped.map((d) => [d.name, d.reason])),
+        // A feature no discovered page carries reports its rules as
+        // not-reachable, never plain not-planned. Only a discovery run knows
+        // its page set; a single-page or from-plan run has no such feature.
+        ...(discoveryInfo ? { unreachableFeatures: unreachableFeatures(opts.requirements, discoveryInfo.pages).map((f) => f.name) } : {}),
       }),
       // Derivation: which checklist categories produced scenarios per feature
       // and which were skipped, with the reason. The considered-not-automated

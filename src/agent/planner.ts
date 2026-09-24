@@ -346,8 +346,29 @@ export interface PageSnapshot {
    * table page is page-fit even when the word "sort" appears nowhere.
    */
   tableHeaders: string[];
+  /**
+   * Page-wide evidence computed over the WHOLE document inside the snapshot's
+   * page.evaluate, never over the text sample: a listing page's first price
+   * can sit past 3000 characters of nav and filter text. The page-fit pass
+   * reads these; the text sample is for Haiku.
+   */
+  flags: PageFlags;
   /** Content-bearing iframes on the page (empty when there are none). */
   frames: FrameSnapshot[];
+}
+
+/** Whole-document booleans for the controls whose evidence lives in page text or past the inputs cap. */
+export interface PageFlags {
+  /** A currency amount anywhere in the document text ($14.15, 12 EUR). */
+  hasPrice: boolean;
+  /** A sort word, an "order by", an aria-sort attribute or a table column header. */
+  hasSort: boolean;
+  /** A filter word or any checkbox input. */
+  hasFilter: boolean;
+  /** A pagination landmark or word, or a next/previous control. */
+  hasPagination: boolean;
+  /** A search input: type=search, a role=search landmark, or an input named/placeholdered "search". */
+  hasSearch: boolean;
 }
 
 /**
@@ -403,7 +424,30 @@ export async function snapshotPage(page: Page): Promise<PageSnapshot> {
       const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
       return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type);
     }
-    const bodyText = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, sampleChars) : '';
+    const fullText = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim() : '';
+    const bodyText = fullText.slice(0, sampleChars);
+    // Whole-document evidence for the page-fit pass. Read over the full text
+    // and the full control set, so a price past the text sample or a search
+    // box past the 25-input cap still counts.
+    function attrHas(el: Element, word: string): boolean {
+      const attrs = ['placeholder', 'aria-label', 'name', 'id', 'title'];
+      return attrs.some((a) => (el.getAttribute(a) || '').toLowerCase().includes(word));
+    }
+    const flags = {
+      hasPrice: /[$€£¥]\s?\d|\d\s?(usd|eur|gbp|chf|jpy)\b/i.test(fullText),
+      hasSort:
+        /\bsort(ed|ing|s)?\b|\border by\b/i.test(fullText) ||
+        document.querySelector('th, [role="columnheader"], [aria-sort]') !== null,
+      hasFilter:
+        /\bfilter/i.test(fullText) ||
+        document.querySelector('input[type="checkbox"]') !== null,
+      hasPagination:
+        /\bpaginat|\bnext\b|\bprevious\b|\bpage \d/i.test(fullText) ||
+        document.querySelector('.pagination, [aria-label*="pagination" i], nav[aria-label*="page" i]') !== null,
+      hasSearch:
+        document.querySelector('input[type="search"], [role="search"]') !== null ||
+        Array.from(document.querySelectorAll('input, textarea')).some((el) => attrHas(el, 'search')),
+    };
     return {
       title: document.title,
       url: location.href,
@@ -413,6 +457,7 @@ export async function snapshotPage(page: Page): Promise<PageSnapshot> {
       fillableCount: Array.from(document.querySelectorAll('input, textarea, select')).filter(isFillable).length,
       textSample: bodyText,
       tableHeaders: Array.from(document.querySelectorAll('th, [role="columnheader"]')).slice(0, 12).map((h) => (h.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40)).filter((t) => t.length > 0),
+      flags,
     };
   }, TOP_TEXT_SAMPLE_CHARS);
 
@@ -1013,7 +1058,27 @@ export interface PageFitTerm {
   raw?: RegExp;
   /** Evidence from the presence of table column headers (a sortable table is a sort control). */
   tableHeaders?: boolean;
+  /** The whole-document flag (PageFlags) that evidences the control on its own. */
+  flag?: keyof PageFlags;
 }
+
+/**
+ * A scenario that reaches something by navigation is judged only on the
+ * controls its FIRST action needs on the planned page. "clicked a product
+ * and landed on its detail page showing name and price" needs an item link,
+ * which the snapshot cannot list, and the price lives on the page the click
+ * reaches, so the price is never judged against the listing. The verbs:
+ * clicked, click, opens, opened, landed, lands, navigates, navigated, goes
+ * to, detail page. Exported for the smoke.
+ */
+export const NAV_VERB_RE = /\b(clicked|click|opens|opened|landed|lands|navigates|navigated|goes to|detail page)\b/;
+
+/**
+ * The controls a navigation scenario may still be judged on: what its first
+ * action on the planned page needs when the name says so. Value kinds
+ * (price, cost, quantity, total) are never among them.
+ */
+export const FIRST_ACTION_CONTROLS: ReadonlySet<string> = new Set(['search', 'sort', 'filter']);
 
 /**
  * The page-fit vocabulary. Order matters only for which missing control the
@@ -1041,9 +1106,9 @@ export const PAGE_FIT_TERMS: PageFitTerm[] = [
   { control: 'message', from: 'inputs', named: /(?<!(error|success|validation|confirmation|alert|warning|status|toast|inline|failure|flash|welcome|feedback|info|help|hint) )\bmessage\b/, evidence: /\bmessage\b|\bcomment\b/, kinds: ['textarea'] },
   { control: 'comment', from: 'inputs', named: /\bcomments?\b/, evidence: /\bcomments?\b/, kinds: ['textarea'] },
   { control: 'quantity', from: 'inputs', named: /\bquantity\b|\bqty\b/, evidence: /\bquantity\b|\bqty\b/, kinds: ['number'] },
-  { control: 'search', from: 'inputs', named: /\bsearch(ed|es|ing)?\b/, evidence: /\bsearch\w*\b/, kinds: ['search'] },
-  { control: 'sort', from: 'any', named: /\bsort(ed|s|ing)?\b/, evidence: /\bsort\w*\b|\border by\b/, tableHeaders: true },
-  { control: 'filter', from: 'any', named: /\bfilter(ed|s|ing)?\b/, evidence: /\bfilter\w*\b/, kinds: ['checkbox'] },
+  { control: 'search', from: 'inputs', named: /\bsearch(ed|es|ing)?\b/, evidence: /\bsearch\w*\b/, kinds: ['search'], flag: 'hasSearch' },
+  { control: 'sort', from: 'any', named: /\bsort(ed|s|ing)?\b/, evidence: /\bsort\w*\b|\border by\b/, tableHeaders: true, flag: 'hasSort' },
+  { control: 'filter', from: 'any', named: /\bfilter(ed|s|ing)?\b/, evidence: /\bfilter\w*\b/, kinds: ['checkbox'], flag: 'hasFilter' },
   { control: 'checkbox', from: 'inputs', named: /\bcheck ?box(es)?\b|\btick ?box(es)?\b/, evidence: /\bcheck ?box\w*\b/, kinds: ['checkbox'] },
   { control: 'radio', from: 'inputs', named: /\bradio\b/, evidence: /\bradio\b/, kinds: ['radio'] },
   { control: 'dropdown', from: 'inputs', named: /\bdrop ?down\b|\bcombo ?box\b|\bselect (menu|list|box)\b/, evidence: /\bdrop ?down\b|\bcombo ?box\b/, kinds: ['select', 'select-one', 'select-multiple'] },
@@ -1058,8 +1123,8 @@ export const PAGE_FIT_TERMS: PageFitTerm[] = [
   { control: 'remember me', from: 'inputs', named: /\bremember me\b/, evidence: /\bremember\b/ },
   { control: 'terms', from: 'inputs', named: /\bterms (and )?conditions\b|\b(accept|agree)\w* (to )?(the )?terms\b|\bterms check ?box\b/, evidence: /\bterms\b|\bagree\w*\b|\baccept\w*\b/ },
   { control: 'newsletter', from: 'inputs', named: /\bnewsletter\b/, evidence: /\bnewsletter\b|\bsubscri\w*\b/ },
-  { control: 'pagination', from: 'any', named: /\bpaginat\w*\b|\b(next|previous|prev) page\b|\bpage \d+\b/, evidence: /\bpaginat\w*\b|\bnext\b|\bprevious\b|\bpage \d+\b/ },
-  { control: 'price', from: 'any', named: /\bprices?\b|\bpriced\b/, evidence: /\bprices?\b|\bpriced\b|\bcost\b/, raw: /[$€£¥]\s?\d|\d\s?(usd|eur|gbp|chf|jpy)\b/i },
+  { control: 'pagination', from: 'any', named: /\bpaginat\w*\b|\b(next|previous|prev) page\b|\bpage \d+\b/, evidence: /\bpaginat\w*\b|\bnext\b|\bprevious\b|\bpage \d+\b/, flag: 'hasPagination' },
+  { control: 'price', from: 'any', named: /\bprices?\b|\bpriced\b/, evidence: /\bprices?\b|\bpriced\b|\bcost\b/, raw: /[$€£¥]\s?\d|\d\s?(usd|eur|gbp|chf|jpy)\b/i, flag: 'hasPrice' },
 ];
 
 /**
@@ -1088,10 +1153,12 @@ interface PageEvidence {
   tableHeaders: number;
   /** True when the inputs list hit its cap, so a field past it may exist unseen. */
   inputsCapped: boolean;
+  /** The whole-document flags, when the snapshot carries them. */
+  flags?: Partial<PageFlags>;
 }
 
 /** The evidence-side shape of a snapshot: the top document plus every content frame. */
-export type PageFitSnapshot = Pick<PageSnapshot, 'inputs' | 'buttons' | 'headings' | 'textSample' | 'frames'> & Partial<Pick<PageSnapshot, 'tableHeaders'>>;
+export type PageFitSnapshot = Pick<PageSnapshot, 'inputs' | 'buttons' | 'headings' | 'textSample' | 'frames'> & Partial<Pick<PageSnapshot, 'tableHeaders'>> & { flags?: Partial<PageFlags> };
 
 function elWords(el: PickedEl): string {
   return [el.label, el.labelText, el.id, el.type, el.tag].filter((x): x is string => !!x).join(' ');
@@ -1123,10 +1190,14 @@ function buildEvidence(snap: PageFitSnapshot): PageEvidence {
     typeCounts,
     tableHeaders: (snap.tableHeaders ?? []).length,
     inputsCapped: snap.inputs.length >= SNAPSHOT_INPUTS_CAP,
+    ...(snap.flags ? { flags: snap.flags } : {}),
   };
 }
 
 function termEvidenced(t: PageFitTerm, ev: PageEvidence): boolean {
+  // The whole-document flag is the primary evidence for the controls that
+  // have one: it was read over the full text and the full control set.
+  if (t.flag && ev.flags?.[t.flag] === true) return true;
   // A capped inputs list may hide the field; read the whole page then, so a
   // 30-field form is never judged on its first 25 controls.
   const hay = t.from === 'inputs' && !ev.inputsCapped ? ev.inputs : ev.any;
@@ -1148,7 +1219,11 @@ function termEvidenced(t: PageFitTerm, ev: PageEvidence): boolean {
 export function pageFitReason(s: PlannedScenario, snapshot: PageFitSnapshot): { control: string; reason: string } | null {
   const name = normalizeWords(s.name);
   const ev = buildEvidence(snapshot);
+  // A navigation scenario is judged only on its first action's controls on
+  // the planned page; what it reads after the click lives on another page.
+  const navigates = NAV_VERB_RE.test(name);
   for (const t of PAGE_FIT_TERMS) {
+    if (navigates && !FIRST_ACTION_CONTROLS.has(t.control)) continue;
     if (!t.named.test(name)) continue;
     if (termEvidenced(t, ev)) continue;
     return { control: t.control, reason: `names ${t.control} which the page snapshot does not show` };

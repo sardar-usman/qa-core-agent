@@ -116,6 +116,29 @@ check('F2. a name that grew a trailing clause matches by containment',
 check('F3. a scenario with no plan entry stays untouched', unplanned.ruleIds === undefined, JSON.stringify(unplanned));
 check('F4. a plan entry that cited no rules attaches nothing', ruleless.ruleIds === undefined, JSON.stringify(ruleless));
 
+/* ─── G. not-reachable: a feature no discovered page carries ───────────────── */
+// Run 591732: cart had 4 rules and no page the crawl could reach, and the
+// coverage report said only "not-planned". With the unreachable feature
+// named, its uncited rules say why.
+const unreachable = computeRuleCoverage({
+  map,
+  planned: [{ name: 'rejected a 5-character password', ruleIds: ['R1'] }],
+  scenarios: [],
+  unreachableFeatures: ['cart'],
+});
+const g4 = unreachable.uncovered.find((u) => u.ruleId === 'R4');
+const g3 = unreachable.uncovered.find((u) => u.ruleId === 'R3');
+check('G1. a rule of an unreachable feature that nothing cited is not-reachable', g4?.reason === 'not-reachable', JSON.stringify(g4));
+check('G2. it carries the detail saying why', g4?.detail === 'no discovered page carries this feature', JSON.stringify(g4));
+check('G3. an uncited rule of a reachable feature stays not-planned', g3?.reason === 'not-planned', JSON.stringify(g3));
+check('G4. a cited rule of an unreachable feature is never not-reachable (it was planned)',
+  unreachable.uncovered.find((u) => u.ruleId === 'R1')?.reason === 'planned-but-dropped');
+const gLines = renderRuleCoverage(unreachable);
+check('G5. the rendered line reads not-reachable with the detail',
+  gLines.some((l) => l.includes('R4 (not-reachable: no discovered page carries this feature)')), JSON.stringify(gLines));
+check('G6. without the unreachable list the same rule is plain not-planned',
+  computeRuleCoverage({ map, planned: [], scenarios: [] }).uncovered.find((u) => u.ruleId === 'R4')?.reason === 'not-planned');
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: rule coverage classifies covered, planned-but-dropped, and not-planned correctly and renders the considered-not-automated report.');
+console.log('OK: rule coverage classifies covered, planned-but-dropped, not-planned and not-reachable correctly and renders the considered-not-automated report.');
