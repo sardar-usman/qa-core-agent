@@ -167,7 +167,18 @@ item ranked there is either merged (see the PR list above) or listed below.
   (finding 4).
 - Planning waste: recovery-page scenarios planned as registration, the
   entry page planned as a second login page, cart rules with no page the
-  crawl can reach (finding 5).
+  crawl can reach (finding 5). The page-fit pass, the cross-page dedup and
+  the reachability line are in PR #29; the state-dependent page is the
+  design item below.
+- Design item: a state-dependent page. On practicesoftwaretesting.com the
+  cart link renders only after an add-to-cart, so no crawl of a fresh
+  session finds it, and the cart feature's rules report not-reachable.
+  Reaching it needs an action-first rung: plan the feature on the page
+  that starts the action (the product detail page, reached by a durable
+  click from the listing) and let the Explorer follow the state change,
+  with the discovered page recorded as reached-by-action, never by URL.
+  Decide the shape before building it; the crawl caps and politeness
+  rules stay as they are.
 - testid hints recorded as css because the site uses data-test; emit
   getByTestId with testIdAttribute instead (finding 7).
 - Explorer start-up waste: an orientation load of the entry page before

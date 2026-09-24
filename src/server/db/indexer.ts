@@ -187,6 +187,9 @@ const UNCOVERED_STATUS: Record<string, 'not_planned' | 'planned_but_dropped' | '
   'not-planned': 'not_planned',
   'planned-but-dropped': 'planned_but_dropped',
   'planned-not-explored': 'planned_not_explored',
+  // The index keeps the coarse status; the report and the console carry the
+  // precise reason and its detail.
+  'not-reachable': 'not_planned',
 };
 
 /** Index one run directory: the runs row and its derived rows. */

@@ -90,6 +90,22 @@ export interface PlanResult {
    * rule the scenario does not verify. Surfaced in the run log.
    */
   citationDrops: Array<{ scenario: string; ruleId: string; reason: string }>;
+  /**
+   * Scenarios removed by `rejectPageFit`: each names a control (a field, a
+   * sort dropdown, a search box, a price) that the page snapshot does not
+   * show, so the Explorer could only fail or thrash on it. Each entry names
+   * the scenario and the missing control. Surfaced in the run log and in the
+   * derivation report as the `page-fit` skip reason.
+   */
+  pageFitRejected: PageFitRejection[];
+}
+
+/** One scenario dropped by the page-fit pass, with the control it named. */
+export interface PageFitRejection {
+  scenario: PlannedScenario;
+  /** The control the scenario named, as the vocabulary labels it (e.g. "first name", "sort", "price"). */
+  control: string;
+  reason: string;
 }
 
 /**
@@ -289,6 +305,10 @@ export interface PickedEl {
   role?: string;
   label?: string;
   type?: string;
+  /** The element's id, when it has one (a reactive form often has an id and no name). */
+  id?: string;
+  /** The text of the element's associated <label>, when one exists and differs from `label`. */
+  labelText?: string;
 }
 
 /** Content found INSIDE one iframe, with the selector chain to reach it. */
@@ -313,9 +333,51 @@ export interface PageSnapshot {
   inputs: PickedEl[];
   buttons: PickedEl[];
   fillableCount: number;
+  /**
+   * The first TOP_TEXT_SAMPLE_CHARS of the top document's visible text,
+   * whitespace collapsed. The page-fit pass reads it as evidence (a "Sort"
+   * label, a "$14.15" price, a "Filters" heading) and the Planner sees what a
+   * visitor sees. Empty when the body has no text.
+   */
+  textSample: string;
+  /**
+   * The first 12 column headers (`th` or role=columnheader) on the page. A
+   * sortable table's headers ARE its sort control, so a sort scenario on a
+   * table page is page-fit even when the word "sort" appears nowhere.
+   */
+  tableHeaders: string[];
+  /**
+   * Page-wide evidence computed over the WHOLE document inside the snapshot's
+   * page.evaluate, never over the text sample: a listing page's first price
+   * can sit past 3000 characters of nav and filter text. The page-fit pass
+   * reads these; the text sample is for Haiku.
+   */
+  flags: PageFlags;
   /** Content-bearing iframes on the page (empty when there are none). */
   frames: FrameSnapshot[];
 }
+
+/** Whole-document booleans for the controls whose evidence lives in page text or past the inputs cap. */
+export interface PageFlags {
+  /** A currency amount anywhere in the document text ($14.15, 12 EUR). */
+  hasPrice: boolean;
+  /** A sort word, an "order by", an aria-sort attribute or a table column header. */
+  hasSort: boolean;
+  /** A filter word or any checkbox input. */
+  hasFilter: boolean;
+  /** A pagination landmark or word, or a next/previous control. */
+  hasPagination: boolean;
+  /** A search input: type=search, a role=search landmark, or an input named/placeholdered "search". */
+  hasSearch: boolean;
+}
+
+/**
+ * How much of the top document's visible text the snapshot carries. Long
+ * enough to reach past a listing page's filter sidebar to its first cards
+ * (practicesoftwaretesting.com/category/hand-tools reaches its first price
+ * at about 600 characters), short enough to cost a few hundred tokens.
+ */
+export const TOP_TEXT_SAMPLE_CHARS = 2000;
 
 /** Max frame nesting we will descend into, matches selectors.ts MAX_FRAME_DEPTH. */
 const MAX_FRAME_DEPTH = 3;
@@ -334,14 +396,22 @@ const MAX_FRAMES = 8;
 export async function snapshotPage(page: Page): Promise<PageSnapshot> {
   // Function declarations only — tsx injects `__name` wrappers for arrow
   // funcs assigned to consts, which break when serialized to page.evaluate.
-  const top = await page.evaluate(() => {
-    function pick(el: Element): { tag: string; role?: string; label?: string; type?: string } {
+  const top = await page.evaluate((sampleChars) => {
+    function pick(el: Element): { tag: string; role?: string; label?: string; type?: string; id?: string; labelText?: string } {
       const r = el as HTMLElement;
+      const label = (r.getAttribute('aria-label') ?? r.getAttribute('placeholder') ?? r.getAttribute('name') ?? (r.textContent ?? '').trim().slice(0, 80)) || undefined;
+      // The associated <label for=...> text: the name a visitor reads for a
+      // field whose markup carries no name or placeholder (Angular reactive
+      // forms). Page fit reads it as evidence.
+      const labels = (r as HTMLInputElement).labels;
+      const labelText = labels && labels.length > 0 ? (labels[0]!.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 80) : '';
       return {
         tag: r.tagName.toLowerCase(),
         role: r.getAttribute('role') ?? undefined,
-        label: (r.getAttribute('aria-label') ?? r.getAttribute('placeholder') ?? r.getAttribute('name') ?? (r.textContent ?? '').trim().slice(0, 80)) || undefined,
+        label,
         type: (r as HTMLInputElement).type ?? undefined,
+        ...(r.id ? { id: r.id } : {}),
+        ...(labelText && labelText !== label ? { labelText } : {}),
       };
     }
     // Count the controls the Explorer will actually act on (fill / select /
@@ -354,6 +424,30 @@ export async function snapshotPage(page: Page): Promise<PageSnapshot> {
       const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
       return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type);
     }
+    const fullText = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim() : '';
+    const bodyText = fullText.slice(0, sampleChars);
+    // Whole-document evidence for the page-fit pass. Read over the full text
+    // and the full control set, so a price past the text sample or a search
+    // box past the 25-input cap still counts.
+    function attrHas(el: Element, word: string): boolean {
+      const attrs = ['placeholder', 'aria-label', 'name', 'id', 'title'];
+      return attrs.some((a) => (el.getAttribute(a) || '').toLowerCase().includes(word));
+    }
+    const flags = {
+      hasPrice: /[$€£¥]\s?\d|\d\s?(usd|eur|gbp|chf|jpy)\b/i.test(fullText),
+      hasSort:
+        /\bsort(ed|ing|s)?\b|\border by\b/i.test(fullText) ||
+        document.querySelector('th, [role="columnheader"], [aria-sort]') !== null,
+      hasFilter:
+        /\bfilter/i.test(fullText) ||
+        document.querySelector('input[type="checkbox"]') !== null,
+      hasPagination:
+        /\bpaginat|\bnext\b|\bprevious\b|\bpage \d/i.test(fullText) ||
+        document.querySelector('.pagination, [aria-label*="pagination" i], nav[aria-label*="page" i]') !== null,
+      hasSearch:
+        document.querySelector('input[type="search"], [role="search"]') !== null ||
+        Array.from(document.querySelectorAll('input, textarea')).some((el) => attrHas(el, 'search')),
+    };
     return {
       title: document.title,
       url: location.href,
@@ -361,8 +455,11 @@ export async function snapshotPage(page: Page): Promise<PageSnapshot> {
       inputs: Array.from(document.querySelectorAll('input, textarea, select')).slice(0, 25).map(pick),
       buttons: Array.from(document.querySelectorAll('button, [role="button"]')).slice(0, 25).map(pick),
       fillableCount: Array.from(document.querySelectorAll('input, textarea, select')).filter(isFillable).length,
+      textSample: bodyText,
+      tableHeaders: Array.from(document.querySelectorAll('th, [role="columnheader"]')).slice(0, 12).map((h) => (h.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40)).filter((t) => t.length > 0),
+      flags,
     };
-  });
+  }, TOP_TEXT_SAMPLE_CHARS);
 
   const frames = await enumerateFrames(page);
   return { ...top, frames };
@@ -652,7 +749,13 @@ export async function plan(opts: {
     // Reject circular unchanged-assertions (capture a value, reload/no-op, assert
     // it equals itself) before de-dup, so a vacuous test never reaches the plan.
     const { kept: notCircular, rejected } = rejectCircular(parsed);
-    const { kept, dropped } = dedupePlan(notCircular);
+    const { kept: deduped, dropped } = dedupePlan(notCircular);
+    // Page fit: a scenario that names a control the snapshot does not show (a
+    // password field on a one-field reset form, a price on cards that carry
+    // none) is dropped here, before the Explorer spends on it. Deterministic,
+    // never a prompt nudge. Runs before the iframe injection so a synthesized
+    // frame scenario (built from real frame content) is never judged.
+    const { kept, rejected: pageFitRejected } = rejectPageFit(deduped, snapshot);
     // Guarantee iframe coverage deterministically. The SYSTEM rule + steering
     // block ask the model to plan an inside-frame scenario, but a prompt nudge
     // can miss. When the page has content-bearing iframes and the plan still
@@ -669,7 +772,7 @@ export async function plan(opts: {
     const u = response.usage;
     const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000;
 
-    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, fillableFields: snapshot.fillableCount };
+    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, fillableFields: snapshot.fillableCount };
   } finally {
     await browser.close();
   }
@@ -926,6 +1029,300 @@ export function dedupePlan(scenarios: PlannedScenario[]): {
     kept.push(s);
   }
   return { kept, dropped };
+}
+
+/* ── Page fit ─────────────────────────────────────────────────────────────── */
+
+/**
+ * One control the page-fit vocabulary knows. `named` matches the NORMALIZED
+ * scenario name when the scenario names the control; the evidence side says
+ * what on the snapshot proves the page has it. Field controls are evidenced
+ * by the snapshot's inputs only (a "Forgot Password" heading is not a password
+ * field); controls that live in text (a Sort label, a Filters button, a price)
+ * are evidenced by anything on the page.
+ */
+export interface PageFitTerm {
+  /** The label the log line uses, e.g. "first name", "sort", "price". */
+  control: string;
+  /** Matches the normalized scenario name when the scenario names this control. */
+  named: RegExp;
+  /** Matches the normalized evidence text when the page shows the control. */
+  evidence: RegExp;
+  /** Where the evidence may come from: the inputs list only, or anything on the page. */
+  from: 'inputs' | 'any';
+  /** Input types or tags (`select`, `textarea`) that evidence the control on their own. */
+  kinds?: string[];
+  /** Evidence from N or more inputs of a type (two password fields evidence a confirm field). */
+  atLeast?: [type: string, count: number];
+  /** Evidence read from the RAW text sample, which keeps currency symbols the normalizer drops. */
+  raw?: RegExp;
+  /** Evidence from the presence of table column headers (a sortable table is a sort control). */
+  tableHeaders?: boolean;
+  /** The whole-document flag (PageFlags) that evidences the control on its own. */
+  flag?: keyof PageFlags;
+}
+
+/**
+ * A scenario that reaches something by navigation is judged only on the
+ * controls its FIRST action needs on the planned page. "clicked a product
+ * and landed on its detail page showing name and price" needs an item link,
+ * which the snapshot cannot list, and the price lives on the page the click
+ * reaches, so the price is never judged against the listing. The verbs:
+ * clicked, click, opens, opened, landed, lands, navigates, navigated, goes
+ * to, detail page. Exported for the smoke.
+ */
+export const NAV_VERB_RE = /\b(clicked|click|opens|opened|landed|lands|navigates|navigated|goes to|detail page)\b/;
+
+/**
+ * The controls a navigation scenario may still be judged on: what its first
+ * action on the planned page needs when the name says so. Value kinds
+ * (price, cost, quantity, total) are never among them.
+ */
+export const FIRST_ACTION_CONTROLS: ReadonlySet<string> = new Set(['search', 'sort', 'filter']);
+
+/**
+ * The page-fit vocabulary. Order matters only for which missing control the
+ * log line names first. Matching is on normalized words (lowercase, camelCase
+ * and snake_case split, punctuation dropped), never exact strings, and each
+ * row carries its own small synonym set, so "first_name", "firstName",
+ * "given name" and "First name" all evidence the first-name field.
+ *
+ * Words with an outcome sense are excluded on the name side: "error message"
+ * and "success message" are results, not the message field; "email address"
+ * is not a street address. Nouns the snapshot cannot evidence (a product
+ * name, an image) and flow words (login, register, add to cart) are not in
+ * the table on purpose: a scenario may click through to reach them.
+ */
+export const PAGE_FIT_TERMS: PageFitTerm[] = [
+  { control: 'first name', from: 'inputs', named: /\b(first|given) ?name\b|\bforename\b/, evidence: /\b(first|given) ?name\b|\bforename\b|\bfname\b/ },
+  { control: 'last name', from: 'inputs', named: /\b(last|family) ?name\b|\bsurname\b/, evidence: /\b(last|family) ?name\b|\bsurname\b|\blname\b/ },
+  { control: 'username', from: 'inputs', named: /\buser ?name\b|\buser ?id\b|\blogin name\b/, evidence: /\buser ?name\b|\buser ?id\b|\blogin\b|\bhandle\b/ },
+  { control: 'email', from: 'inputs', named: /\be ?mail\b/, evidence: /\be ?mail\b/, kinds: ['email'] },
+  { control: 'confirm password', from: 'inputs', named: /\b(confirm|confirmation|repeat|retype|re ?enter)\w* (the |your )?(password|pwd)\b|\bpassword confirm\w*\b/, evidence: /\b(confirm|confirmation|repeat|retype|re ?enter)\w* (the |your )?(password|pwd)\b|\bpassword confirm\w*\b/, atLeast: ['password', 2] },
+  { control: 'password', from: 'inputs', named: /\bpassword\b|\bpasswd\b/, evidence: /\bpassword\b|\bpasswd\b/, kinds: ['password'] },
+  { control: 'phone', from: 'inputs', named: /\b(tele)?phone\b|\bmobile\b/, evidence: /\b(tele)?phone\b|\bmobile\b|\btel\b/, kinds: ['tel'] },
+  { control: 'address', from: 'inputs', named: /(?<!e ?mail |ip |web |url )\baddress\b|\bstreet\b/, evidence: /(?<!e ?mail |ip |web |url )\baddress\b|\bstreet\b/ },
+  { control: 'subject', from: 'inputs', named: /\bsubject\b/, evidence: /\bsubject\b|\btopic\b/ },
+  { control: 'message', from: 'inputs', named: /(?<!(error|success|validation|confirmation|alert|warning|status|toast|inline|failure|flash|welcome|feedback|info|help|hint) )\bmessage\b/, evidence: /\bmessage\b|\bcomment\b/, kinds: ['textarea'] },
+  { control: 'comment', from: 'inputs', named: /\bcomments?\b/, evidence: /\bcomments?\b/, kinds: ['textarea'] },
+  { control: 'quantity', from: 'inputs', named: /\bquantity\b|\bqty\b/, evidence: /\bquantity\b|\bqty\b/, kinds: ['number'] },
+  { control: 'search', from: 'inputs', named: /\bsearch(ed|es|ing)?\b/, evidence: /\bsearch\w*\b/, kinds: ['search'], flag: 'hasSearch' },
+  { control: 'sort', from: 'any', named: /\bsort(ed|s|ing)?\b/, evidence: /\bsort\w*\b|\border by\b/, tableHeaders: true, flag: 'hasSort' },
+  { control: 'filter', from: 'any', named: /\bfilter(ed|s|ing)?\b/, evidence: /\bfilter\w*\b/, kinds: ['checkbox'], flag: 'hasFilter' },
+  { control: 'checkbox', from: 'inputs', named: /\bcheck ?box(es)?\b|\btick ?box(es)?\b/, evidence: /\bcheck ?box\w*\b/, kinds: ['checkbox'] },
+  { control: 'radio', from: 'inputs', named: /\bradio\b/, evidence: /\bradio\b/, kinds: ['radio'] },
+  { control: 'dropdown', from: 'inputs', named: /\bdrop ?down\b|\bcombo ?box\b|\bselect (menu|list|box)\b/, evidence: /\bdrop ?down\b|\bcombo ?box\b/, kinds: ['select', 'select-one', 'select-multiple'] },
+  { control: 'slider', from: 'inputs', named: /\bslider\b|\brange (slider|input|control)\b/, evidence: /\bslider\b/, kinds: ['range'] },
+  { control: 'file upload', from: 'inputs', named: /\bupload\w*\b|\battach\w*\b|\bfile (input|field|picker)\b/, evidence: /\bupload\w*\b|\battach\w*\b/, kinds: ['file'] },
+  { control: 'date', from: 'inputs', named: /\bdate of birth\b|\bbirth ?da(te|y)\b|\bdob\b|\bdate (picker|field|input)\b/, evidence: /\bdate\b|\bdob\b|\bbirth\w*\b/, kinds: ['date', 'datetime-local'] },
+  { control: 'country', from: 'inputs', named: /\bcountry\b/, evidence: /\bcountry\b|\bcountries\b/ },
+  { control: 'city', from: 'inputs', named: /\bcity\b/, evidence: /\bcity\b|\btown\b/ },
+  { control: 'postcode', from: 'inputs', named: /\bpost(al)? ?code\b|\bzip( code)?\b/, evidence: /\bpost(al)? ?code\b|\bzip\b|\bpostal\b/ },
+  { control: 'company', from: 'inputs', named: /\bcompany\b/, evidence: /\bcompany\b|\borgani[sz]ation\b/ },
+  { control: 'coupon', from: 'inputs', named: /\bcoupon\b|\bpromo( code)?\b|\bvoucher\b|\bdiscount code\b/, evidence: /\bcoupon\b|\bpromo\w*\b|\bvoucher\b|\bdiscount\b/ },
+  { control: 'remember me', from: 'inputs', named: /\bremember me\b/, evidence: /\bremember\b/ },
+  { control: 'terms', from: 'inputs', named: /\bterms (and )?conditions\b|\b(accept|agree)\w* (to )?(the )?terms\b|\bterms check ?box\b/, evidence: /\bterms\b|\bagree\w*\b|\baccept\w*\b/ },
+  { control: 'newsletter', from: 'inputs', named: /\bnewsletter\b/, evidence: /\bnewsletter\b|\bsubscri\w*\b/ },
+  { control: 'pagination', from: 'any', named: /\bpaginat\w*\b|\b(next|previous|prev) page\b|\bpage \d+\b/, evidence: /\bpaginat\w*\b|\bnext\b|\bprevious\b|\bpage \d+\b/, flag: 'hasPagination' },
+  { control: 'price', from: 'any', named: /\bprices?\b|\bpriced\b/, evidence: /\bprices?\b|\bpriced\b|\bcost\b/, raw: /[$€£¥]\s?\d|\d\s?(usd|eur|gbp|chf|jpy)\b/i, flag: 'hasPrice' },
+];
+
+/**
+ * Words as the page-fit pass compares them: camelCase and snake_case split,
+ * lowercase, punctuation dropped, single spaces. "firstName", "first_name" and
+ * "First name" all become "first name". Exported for the smoke.
+ */
+export function normalizeWords(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** The cap on the snapshot's inputs list; past it the list is known to be incomplete. */
+const SNAPSHOT_INPUTS_CAP = 25;
+
+/** What the snapshot evidences, built once per plan and read by every term. */
+interface PageEvidence {
+  inputs: string;
+  any: string;
+  raw: string;
+  kinds: Set<string>;
+  typeCounts: Map<string, number>;
+  tableHeaders: number;
+  /** True when the inputs list hit its cap, so a field past it may exist unseen. */
+  inputsCapped: boolean;
+  /** The whole-document flags, when the snapshot carries them. */
+  flags?: Partial<PageFlags>;
+}
+
+/** The evidence-side shape of a snapshot: the top document plus every content frame. */
+export type PageFitSnapshot = Pick<PageSnapshot, 'inputs' | 'buttons' | 'headings' | 'textSample' | 'frames'> & Partial<Pick<PageSnapshot, 'tableHeaders'>> & { flags?: Partial<PageFlags> };
+
+function elWords(el: PickedEl): string {
+  return [el.label, el.labelText, el.id, el.type, el.tag].filter((x): x is string => !!x).join(' ');
+}
+
+function buildEvidence(snap: PageFitSnapshot): PageEvidence {
+  const inputs: PickedEl[] = [...snap.inputs, ...snap.frames.flatMap((f) => f.inputs)];
+  const others: PickedEl[] = [...snap.buttons, ...snap.headings, ...snap.frames.flatMap((f) => [...f.buttons, ...f.headings])];
+  const rawText = [snap.textSample, ...snap.frames.map((f) => f.textSample)].join(' ');
+  // Column headers count as field evidence: "sorted the table by last name"
+  // names the Last Name column, which a table page has and an inputs list
+  // does not.
+  const inputText = normalizeWords([...inputs.map(elWords), ...(snap.tableHeaders ?? [])].join(' '));
+  const anyText = normalizeWords([inputText, ...others.map(elWords), rawText].join(' '));
+  const kinds = new Set<string>();
+  const typeCounts = new Map<string, number>();
+  for (const el of inputs) {
+    kinds.add(el.tag);
+    if (el.type) {
+      kinds.add(el.type);
+      typeCounts.set(el.type, (typeCounts.get(el.type) ?? 0) + 1);
+    }
+  }
+  return {
+    inputs: inputText,
+    any: anyText,
+    raw: rawText,
+    kinds,
+    typeCounts,
+    tableHeaders: (snap.tableHeaders ?? []).length,
+    inputsCapped: snap.inputs.length >= SNAPSHOT_INPUTS_CAP,
+    ...(snap.flags ? { flags: snap.flags } : {}),
+  };
+}
+
+function termEvidenced(t: PageFitTerm, ev: PageEvidence): boolean {
+  // The whole-document flag is the primary evidence for the controls that
+  // have one: it was read over the full text and the full control set.
+  if (t.flag && ev.flags?.[t.flag] === true) return true;
+  // A capped inputs list may hide the field; read the whole page then, so a
+  // 30-field form is never judged on its first 25 controls.
+  const hay = t.from === 'inputs' && !ev.inputsCapped ? ev.inputs : ev.any;
+  if (t.evidence.test(hay)) return true;
+  if (t.kinds?.some((k) => ev.kinds.has(k))) return true;
+  if (t.atLeast && (ev.typeCounts.get(t.atLeast[0]) ?? 0) >= t.atLeast[1]) return true;
+  if (t.raw && t.raw.test(ev.raw)) return true;
+  if (t.tableHeaders && ev.tableHeaders > 0) return true;
+  return false;
+}
+
+/**
+ * The control a scenario names that the page snapshot does not show, or null
+ * when every named control is evidenced (or none is named). Run 591732
+ * planned three registration scenarios on a one-field password-reset form and
+ * four rentals scenarios asserting a price on cards that carry none; each
+ * would have failed or thrashed in the Explorer. Exported for the smoke.
+ */
+export function pageFitReason(s: PlannedScenario, snapshot: PageFitSnapshot): { control: string; reason: string } | null {
+  const name = normalizeWords(s.name);
+  const ev = buildEvidence(snapshot);
+  // A navigation scenario is judged only on its first action's controls on
+  // the planned page; what it reads after the click lives on another page.
+  const navigates = NAV_VERB_RE.test(name);
+  for (const t of PAGE_FIT_TERMS) {
+    if (navigates && !FIRST_ACTION_CONTROLS.has(t.control)) continue;
+    if (!t.named.test(name)) continue;
+    if (termEvidenced(t, ev)) continue;
+    return { control: t.control, reason: `names ${t.control} which the page snapshot does not show` };
+  }
+  return null;
+}
+
+/**
+ * Drop every planned scenario that names a control the page snapshot does
+ * not show. Runs after dedup and circular rejection, before the iframe
+ * injection. The kept list preserves plan order; each rejection names the
+ * scenario and the missing control.
+ */
+export function rejectPageFit(scenarios: PlannedScenario[], snapshot: PageFitSnapshot): {
+  kept: PlannedScenario[];
+  rejected: PageFitRejection[];
+} {
+  const kept: PlannedScenario[] = [];
+  const rejected: PageFitRejection[] = [];
+  for (const s of scenarios) {
+    const hit = pageFitReason(s, snapshot);
+    if (hit) rejected.push({ scenario: s, control: hit.control, reason: hit.reason });
+    else kept.push(s);
+  }
+  return { kept, rejected };
+}
+
+/* ── Cross-page dedup ─────────────────────────────────────────────────────── */
+
+/** The identity a scenario has across pages: feature, category and normalized intent. */
+function crossPageKey(s: PlannedScenario): string {
+  return `${(s.feature ?? '').toLowerCase()}|${s.category}|${scenarioNameKey(s.name)}`;
+}
+
+/**
+ * The same feature + category + intent planned on two pages is one scenario,
+ * not two. Run 591732 planned "logged in with valid credentials" on the login
+ * page and again on the entry page, and the second shipped as "(page 2)". The
+ * copy on the page whose feature tag names the scenario's feature wins; when
+ * neither or both do, the first in ladder order wins. A name shared by
+ * scenarios of a DIFFERENT feature or category is not a duplicate and still
+ * goes through the rename in uniqueScenarioNames. Exported for the smoke.
+ */
+export function dedupeAcrossPages(
+  existing: PlannedScenario[],
+  incoming: PlannedScenario[],
+  page: { url: string; feature?: string },
+  pageFeatureOf: (url: string | undefined) => string | undefined,
+): { existing: PlannedScenario[]; incoming: PlannedScenario[]; dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> } {
+  const all: PlannedScenario[] = [...existing];
+  const fromIncoming = new Set<PlannedScenario>();
+  const dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> = [];
+  for (const s of incoming) {
+    const key = crossPageKey(s);
+    const idx = all.findIndex((e) => crossPageKey(e) === key);
+    if (idx < 0) {
+      all.push(s);
+      fromIncoming.add(s);
+      continue;
+    }
+    const e = all[idx]!;
+    const incomingOnItsPage = !!s.feature && page.feature === s.feature;
+    const existingOnItsPage = !!e.feature && pageFeatureOf(e.pageUrl) === e.feature;
+    if (incomingOnItsPage && !existingOnItsPage) {
+      dropped.push({ scenario: e, duplicateOf: s });
+      all.splice(idx, 1);
+      all.push(s);
+      fromIncoming.add(s);
+    } else {
+      dropped.push({ scenario: s, duplicateOf: e });
+    }
+  }
+  return {
+    existing: all.filter((s) => !fromIncoming.has(s)),
+    incoming: all.filter((s) => fromIncoming.has(s)),
+    dropped,
+  };
+}
+
+/* ── Feature reachability ─────────────────────────────────────────────────── */
+
+/**
+ * SRS features with stated rules that no discovered page carries as its
+ * feature tag. Their rules can only report not-planned, and the run should
+ * say so at plan time instead of leaving it to the coverage report (run
+ * 591732: cart, 4 rules, 0 scenarios). Never invents a URL. Exported for the
+ * smoke.
+ */
+export function unreachableFeatures(map: RequirementsMap | undefined, pages: Array<{ feature?: string }>): Array<{ name: string; rules: number }> {
+  if (!map) return [];
+  const tagged = new Set(pages.map((p) => p.feature).filter((f): f is string => !!f));
+  return map.features
+    .filter((f) => f.rules.length > 0 && !tagged.has(f.name))
+    .map((f) => ({ name: f.name, rules: f.rules.length }));
+}
+
+/** The one console line for an unreachable feature. */
+export function unreachableFeatureLine(f: { name: string; rules: number }): string {
+  return `Feature "${f.name}" has ${f.rules} rule${f.rules === 1 ? '' : 's'} and no discovered page; its rules will report not-planned`;
 }
 
 /**

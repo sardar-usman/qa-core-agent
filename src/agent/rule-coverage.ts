@@ -11,15 +11,23 @@ import type { RequirementsMap } from './requirements.js';
  *                         scenario survived the pipeline (gate / critic /
  *                         replay / stability / findings)
  *   not-planned        — no planned scenario cited the rule at all
+ *   not-reachable      : no planned scenario cited the rule because no
+ *                         discovered page carries the rule's feature (the
+ *                         cart of run 591732, reached only after an add)
  *
  * A run with a map ends with "X of Y rules covered" plus the named uncovered
  * rules, so a rule that was considered but not automated is reported, never
  * silently absent.
  */
 
+export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable';
+
+/** The detail every not-reachable rule carries, so the report says why. */
+export const NOT_REACHABLE_DETAIL = 'no discovered page carries this feature';
+
 export interface RuleCoverage {
   covered: Array<{ ruleId: string; scenarios: string[] }>;
-  uncovered: Array<{ ruleId: string; text: string; reason: 'not-planned' | 'planned-but-dropped' | 'planned-not-explored'; detail?: string }>;
+  uncovered: Array<{ ruleId: string; text: string; reason: UncoveredReason; detail?: string }>;
   /** Per-feature checklist derivation record. Present on SRS runs. */
   derivation?: FeatureDerivation[];
 }
@@ -40,7 +48,7 @@ export const DERIVATION_CATEGORIES: DerivationCategory[] = [
   'state-transition',
 ];
 
-export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable';
+export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable' | 'page-fit';
 
 /**
  * Which checklist categories produced scenarios for one feature, and which
@@ -120,10 +128,18 @@ export function computeRuleCoverage(opts: {
    * ("rework, not repaired: reserve funds 2 of 14"), never only the label.
    */
   dropReasons?: Map<string, string>;
+  /**
+   * Names of SRS features that no discovered page carries as its feature tag
+   * (unreachableFeatures in planner.ts). A rule of such a feature that no
+   * scenario cited classifies not-reachable, with the detail saying why,
+   * instead of a plain not-planned.
+   */
+  unreachableFeatures?: string[];
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
   const unexploredKeys = new Set((opts.unexplored ?? []).map(nameKey));
+  const unreachable = new Set(opts.unreachableFeatures ?? []);
   const reasonByKey = new Map<string, string>();
   for (const [name, reason] of opts.dropReasons ?? []) reasonByKey.set(nameKey(name), reason);
   for (const feature of opts.map.features) {
@@ -134,9 +150,9 @@ export function computeRuleCoverage(opts: {
         continue;
       }
       const citing = opts.planned.filter((p) => (p.ruleIds ?? []).includes(rule.id));
-      const reason: RuleCoverage['uncovered'][number]['reason'] =
+      const reason: UncoveredReason =
         citing.length === 0
-          ? 'not-planned'
+          ? unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
           : citing.every((p) => unexploredKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
@@ -145,7 +161,9 @@ export function computeRuleCoverage(opts: {
       const causeOf = (r: string): string => (r.startsWith('rework, not repaired:') ? r.split(':').slice(0, 2).join(':') : r.split(':')[0]!).trim();
       const detail = reason === 'planned-but-dropped'
         ? citing.map((p) => reasonByKey.get(nameKey(p.name))).filter((r): r is string => !!r).map(causeOf).filter((r, i, a) => a.indexOf(r) === i).join(' | ')
-        : '';
+        : reason === 'not-reachable'
+          ? NOT_REACHABLE_DETAIL
+          : '';
       uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }
@@ -229,6 +247,11 @@ export function categoryApplicable(feature: { rules: Array<{ text: string; type:
  *   - not-applicable      — the feature's rules give the category no basis
  *   - budget              — applicable, nothing produced, and the run hit a
  *                           scenario cap (per-page or global)
+ *   - page-fit            : applicable, and the Planner did derive a scenario
+ *                           for it, but the page-fit pass dropped that
+ *                           scenario because it named a control the page
+ *                           snapshot does not show (a first-name field on a
+ *                           password-reset form)
  *   - no-matching-control — applicable, nothing produced, no cap hit; the page
  *                           most likely lacks the control the category needs
  */
@@ -237,10 +260,13 @@ export function computeDerivation(opts: {
   planned: DerivableScenario[];
   /** True when planning stopped at a scenario cap. Turns skips into 'budget'. */
   budgetHit?: boolean;
+  /** Scenarios the page-fit pass rejected; a category they would have filled skips as 'page-fit'. */
+  pageFitRejected?: DerivableScenario[];
 }): FeatureDerivation[] {
   const out: FeatureDerivation[] = [];
   for (const feature of opts.map.features) {
     const mine = opts.planned.filter((s) => s.feature === feature.name);
+    const unfit = (opts.pageFitRejected ?? []).filter((s) => s.feature === feature.name);
     const cited = new Set<string>();
     for (const s of mine) for (const id of s.ruleIds ?? []) cited.add(id);
     const produced: FeatureDerivation['produced'] = [];
@@ -253,6 +279,8 @@ export function computeDerivation(opts: {
       }
       if (!categoryApplicable(feature, category)) {
         skipped.push({ category, reason: 'not-applicable' });
+      } else if (unfit.some((s) => classifyDerivationCategory(s) === category)) {
+        skipped.push({ category, reason: 'page-fit' });
       } else {
         skipped.push({ category, reason: opts.budgetHit ? 'budget' : 'no-matching-control' });
       }
