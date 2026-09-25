@@ -116,10 +116,15 @@ Toolshop runs, same site, same SRS, same $6 ceiling:
 | 2 f3b41e | Sept 18 | #18 to #20 | 7 | 18 | 15 | 1 | $4.97 | completed | docs/audit/run-f3b41e-diagnosis.md |
 | 3 5e4394 | Sept 18 | #21, #22 | 7 | 20 | 16 | 1 | $6.09 | completed | docs/audit/run-5e4394-diagnosis.md |
 | 4 591732 | Sept 22 | #23 to #26 | 7 | 20 | 13 | 5 | $4.57 | completed | docs/audit/run-591732-diagnosis.md |
+| 5 51d535 | Sept 24 | #25 to #29 | 8 | 17 | 13 | 5 | $6.03 | stopped at ceiling, framework written | docs/audit/run-51d535-diagnosis.md |
 
-Run 4 verdict: hypothesis confirmed (5 shipped, zero tool-capability
-reworks). Framework ran 6 of 6 in a clean install. Next: PR fixes 1 to 3,
-then run 5. Run 5 bar: 8 or more shipped, 7 or more rules, same command.
+Run 5 verdict: bar missed (5 shipped, 4 rules). Emitted framework failed
+3 of 6 on a clean install: field identity defect in the POM emitter, fixed
+in PR #30 with an emitted-spec check stage. Next: PR 5 (gate and cost),
+PR 6 (planning, critic, own account), then run 6. Run 6 bar: rework rate
+under 50 percent, explorer cost per explored scenario under $0.35, zero
+reworks whose only reason is a missing URL timeout, emitted-spec check
+green for every shipped test.
 
 Run 3: twelve of fourteen reworks asked for tool capabilities that did not
 exist (assert_compare ignored its target hints; numeric relations could not
@@ -150,7 +155,9 @@ item ranked there is either merged (see the PR list above) or listed below.
   live Discovery panel has numbers.
 - shared demo account lockout on practicesoftwaretesting.com: the happy
   login can be locked by outside traffic; decide whether the run registers
-  its own account.
+  its own account. Run 5's happy login failed with no visible message
+  while a preflight against the same credentials passed before and after
+  (run 51d535 finding 8): the run should register its own account.
 - Dropped scenarios keep only their name and verdict on the run-report;
   their recorded steps are lost, so a drop cannot be diagnosed from the
   artefact alone. Decide whether to keep dropped traces (redacted) on
@@ -184,6 +191,27 @@ item ranked there is either merged (see the PR list above) or listed below.
 - Explorer start-up waste: an orientation load of the entry page before
   the first planned scenario although the plan names each page
   (finding 8).
+- A toHaveURL with no model timeout stays [no-timeout] on the record and
+  the Critic reworks it as a one-shot check: four reworks in run 5; floor
+  it at the gate like every other assertion (run 51d535 finding 2).
+- Per-host memory of the test-id attribute: run 5 spent two 60 s dead
+  waits on data-testid against a data-test site that run 4 had already
+  seen (run 51d535 finding 3).
+- Gate RULE 3 and RULE 4 fire at end_scenario after 15 and 12 calls and
+  force a full re-record; check them at the tool call like RULE 7, and
+  trim a currency amount off a role or label name (run 51d535 finding 4).
+- Page-fit false positive: "forgot-password form" names the form, not a
+  password field; three recovery scenarios lost (run 51d535 finding 5).
+- The requirements map is not deterministic across runs: the same SRS
+  gave five features in run 4 and four in run 5 (login and registration
+  merged), which produced the multi-page account feature and two
+  registration scenarios planned on the login page (run 51d535 finding 6).
+- The Critic's second pass complains about things its first pass never
+  required, so an applied fix is still dropped; scope the second pass to
+  the required fixes (run 51d535 finding 7).
+- A negated-action scenario ("sorted ... and the list remained unsorted")
+  reaches the Explorer and the Critic rejects it, costing its rule;
+  reject the shape at plan time (run 51d535 finding 9).
 
 ## Then: go to market
 

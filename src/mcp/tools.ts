@@ -38,6 +38,7 @@ export const exploreArgs = {
   stabilityIterations: z.number().int().positive().default(3).describe('Stability re-runs per scenario (CLI: --stability N, default 3).'),
   stabilize: z.boolean().default(true).describe('Run the Stage 5b Stabilizer on flaky scenarios (CLI: --no-stabilize to disable).'),
   stabilizeAttempts: z.number().int().positive().default(3).describe('Max Stabilizer fix attempts per flaky scenario (CLI: --stabilize-attempts N, default 3).'),
+  emittedCheck: z.boolean().default(true).describe('Run the emitted-spec check: the written framework is executed once with Playwright against the live site before the zip, a test that fails twice is dropped and named on the report (CLI: --no-emitted-check to skip, --emitted-check is the default).'),
   ...settingArgs,
 };
 
@@ -129,6 +130,7 @@ export function exploreRequestFromToolArgs(a: ExploreToolArgs, srsPathFromText?:
   req.stabilityIterations = a.stabilityIterations ?? 3;
   req.stabilize = a.stabilize ?? true;
   req.stabilizeAttempts = a.stabilizeAttempts ?? 3;
+  req.emittedCheck = a.emittedCheck ?? true;
   req.env = envFromSettings(a);
   return req;
 }

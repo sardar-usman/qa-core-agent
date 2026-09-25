@@ -13,7 +13,7 @@ import {
 
 export const EXPLORE_USAGE =
   'Usage: `/explore <url> [--features login,cart] [--srs <file>] [--urls /a,/b] [--discover] ' +
-  '[--lang ts|js] [--no-pom] [--no-stabilize] [--stabilize-attempts N] [--ceiling USD] [or a natural-language hint after the URL]`';
+  '[--lang ts|js] [--no-pom] [--no-stabilize] [--stabilize-attempts N] [--no-emitted-check] [--ceiling USD] [or a natural-language hint after the URL]`';
 export const RESUME_USAGE = 'Usage: `/resume <path/to/checkpoint.json> [--ceiling USD]`';
 export const TRANSCRIBE_USAGE = 'Usage: `/transcribe <path/to/run-report.json> [--out <dir>]`';
 
