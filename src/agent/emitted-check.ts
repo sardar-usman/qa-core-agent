@@ -7,6 +7,7 @@ import type { RequirementsMap } from './requirements.js';
 import { reconcile } from './reconcile.js';
 import { computeRuleCoverage } from './rule-coverage.js';
 import { unreachableFeatures } from './planner.js';
+import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, type AuthCredentials } from './auth-emit.js';
 
 /**
  * The emitted-spec check: the last stage before the zip.
@@ -35,6 +36,21 @@ import { unreachableFeatures } from './planner.js';
  * fails including the a11y spec, or when every failure is a network error,
  * the stage records `inconclusive` with the reason, keeps the framework whole
  * and prints a loud warning. A network blip never drops everything.
+ *
+ * Credentials: the login spec and the auth setup read QA_CORE_TEST_USER and
+ * QA_CORE_TEST_PASS. The stage passes the run's recorded happy-login
+ * credentials (the values findHappyLoginScenario yields, the same ones the
+ * setup reads from env) into the Playwright child's environment, in memory
+ * only: never a .env in the run directory, never the zip, never a log line.
+ * With no happy login it passes nothing and the login project behaves as the
+ * framework would on a client machine; a login test that then fails twice is
+ * recorded with an error that says the values were unset.
+ *
+ * Dataset cases: a data-driven case ("[data] <feature> — <case>") that fails
+ * twice is removed from data/<feature>.json (re-applied after the
+ * re-scaffold, which would regenerate it) and recorded in emitted_failed
+ * under "<feature>: <case name>", never shipped red. The a11y spec keeps
+ * the warn-and-keep behavior.
  */
 
 export const EMITTED_CHECK_TIMEOUT_MS = 180_000;
@@ -60,7 +76,41 @@ export interface EmittedCheckOptions {
   agentRoot?: string;
   /** Skip the pre-run reachability probe (a local fixture answers it anyway). */
   probe?: boolean;
+  /**
+   * Credentials for the child env. Absent: the run's recorded happy-login
+   * credentials (findHappyLoginScenario). null: pass none, as a run with no
+   * happy login would (the smoke's seam for the unset outcome).
+   */
+  credentials?: AuthCredentials | null;
+  /** Test seam: sees the child's environment right before each spawn. Never used for logging. */
+  observeChildEnv?: (env: NodeJS.ProcessEnv) => void;
   log: (line: string) => void;
+}
+
+/** The env the child gets for the recorded credentials, in memory only. */
+export function credentialEnv(creds: AuthCredentials | null | undefined): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  if (creds?.user) out[AUTH_ENV_USER] = creds.user;
+  if (creds?.pass) out[AUTH_ENV_PASS] = creds.pass;
+  return out;
+}
+
+/** The data-driven test title the POM emitter gives a dataset case, split back into its parts. */
+export function parseDataTestTitle(title: string): { feature: string; caseName: string } | null {
+  const m = title.match(/^\[data\] (.+?) — (.+)$/);
+  return m ? { feature: m[1]!, caseName: m[2]! } : null;
+}
+
+/** Remove the named cases from data/<feature>.json when the file exists (idempotent). */
+export function pruneDatasetCases(frameworkDir: string, removed: Map<string, Set<string>>): void {
+  for (const [feature, names] of removed) {
+    const file = path.join(frameworkDir, 'data', `${feature}.json`);
+    if (!fs.existsSync(file)) continue;
+    let cases: Array<{ name: string }>;
+    try { cases = JSON.parse(fs.readFileSync(file, 'utf8')) as Array<{ name: string }>; } catch { continue; }
+    const kept = cases.filter((c) => !names.has(c.name));
+    if (kept.length !== cases.length) fs.writeFileSync(file, JSON.stringify(kept, null, 2) + '\n');
+  }
 }
 
 export interface EmittedCheckResult {
@@ -137,12 +187,19 @@ function escapeRegex(s: string): string {
 
 interface PwRun { status: number | null; killed: boolean; tests: EmittedTest[]; stderr: string; durationMs: number }
 
-async function runPlaywright(frameworkDir: string, agentRoot: string, grep: string[] | null, timeoutMs: number): Promise<PwRun> {
+async function runPlaywright(frameworkDir: string, agentRoot: string, grep: string[] | null, timeoutMs: number, extraEnv: NodeJS.ProcessEnv = {}, observe?: (env: NodeJS.ProcessEnv) => void): Promise<PwRun> {
   const cli = path.join(agentRoot, 'node_modules', '@playwright', 'test', 'cli.js');
   const args = [cli, 'test', '--reporter=json', '--workers=1', '--retries=0'];
   if (grep && grep.length > 0) args.push('--grep', grep.map(escapeRegex).join('|'));
+  // The recorded credentials travel in the child's environment only; the
+  // parent's own QA_CORE_TEST_* (a developer's shell) never leak into the
+  // check, so what the framework sees is exactly what the run recorded.
   const env: NodeJS.ProcessEnv = { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: JSON_NAME, PW_TEST_HTML_REPORT_OPEN: 'never' };
   delete env.CI;
+  delete env[AUTH_ENV_USER];
+  delete env[AUTH_ENV_PASS];
+  Object.assign(env, extraEnv);
+  observe?.(env);
   const jsonPath = path.join(frameworkDir, JSON_NAME);
   try { fs.rmSync(jsonPath, { force: true }); } catch { /* none */ }
   const t0 = Date.now();
@@ -200,12 +257,39 @@ function withEmittedRun(report: RunReport, run: EmittedRun): RunReport {
   return report;
 }
 
+/**
+ * A login test that failed while the check passed no credentials, on a spec
+ * that reads them from env, ran with empty values: say so in the error, so
+ * the report distinguishes "the site rejected the recorded login" from "the
+ * run had no happy login to supply".
+ */
+function annotateLoginError(t: EmittedTest, frameworkDir: string, credsPassed: boolean): string {
+  const error = t.error ?? 'failed';
+  if (credsPassed || !t.file) return error;
+  // The JSON reporter names a spec relative to the tests directory (the
+  // config's testDir); an older shape names it from the framework root.
+  let spec = '';
+  for (const candidate of [path.join(frameworkDir, 'tests', t.file), path.join(frameworkDir, t.file)]) {
+    try { spec = fs.readFileSync(candidate, 'utf8'); break; } catch { /* try the next */ }
+  }
+  if (!spec.includes(AUTH_ENV_USER) && !spec.includes(AUTH_ENV_PASS)) return error;
+  return `no happy-login credentials were available to the check (the run recorded no happy login, so ${AUTH_ENV_USER} / ${AUTH_ENV_PASS} were unset and the test ran with empty values); ${error}`;
+}
+
 /** Rebuild reconciliation and rule coverage after the emitted drops, the same builders the runtime used. */
-function rebuildAccounting(report: RunReport, requirements: RequirementsMap | undefined, log: (l: string) => void): void {
+function rebuildAccounting(
+  report: RunReport,
+  requirements: RequirementsMap | undefined,
+  log: (l: string) => void,
+  removedScenarios: Set<string> = new Set(),
+  dropped: Array<{ scenario: string; error: string }> = [],
+): void {
   report.reconciliation = reconcile(report, { onDuplicate: (m) => log(`WARNING: ${m}`) });
   if (requirements && report.ruleCoverage) {
     const dropReasons = new Map<string, string>(report.reconciliation.dropped.map((d) => [d.name, d.reason]));
     for (const e of report.emittedFailed ?? []) dropReasons.set(e.scenario, `emitted-spec check: ${e.error.split('\n')[0] ?? ''}`);
+    // A member scenario removed behind a data case is keyed by its own name too.
+    for (const name of removedScenarios) if (!dropReasons.has(name)) dropReasons.set(name, `emitted-spec check: ${dropped[0]?.error.split('\n')[0] ?? 'failed twice'}`);
     const derivation = report.ruleCoverage.derivation;
     report.ruleCoverage = {
       ...computeRuleCoverage({
@@ -246,7 +330,12 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
 
   const agentRoot = opts.agentRoot ?? findAgentRoot();
   const t0 = Date.now();
-  log(`Emitted-spec check: running the written framework once with Playwright (chromium, one worker) against ${report.url}`);
+  // The run's recorded happy-login credentials, for the child env only.
+  const login = findHappyLoginScenario(report);
+  const creds: AuthCredentials | null = opts.credentials === undefined ? (login ? recordedCredentials(login) : null) : opts.credentials;
+  const childEnv = credentialEnv(creds);
+  const credsPassed = Object.keys(childEnv).length > 0;
+  log(`Emitted-spec check: running the written framework once with Playwright (chromium, one worker) against ${report.url}${credsPassed ? ` with the recorded login credentials in the child environment (${AUTH_ENV_USER} / ${AUTH_ENV_PASS}, in memory only)` : ' with no login credentials (the run recorded no happy login)'}`);
 
   if (opts.probe !== false) {
     const probeErr = await probeUrl(report.url);
@@ -259,7 +348,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
 
   const unlink = linkNodeModules(frameworkDir, agentRoot);
   try {
-    const first = await runPlaywright(frameworkDir, agentRoot, null, timeoutMs);
+    const first = await runPlaywright(frameworkDir, agentRoot, null, timeoutMs, childEnv, opts.observeChildEnv);
     if (first.killed) {
       const reason = `timed out after ${Math.round(timeoutMs / 1000)}s; the framework is kept as generated`;
       log(`WARNING: Emitted-spec check inconclusive: ${reason}`);
@@ -287,7 +376,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     if (failedFirst.length > 0) {
       const left = timeoutMs - (Date.now() - t0);
       log(`Emitted-spec check: ${failedFirst.length} test(s) failed on the first run; retrying once: ${failedFirst.map((t) => `"${t.name}"`).join(', ')}`);
-      const second = await runPlaywright(frameworkDir, agentRoot, failedFirst.map((t) => t.name), Math.max(15_000, left));
+      const second = await runPlaywright(frameworkDir, agentRoot, failedFirst.map((t) => t.name), Math.max(15_000, left), childEnv, opts.observeChildEnv);
       if (second.killed) {
         const reason = `the retry timed out after ${Math.round(timeoutMs / 1000)}s in total; the framework is kept as generated`;
         log(`WARNING: Emitted-spec check inconclusive: ${reason}`);
@@ -305,32 +394,52 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     const durationMs = Date.now() - t0;
     const failedTwice = tests.filter((t) => t.status === 'failed');
     const byTitle = new Map(report.scenarios.map((s) => [testTitleFor(s), s]));
+    const byName = new Map(report.scenarios.map((s) => [s.name, s]));
     const dropped: Array<{ scenario: string; error: string }> = [];
+    // Scenarios to remove from the report: a failed scenario test, or the
+    // member scenario behind a failed data case (its test IS that case).
+    const removeScenarios = new Set<string>();
+    // Dataset cases to remove from data/<feature>.json after the re-scaffold.
+    const removedCases = new Map<string, Set<string>>();
     const unmapped: EmittedTest[] = [];
     for (const t of failedTwice) {
+      const error = annotateLoginError(t, frameworkDir, credsPassed);
       const s = byTitle.get(t.name);
-      if (s) dropped.push({ scenario: s.name, error: t.error ?? 'failed' });
-      else unmapped.push(t);
+      if (s) { dropped.push({ scenario: s.name, error }); removeScenarios.add(s.name); continue; }
+      const data = parseDataTestTitle(t.name);
+      if (data) {
+        // Recorded under "<feature>: <case name>". A member case's scenario
+        // leaves the report too (its only test was this case); a rule-derived
+        // case has no scenario and leaves only the data file.
+        dropped.push({ scenario: `${data.feature}: ${data.caseName}`, error });
+        removedCases.set(data.feature, (removedCases.get(data.feature) ?? new Set()).add(data.caseName));
+        const member = byName.get(data.caseName) ?? byName.get(data.caseName.replace(/^boundary: /, ''));
+        if (member) removeScenarios.add(member.name);
+        continue;
+      }
+      unmapped.push(t);
     }
     const passed = tests.filter((t) => t.status === 'passed').length;
     log(`Emitted-spec check: ${passed} of ${tests.length} test(s) passed in ${(durationMs / 1000).toFixed(1)}s${failedTwice.length ? `; ${failedTwice.length} failed twice` : ''}`);
     for (const t of unmapped) {
-      log(`WARNING: Emitted-spec check: "${t.name}" failed twice but is not a scenario test (${/a11y/.test(t.file ?? '') ? 'the a11y check' : 'a data-driven or setup test'}); it stays in the framework: ${t.error?.split('\n')[0] ?? ''}`);
+      log(`WARNING: Emitted-spec check: "${t.name}" failed twice but is not a scenario test (${/a11y/.test(t.file ?? '') ? 'the a11y check' : 'a setup test'}); it stays in the framework: ${t.error?.split('\n')[0] ?? ''}`);
     }
     withEmittedRun(report, { tests, durationMs });
     if (dropped.length === 0) return { report, dropped: [] };
 
     // Drop the scenarios whose tests failed twice, rebuild the accounting the
     // same way the runtime did, and re-scaffold so the zip has no failing test.
-    const droppedNames = new Set(dropped.map((d) => d.scenario));
     report.emittedFailed = [...(report.emittedFailed ?? []), ...dropped];
-    report.scenarios = report.scenarios.filter((s) => !droppedNames.has(s.name));
+    report.scenarios = report.scenarios.filter((s) => !removeScenarios.has(s.name));
     for (const d of dropped) log(`Dropped from the framework (emitted-spec check failed twice): "${d.scenario}": ${d.error.split('\n')[0] ?? ''}`);
-    rebuildAccounting(report, opts.requirements, log);
+    rebuildAccounting(report, opts.requirements, log, removeScenarios, dropped);
     unlink();
     cleanRunFiles(frameworkDir);
     fs.rmSync(frameworkDir, { recursive: true, force: true });
     opts.rescaffold(report);
+    // The re-scaffold regenerates the data files from the report; the failed
+    // cases (rule-derived ones included) come out again.
+    pruneDatasetCases(frameworkDir, removedCases);
     return { report, dropped };
   } finally {
     unlink();
