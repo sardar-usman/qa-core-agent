@@ -9,7 +9,8 @@ import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } f
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
-import { deleteCheckpoint, loadCheckpoint, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
+import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
+import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import type { PlannedScenario } from '../agent/planner.js';
 import {
   applyCheckpointFlags, buildExploreOptions, outDirForRequest, parseExploreArgv, resumeConflicts, slugUrl,
@@ -103,7 +104,7 @@ function runFlags(req: ExploreRequest): Record<string, unknown> {
   return {
     lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
     resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
-    stability: req.stability, stabilityIterations: req.stabilityIterations, env: req.env,
+    stability: req.stability, stabilityIterations: req.stabilityIterations, emittedCheck: req.emittedCheck, env: req.env,
   };
 }
 
@@ -394,13 +395,23 @@ async function main(): Promise<void> {
     const zipRootName = args.name ? `${args.name}-automation-framework` : frameworkDirName(url);
     const emitTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-emit-'));
     const frameworkDir = path.join(emitTmp, zipRootName);
-    const scaffoldResult = scaffold({
+    const scaffoldOpts = { outDir: frameworkDir, siteName: hostnameOf(url), features: args.features, ...(requirements ? { requirements } : {}) };
+    let scaffoldResult = scaffold({ report: result, ...scaffoldOpts });
+    // Emitted-spec check: the written framework runs once with Playwright
+    // against the live site before the zip. A test that fails twice is
+    // dropped and named (emitted_failed); the report files are rewritten
+    // and the checkpoint reaches its last phase boundary. A stopped run
+    // does not run the stage.
+    await emittedCheckStage({
       report: result,
-      outDir: frameworkDir,
-      siteName: hostnameOf(url),
-      features: args.features,
+      frameworkDir,
       ...(requirements ? { requirements } : {}),
+      skip: !args.emittedCheck,
+      rescaffold: (r) => { scaffoldResult = scaffold({ report: r, ...scaffoldOpts }); },
+      log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); },
     });
+    writeReportFiles(outDir, result);
+    if (!result.stopped) markCheckpointPhase(outDir, 'emitted');
     const cpFile = path.join(outDir, 'checkpoint.json');
     primaryPath = path.join(outDir, path.relative(frameworkDir, scaffoldResult.pomResult.specFile));
     scenarios = scaffoldResult.pomResult.scenarios;

@@ -289,6 +289,30 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
   check('AE. a rework the pass re-recorded and the critic reworked again keeps the plain critic drop', rn.dropped.find((d) => d.name === 'D')?.reason === 'critic rework: weak', JSON.stringify(rn.dropped));
 }
 
+/* ─── 7. emitted_failed: the written framework failed the test twice ──────── */
+// Run 51d535 shipped 3 of 6 failing tests after every stage passed them. The
+// emitted-spec check drops such a scenario into its own bucket with the
+// Playwright error, and the identity gains the term.
+{
+  const emitted: RunReport = {
+    ...clean,
+    scenarios: [scn('A')],
+    plan: [{ name: 'A', category: 'happy', rationale: '' }, { name: 'B', category: 'happy', rationale: '' }],
+    stability: undefined,
+    emittedFailed: [{ scenario: 'B', error: 'expect(locator).toHaveText(expected) failed\nExpected string: "Nope"' }],
+  };
+  const re = reconcile(emitted);
+  check('AF. emitted_failed balances planned 2 = generated 1 + emitted_failed 1', re.balanced && re.planned === 2 && re.generated === 1 && re.emitted_failed?.length === 1 && re.accountedFor === 2 && re.added === 0, JSON.stringify(re));
+  check('AG. the bucket carries the scenario name and the Playwright error', re.emitted_failed?.[0]?.name === 'B' && /toHaveText/.test(re.emitted_failed?.[0]?.reason ?? ''));
+  const rendered = renderReconciliation(re).join('\n');
+  check('AH. the renderer states the term and names the drop', /planned 2 = generated 1 \+ dropped 0 \+ emitted_failed 1 \[OK\]/.test(rendered) && /emitted_failed \(the written framework failed the test twice/.test(rendered) && /"B" — expect\(locator\)/.test(rendered), rendered);
+  check('AI. a run without the stage keeps the bare line (no emitted term)', !/emitted_failed/.test(renderReconciliation(reconcile(clean)).join('\n')) && (reconcile(clean).emitted_failed ?? []).length === 0);
+  const both: RunReport = { ...emitted, findings: [{ scenario: 'B', category: 'happy', expected: 'x', url: 'u', messages: [] }] };
+  const warned: string[] = [];
+  const rb = reconcile(both, { onDuplicate: (m) => warned.push(m) });
+  check('AJ. a name recorded as both a finding and emitted_failed is counted once, in the earlier bucket', rb.findings.length === 1 && (rb.emitted_failed ?? []).length === 0 && warned.length === 1 && rb.balanced, JSON.stringify({ warned, accountedFor: rb.accountedFor }));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: reconciliation balances planned = generated + dropped, names every drop, excludes recovered from stable, counts give-ups as broken.');
+console.log('OK: reconciliation balances planned = generated + dropped + incomplete + findings + skipped + emitted_failed, names every drop, excludes recovered from stable, counts give-ups as broken.');

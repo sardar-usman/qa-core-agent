@@ -8,7 +8,13 @@ import { scenarioNameKey } from './rule-coverage.js';
  * emitted spec), dropped, incomplete, or a finding, each with a named reason.
  * Nothing vanishes silently.
  *
- *   planned === generated + dropped + incomplete + findings
+ *   planned === generated + dropped + incomplete + findings + skipped + emitted_failed
+ *
+ * "emitted_failed" is a scenario whose emitted test failed twice when the
+ * written framework was run with Playwright (the emitted-spec check, the last
+ * stage before the zip). It is dropped from the framework and named with the
+ * Playwright error, so a framework that would fail on a clean install never
+ * ships green (run 51d535).
  *
  * "incomplete" is a scenario the Explorer began but never finalized — usually
  * because the step budget ran out mid-scenario. It is neither shipped nor
@@ -67,7 +73,14 @@ export interface Reconciliation {
   findings: FindingScenario[];
   /** Planned scenarios the Explorer explicitly skipped via skip_scenario, with reasons. */
   skipped: Array<{ name: string; reason: string }>;
-  /** generated + dropped.length + incomplete.length + findings.length + skipped.length. */
+  /**
+   * Scenarios whose emitted test failed twice in the emitted-spec check and
+   * were dropped from the framework, each with the Playwright error text.
+   * Absent on a report written before the stage existed; the renderer and
+   * the dashboard treat a missing bucket as empty.
+   */
+  emitted_failed?: Array<{ name: string; reason: string }>;
+  /** generated + dropped.length + incomplete.length + findings.length + skipped.length + emitted_failed.length. */
   accountedFor: number;
   /**
    * Scenarios the Explorer produced beyond the plan (accountedFor - planned,
@@ -233,8 +246,15 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   findings.length = 0;
   findings.push(...findingsOnce);
   const skipped = skippedAll.filter((s) => claim('skipped', s.name));
+  // 8. Emitted-spec check: the written framework was run once with Playwright
+  // and the test failed twice, so the scenario was dropped from the framework
+  // after every earlier stage had passed it (run 51d535: 3 of 6 on a clean
+  // install). Its own term, with the Playwright error as the reason.
+  const emittedFailed = (report.emittedFailed ?? [])
+    .map((e) => ({ name: e.scenario, reason: e.error }))
+    .filter((e) => claim('emitted_failed', e.name));
 
-  const accountedFor = generated + dropped.length + incomplete.length + findings.length + skipped.length;
+  const accountedFor = generated + dropped.length + incomplete.length + findings.length + skipped.length + emittedFailed.length;
   const planned = report.plan?.length ?? accountedFor;
   const noPlan = report.plan == null;
   const added = Math.max(0, accountedFor - planned);
@@ -255,7 +275,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
     note = `Explorer accounted for ${accountedFor} scenario(s) vs ${planned} planned (${shortfall} fewer). ${shortfall} planned scenario(s) vanished without a drop or incomplete reason.`;
   }
 
-  return { planned, generated, dropped, incomplete, findings, skipped, accountedFor, added, balanced, stable, recovered, flaky, broken, noPlan, note };
+  return { planned, generated, dropped, incomplete, findings, skipped, emitted_failed: emittedFailed, accountedFor, added, balanced, stable, recovered, flaky, broken, noPlan, note };
 }
 
 /** Which stage of the pipeline left a zero-scenario run empty. */
@@ -331,11 +351,13 @@ export function renderReconciliation(rec: Reconciliation): string[] {
   const incompleteTerm = rec.incomplete.length > 0 ? ` + incomplete ${rec.incomplete.length}` : '';
   const findingsTerm = rec.findings.length > 0 ? ` + findings ${rec.findings.length}` : '';
   const skippedTerm = rec.skipped.length > 0 ? ` + skipped ${rec.skipped.length}` : '';
+  const emittedFailed = rec.emitted_failed ?? [];
+  const emittedTerm = emittedFailed.length > 0 ? ` + emitted_failed ${emittedFailed.length}` : '';
   // When the Explorer added scenarios beyond the plan, annotate the planned term
   // so the surplus is visible and the [OK] mark is not surprising.
   const plannedTerm = rec.added > 0 ? `planned ${rec.planned} (+${rec.added} added)` : `planned ${rec.planned}`;
   lines.push(
-    `Reconciliation: ${plannedTerm} = generated ${rec.generated} + dropped ${rec.dropped.length}${incompleteTerm}${findingsTerm}${skippedTerm} [${balanceMark}]`,
+    `Reconciliation: ${plannedTerm} = generated ${rec.generated} + dropped ${rec.dropped.length}${incompleteTerm}${findingsTerm}${skippedTerm}${emittedTerm} [${balanceMark}]`,
   );
   lines.push(
     `  stable ${rec.stable} · recovered ${rec.recovered} · flaky ${rec.flaky} · broken ${rec.broken}` +
@@ -364,6 +386,12 @@ export function renderReconciliation(rec: Reconciliation): string[] {
     lines.push('  skipped (declined by the Explorer, with reason):');
     for (const s of rec.skipped) {
       lines.push(`    • "${s.name}" — ${s.reason}`);
+    }
+  }
+  if (emittedFailed.length > 0) {
+    lines.push('  emitted_failed (the written framework failed the test twice; dropped from the framework):');
+    for (const e of emittedFailed) {
+      lines.push(`    • "${e.name}" — ${e.reason}`);
     }
   }
   if (rec.note) lines.push(`  note: ${rec.note}`);

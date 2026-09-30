@@ -147,7 +147,9 @@ export interface RunDetailStages {
     status: StageStatus; stat: string;
     shipped: number; total_usd: number;
     findings_count: number; uncovered_count: number; attention: number;
-    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; balanced: boolean; added: number } | null;
+    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; emitted_failed: number; balanced: boolean; added: number } | null;
+    /** report.emittedRun: the written framework run once with Playwright before the zip. null on a report from before the stage existed. */
+    emitted_check: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
     cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; total: number };
     rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
     zip: RunDetailArtifact | null;
@@ -462,7 +464,15 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
     stat: `${shipped.length} shipped`,
     shipped: shipped.length, total_usd: totalUsd,
     findings_count: findingsCount, uncovered_count: uncoveredCount, attention: findingsCount + uncoveredCount,
-    funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, skipped: (rec.skipped ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
+    funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, skipped: (rec.skipped ?? []).length, emitted_failed: (rec.emitted_failed ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
+    emitted_check: report.emittedRun
+      ? {
+        inconclusive: report.emittedRun.inconclusive === true, reason: report.emittedRun.reason ?? null,
+        passed: report.emittedRun.tests.filter((t) => t.status === 'passed').length, failed: report.emittedRun.tests.filter((t) => t.status === 'failed').length, total: report.emittedRun.tests.length,
+        duration_ms: report.emittedRun.durationMs,
+        tests: report.emittedRun.tests.map((t) => ({ name: t.name, status: t.status, error: t.error ?? null })),
+      }
+      : null,
     cost_split: { planner: usd(cost.plannerUsd), explorer: usd(cost.usd) - usd(cost.repairUsd), critic: usd(cost.criticUsd), repair: usd(cost.repairUsd), stabilizer, total: totalUsd },
     rule_coverage: rc ? { covered: (rc.covered ?? []).map((c) => ({ rule_id: c.ruleId, scenarios: c.scenarios ?? [] })), uncovered: (rc.uncovered ?? []).map((u) => ({ rule_id: u.ruleId, text: u.text, reason: u.reason })) } : null,
     zip: artifacts.find((a) => a.kind === 'zip') ?? null,

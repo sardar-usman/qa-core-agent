@@ -8,7 +8,8 @@ import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
 import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
-import { deleteCheckpoint, loadCheckpoint, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
+import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
+import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import {
   applyCheckpointFlags, buildExploreOptions, outDirForRequest, resumeConflicts,
   type ExploreRequest,
@@ -136,7 +137,7 @@ function hostnameOf(url: string): string {
 function runFlags(req: ExploreRequest): Record<string, unknown> {
   return {
     lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
-    resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
+    resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, emittedCheck: req.emittedCheck, replay: req.replay,
     stability: req.stability, stabilityIterations: req.stabilityIterations, env: req.env,
   };
 }
@@ -325,7 +326,7 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       };
     }
 
-    const summary = summarize(report);
+    let summary = summarize(report);
     if (req.pom) {
       // The framework is scaffolded in a temporary directory named by the
       // framework and zipped from there, so the run directory's own files
@@ -339,10 +340,20 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       let zipBuf: Buffer;
       try {
         const frameworkDir = path.join(tmp, zipRootName);
-        scaffoldResult = scaffold({
-          report, outDir: frameworkDir, siteName: hostnameOf(url), features: req.features,
+        const scaffoldOpts = { outDir: frameworkDir, siteName: hostnameOf(url), features: req.features, ...(prepared.requirements ? { requirements: prepared.requirements } : {}) };
+        scaffoldResult = scaffold({ report, ...scaffoldOpts });
+        // Emitted-spec check before the zip: the same stage the CLI runs.
+        await emittedCheckStage({
+          report,
+          frameworkDir,
           ...(prepared.requirements ? { requirements: prepared.requirements } : {}),
+          skip: !req.emittedCheck,
+          rescaffold: (r) => { scaffoldResult = scaffold({ report: r, ...scaffoldOpts }); },
+          log: (line) => { const e: AgentEvent = { type: 'message', text: line }; appendRunEvent(outDir, e); input.onEvent?.(e); },
         });
+        writeReportFiles(outDir, report);
+        if (!report.stopped) markCheckpointPhase(outDir, 'emitted');
+        summary = summarize(report);
         zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
       } finally {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }

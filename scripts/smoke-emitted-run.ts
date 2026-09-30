@@ -59,6 +59,7 @@ const indexHtml = `<!doctype html>
   </div>
   <button type="button" id="sort">Sort by price high to low</button>
   <button type="button" id="tok-1">Regenerate</button>
+  <a href="/register.html" id="create-account">Create account</a>
   <iframe id="frame1" title="Sample frame" src="/frame.html"></iframe>
 </main>
 <script>
@@ -152,6 +153,12 @@ const frameHeading: SelectorRecord = { level: 'css', arg: '#sampleHeading', inte
 const emailInput: SelectorRecord = { level: 'label', arg: 'Email', intent: 'email input' };
 const passwordInput: SelectorRecord = { level: 'label', arg: 'Password', intent: 'password input' };
 const registerButton: SelectorRecord = { level: 'role', arg: { role: 'button', name: 'Register' }, intent: 'register button' };
+const createAccountLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Create account' }, intent: 'create account link' };
+// Two intent-less assertions on DIFFERENT locators in one feature: the tool
+// used to default the intent to "element" (run 51d535), and a field keyed by
+// intent merged them into one locator. Each must land in its own field.
+const headingNoIntent: SelectorRecord = { level: 'css', arg: 'h1', intent: 'element' };
+const sendNoIntent: SelectorRecord = { level: 'css', arg: '#send', intent: 'element' };
 
 function scenarios(): Scenario[] {
   return [
@@ -185,6 +192,8 @@ function scenarios(): Scenario[] {
     ] },
     { name: 'contact form thanks the sender by name', category: 'happy', feature: 'contact', steps: [
       { kind: 'navigate', url: `${base}/` },
+      { kind: 'assert', name: 'h', assertion: { type: 'toHaveText', target: headingNoIntent, text: 'Hand Tools', timeout: 5000 } },
+      { kind: 'assert', name: 's', assertion: { type: 'toBeVisible', target: sendNoIntent, timeout: 5000 } },
       { kind: 'fill', target: nameInput, value: 'Jane' },
       { kind: 'select_option', target: subjectSelect, by: 'value', option: 'warranty' },
       { kind: 'set_checked', target: ecoBox, checked: true },
@@ -203,6 +212,16 @@ function scenarios(): Scenario[] {
       { kind: 'fill', target: passwordInput, value: 'Fixture-Pass-1', generate: 'password' },
       { kind: 'click', target: registerButton },
       { kind: 'assert', name: 'w', assertion: { type: 'toContainText', target: alertBox, text: 'Welcome', timeout: 5000 } },
+    ] },
+    // The registration feature now spans two first URLs (the form page and
+    // the landing page), so the feature has no shared beforeEach goto and
+    // each test opens its own recorded first URL (run 51d535: account spanned
+    // /auth/register and /auth/login under one class url).
+    { name: 'the create account link on the landing page opens the registration form', category: 'happy', feature: 'registration', steps: [
+      { kind: 'navigate', url: `${base}/` },
+      { kind: 'click', target: createAccountLink },
+      { kind: 'assert', name: 'u2', assertion: { type: 'toHaveURL', pattern: 'register', timeout: 5000 } },
+      { kind: 'assert', name: 'e', assertion: { type: 'toBeVisible', target: emailInput, timeout: 5000 } },
     ] },
   ];
 }
@@ -267,6 +286,20 @@ for (const language of ['ts', 'js'] as const) {
     scaffold({ report, outDir, siteName: 'toolshop-fixture' });
     const catalogueSpec = fs.readFileSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`), 'utf8');
     check(`${language}: the emitted toHaveURL carries the recorded timeout`, /toHaveURL\(new RegExp\("detail"\), \{ timeout: 15000 \}\)/.test(catalogueSpec), catalogueSpec.split('\n').filter((l) => /toHaveURL/.test(l)).join(' | '));
+    // Field identity: the two intent-less assertions on different locators
+    // land in two fields named from the locators, and no field is "element".
+    const contactPage = fs.readFileSync(path.join(outDir, `pages/contact-page.${language}`), 'utf8');
+    const fieldDecl = (name: string): boolean => language === 'ts' ? contactPage.includes(`readonly ${name}: Locator;`) : contactPage.includes(`this.${name} = `);
+    check(`${language}: two intent-less locators land in two fields (h1 and send), never one "element" field`, fieldDecl('h1') && fieldDecl('send') && !fieldDecl('element') && contactPage.includes('page.locator("h1")') && contactPage.includes('page.locator("#send")'), contactPage);
+    const contactSpec = fs.readFileSync(path.join(outDir, `tests/contact/contact.spec.${language}`), 'utf8');
+    check(`${language}: the contact spec asserts each through its own field`, /expect\(contactPage\.h1\)\.toHaveText\("Hand Tools"/.test(contactSpec) && /expect\(contactPage\.send\)\.toBeVisible/.test(contactSpec), contactSpec);
+    // Multi-page feature: no beforeEach goto, one goto per test.
+    const registrationSpec = fs.readFileSync(path.join(outDir, `tests/registration/registration.spec.${language}`), 'utf8');
+    const beforeEach = registrationSpec.slice(registrationSpec.indexOf('test.beforeEach'), registrationSpec.indexOf('test("'));
+    const gotos = (registrationSpec.match(/await page\.goto\(/g) ?? []).length;
+    check(`${language}: a feature whose scenarios start on two URLs emits no beforeEach goto and a page.goto per test`, !/\.goto\(\)/.test(beforeEach) && /start on different pages/.test(beforeEach) && gotos === 2, `beforeEach=${beforeEach.trim()} gotos=${gotos}`);
+    const contactBeforeEach = contactSpec.slice(contactSpec.indexOf('test.beforeEach'), contactSpec.indexOf('test("'));
+    check(`${language}: a feature whose scenarios share one first URL keeps the beforeEach goto`, /contactPage\.goto\(\)/.test(contactBeforeEach), contactBeforeEach);
     check(`${language}: scaffold wrote the config, a spec per feature and the a11y spec`,
       fs.existsSync(path.join(outDir, `playwright.config.${language}`))
       && fs.existsSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`))

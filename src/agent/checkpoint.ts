@@ -29,7 +29,22 @@ import { scenarioNameKey } from './rule-coverage.js';
 export const CHECKPOINT_VERSION = 1;
 export const CHECKPOINT_FILENAME = 'checkpoint.json';
 
-export type CheckpointPhase = 'discovery' | 'planning' | 'exploring' | 'explored' | 'reviewing';
+export type CheckpointPhase = 'discovery' | 'planning' | 'exploring' | 'explored' | 'reviewing' | 'emitted';
+
+/**
+ * Phase boundary after the emitted-spec check: rewrite the checkpoint with
+ * the phase, keeping everything else. A stopped run never reaches the stage
+ * (its checkpoint stays at its own phase for --resume); a complete run
+ * writes this boundary and the caller then deletes the checkpoint as before.
+ * No-op when no checkpoint exists.
+ */
+export function markCheckpointPhase(outDir: string, phase: CheckpointPhase): void {
+  const file = checkpointPath(outDir);
+  if (!fs.existsSync(file)) return;
+  let cp: Checkpoint;
+  try { cp = JSON.parse(fs.readFileSync(file, 'utf8')) as Checkpoint; } catch { return; }
+  writeCheckpoint(outDir, { ...cp, phase, updatedAt: new Date().toISOString() });
+}
 
 export interface CheckpointSpend {
   planner: number;

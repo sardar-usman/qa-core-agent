@@ -294,14 +294,29 @@ interface PageGroup {
   pageFileBase: string;
   /** Folder name under tests/, equals the feature slug: "login". */
   specFolder: string;
+  /** The most common first-navigate URL among the feature's scenarios. */
   url: string;
+  /**
+   * True when every scenario in the feature begins at `url`: the class goto
+   * is then the beforeEach. False when the feature spans pages (run 51d535:
+   * account spanned /auth/register and /auth/login under one class url, so
+   * the login test started on the registration page); each test then opens
+   * its own recorded first URL and the beforeEach emits no goto.
+   */
+  sharedGoto: boolean;
   /** Scenarios whose actions occur primarily on this page. */
   scenarios: Scenario[];
 }
 
 interface SelectorUsage {
-  /** Original intent (e.g. "username input"). Stable identity for a locator. */
-  intent: string;
+  /**
+   * The locator's identity: the emitted locator call (frame chain included,
+   * no .first() wrapper). Two different locators never share a field; the
+   * same locator under different intents gets one field.
+   */
+  identity: string;
+  /** Every intent this locator was recorded under, first seen first. */
+  intents: string[];
   level: CascadeLevel;
   arg: SelectorRecord['arg'];
   /** iframe-selector chain the element lives behind (outer→inner), if any. */
@@ -321,6 +336,8 @@ interface SelectorUsage {
 interface PageClassPlan {
   className: string;
   url: string;
+  /** Mirrored from PageGroup: the beforeEach calls goto only when true. */
+  sharedGoto: boolean;
   /** Lowercase kebab-case feature slug, mirrored from PageGroup. */
   feature: string;
   /** Filename stem for the page-object file (without extension). */
@@ -329,8 +346,8 @@ interface PageClassPlan {
   specFolder: string;
   /** Locators promoted to class fields. */
   fields: Array<{ name: string; record: SelectorRecord }>;
-  /** Map from a locator's intent to its field name on the class. */
-  intentToField: Map<string, string>;
+  /** Map from a locator's identity (locatorIdentity) to its field name on the class. */
+  fieldByIdentity: Map<string, string>;
   /** Synthesized action methods (e.g. loginAs(user, pass)). */
   methods: ActionMethod[];
   /** Scenarios that belong on this page. */
@@ -373,8 +390,20 @@ function groupScenariosByFeature(report: RunReport): PageGroup[] {
       pageFileBase: `${feature}-page`,
       specFolder: feature,
       url,
+      sharedGoto: true,
       scenarios: [scenario],
     });
+  }
+  // The class url is the most common first URL (ties keep plan order), and
+  // the beforeEach goto is shared only when every scenario starts there.
+  for (const g of groups.values()) {
+    const firsts = g.scenarios.map((s) => pickPageUrl(s, report.url));
+    const counts = new Map<string, number>();
+    for (const u of firsts) counts.set(u, (counts.get(u) ?? 0) + 1);
+    let best = firsts[0]!;
+    for (const [u, n] of counts) if (n > (counts.get(best) ?? 0)) best = u;
+    g.url = best;
+    g.sharedGoto = firsts.every((u) => u === best);
   }
   return [...groups.values()];
 }
@@ -452,61 +481,183 @@ function pageClassName(url: string): string {
 /* ───────────────────────── Selector + action analysis ───────────────────────── */
 
 function buildPageClass(group: PageGroup, _lang: 'ts' | 'js'): PageClassPlan {
-  // Collect selector usage across all scenarios for this page.
-  // Dedup is case- and noise-word-insensitive: "Username", "username",
-  // "username input", and "the Username field" all collapse to one locator.
+  // Collect selector usage across all scenarios for this page, keyed by the
+  // LOCATOR'S IDENTITY (the emitted call plus frame chain), never by intent.
+  // Run 51d535 keyed fields by intent: the model called assert() without
+  // one, the tool defaulted it to "element", and every intent-less assertion
+  // in a feature collapsed into one field, so a price assertion ran against
+  // the page title and a "Thanks" assertion against the error locator.
   const usage = new Map<string, SelectorUsage>();
   for (const scenario of group.scenarios) {
     for (const step of scenario.steps) {
       const target = stepTarget(step);
       if (!target) continue;
-      const key = canonicalIntent(target.intent);
+      const key = locatorIdentity(target);
       const cur = usage.get(key);
       if (cur) {
         cur.uses += 1;
-        // Ambiguity is sticky across occurrences: if the intent EVER resolved
+        if (!cur.intents.includes(target.intent)) cur.intents.push(target.intent);
+        // Ambiguity is sticky across occurrences: if the locator EVER resolved
         // to several elements, the shared field needs .first().
         cur.ambiguous = cur.ambiguous || target.ambiguous === true;
-        // Keep the first recorded filter hint (occurrences of one canonical
-        // intent resolve the same way, so a later differing hint is unexpected;
-        // first-wins keeps the field deterministic).
-        if (!cur.filterText && target.filterText) cur.filterText = target.filterText;
       } else {
-        usage.set(key, { intent: target.intent, level: target.level, arg: target.arg, frameChain: target.frameChain, ambiguous: target.ambiguous === true, filterText: target.filterText, uses: 1 });
+        usage.set(key, { identity: key, intents: [target.intent], level: target.level, arg: target.arg, frameChain: target.frameChain, ambiguous: target.ambiguous === true, filterText: target.filterText, uses: 1 });
       }
     }
   }
 
-  // Promote any locator used 2+ times to a class field.
-  // Locators used exactly once are still promoted so the spec stays clean;
-  // the marginal cost is one field declaration.
+  // Every locator becomes a class field, named by its unique intent when it
+  // has one, else by the locator itself (nameFields).
   const fields: PageClassPlan['fields'] = [];
-  const intentToField = new Map<string, string>();
+  const fieldByIdentity = nameFields([...usage.values()]);
   for (const u of usage.values()) {
-    const name = fieldName(u.intent, intentToField);
     fields.push({
-      name,
-      record: { level: u.level, arg: u.arg, intent: u.intent, frameChain: u.frameChain, ambiguous: u.ambiguous || undefined, filterText: u.filterText },
+      name: fieldByIdentity.get(u.identity)!,
+      record: { level: u.level, arg: u.arg, intent: u.intents[0]!, frameChain: u.frameChain, ambiguous: u.ambiguous || undefined, filterText: u.filterText },
     });
-    intentToField.set(canonicalIntent(u.intent), name);
   }
   // Sort fields by name for stable output.
   fields.sort((a, b) => a.name.localeCompare(b.name));
 
-  // Synthesize action methods from common step sequences.
-  const methods = synthesizeMethods(group.scenarios, intentToField);
-
-  return {
+  const plan: PageClassPlan = {
     className: group.className,
     url: group.url,
+    sharedGoto: group.sharedGoto,
     feature: group.feature,
     pageFileBase: group.pageFileBase,
     specFolder: group.specFolder,
     fields,
-    intentToField,
-    methods,
+    fieldByIdentity,
+    methods: [],
     scenarios: group.scenarios,
   };
+  // Synthesize action methods from common step sequences.
+  plan.methods = synthesizeMethods(group.scenarios, plan);
+  return plan;
+}
+
+/**
+ * The identity of a locator for page-object fields: the emitted locator
+ * call, frame chain included, without the .first() ambiguity wrapper (which
+ * is sticky per field, not part of identity). Exported for the smoke.
+ */
+export function locatorIdentity(r: SelectorRecord): string {
+  return emitLocatorCall(r.level, r.arg, false, r.frameChain, r.filterText);
+}
+
+/** The class field a step target is emitted through, if the locator was promoted. */
+function fieldFor(pc: PageClassPlan, r: SelectorRecord): string | undefined {
+  return pc.fieldByIdentity.get(locatorIdentity(r));
+}
+
+/** Intents the tools used to default to; never a field name. */
+const PLACEHOLDER_INTENTS = new Set(['element', 'elements', 'target', 're-read element', 'unnamed target']);
+
+/** Names a field can never take: class members of the page object and JS reserved words. */
+const RESERVED_FIELD_NAMES = new Set([
+  'url', 'page', 'goto', 'expectVisible', 'constructor', 'prototype',
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends',
+  'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'null', 'return', 'static', 'super', 'switch',
+  'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'await', 'implements', 'interface', 'package',
+  'private', 'protected', 'public', 'arguments', 'eval',
+]);
+
+/**
+ * Name every field. The name comes from the intent when the intent is not a
+ * placeholder and names exactly one locator on the page; otherwise from the
+ * locator itself (testid or id words, then role and name, then a short css
+ * slug); collisions get a numeric suffix as the last resort. Every name is a
+ * valid identifier and never a class member or reserved word. Exported for
+ * the smoke.
+ */
+export function nameFields(usages: SelectorUsage[]): Map<string, string> {
+  const owners = new Map<string, Set<string>>();
+  for (const u of usages) {
+    for (const intent of u.intents) {
+      const ci = canonicalIntent(intent);
+      owners.set(ci, (owners.get(ci) ?? new Set()).add(u.identity));
+    }
+  }
+  const taken = new Set<string>();
+  const out = new Map<string, string>();
+  for (const u of usages) {
+    let base: string | null = null;
+    for (const intent of u.intents) {
+      const ci = canonicalIntent(intent);
+      if (PLACEHOLDER_INTENTS.has(ci)) continue;
+      if ((owners.get(ci)?.size ?? 0) !== 1) continue;
+      base = identifierFromIntent(intent);
+      break;
+    }
+    if (!base) base = nameFromLocator(u);
+    let name = base;
+    if (taken.has(name)) {
+      let n = 2;
+      while (taken.has(name + n)) n++;
+      name = name + n;
+    }
+    taken.add(name);
+    out.set(u.identity, name);
+  }
+  return out;
+}
+
+/** camelCase identifier from words; never empty, never a reserved name, never starting with a digit. */
+function identifierFromWords(words: string[]): string {
+  const clean = words.map((w) => w.toLowerCase().replace(/[^a-z0-9]+/g, '')).filter((w) => w.length > 0);
+  let name = clean.map((w, i) => (i === 0 ? w : w[0]!.toUpperCase() + w.slice(1))).join('');
+  if (!name) name = 'locator';
+  if (/^[0-9]/.test(name)) name = '_' + name;
+  if (RESERVED_FIELD_NAMES.has(name)) name = name + 'Locator';
+  return name;
+}
+
+function identifierFromIntent(intent: string): string {
+  // username input -> username; login button -> loginButton; error message -> errorMessage
+  const words = intent.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const noise = new Set(['input', 'field', 'control']);
+  const meaningful = words.filter((w, i) => !(i === words.length - 1 && noise.has(w)));
+  return identifierFromWords(meaningful.length > 0 ? meaningful : words);
+}
+
+function wordsOf(s: string, max = 4): string[] {
+  return s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean).slice(0, max);
+}
+
+/** A field name from the locator itself, for a locator with no unique non-placeholder intent. */
+function nameFromLocator(u: SelectorUsage): string {
+  const arg = u.arg;
+  const argText = typeof arg === 'string' ? arg : `${(arg as { name?: string }).name ?? ''} ${(arg as { role: string }).role}`;
+  switch (u.level) {
+    case 'testid':
+      return identifierFromWords(wordsOf(argText));
+    case 'role': {
+      const role = (arg as { role: string; name?: string }).role;
+      const name = (arg as { role: string; name?: string }).name ?? '';
+      return identifierFromWords([...wordsOf(name), role]);
+    }
+    case 'label':
+    case 'placeholder':
+      return identifierFromWords(wordsOf(argText));
+    case 'text':
+      return identifierFromWords([...wordsOf(argText), 'text']);
+    case 'alt':
+      return identifierFromWords([...wordsOf(argText), 'image']);
+    case 'title':
+      return identifierFromWords([...wordsOf(argText), 'title']);
+    case 'xpath':
+      return identifierFromWords(['xpath', ...wordsOf(argText, 3)]);
+    case 'css':
+    default: {
+      // testid or id words first, then a short slug of the selector's words.
+      const testid = argText.match(/\[data-test(?:id)?\s*[\^$*]?=\s*["']?([A-Za-z0-9_-]+)/);
+      if (testid) return identifierFromWords(wordsOf(testid[1]!));
+      const id = argText.match(/#([A-Za-z0-9_-]+)/);
+      if (id) return identifierFromWords(wordsOf(id[1]!));
+      const slug = argText.replace(/::?[a-z-]+(\([^)]*\))?/g, ' ').replace(/\[[^\]]*\]/g, ' ');
+      return identifierFromWords(wordsOf(slug));
+    }
+  }
 }
 
 /**
@@ -546,36 +697,12 @@ function stepTarget(step: TraceStep): SelectorRecord | null {
   return null;
 }
 
-function fieldName(intent: string, taken: Map<string, string>): string {
-  // username input → username
-  // login button → loginButton
-  // error message → errorMessage
-  const words = intent.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim().split(/\s+/);
-  if (words.length === 0) return 'element';
-  // Drop trailing noise words.
-  const noise = new Set(['input', 'field', 'control']);
-  const meaningful = words.filter((w, i) => !(i === words.length - 1 && noise.has(w)));
-  const useWords = meaningful.length > 0 ? meaningful : words;
-  let name = useWords
-    .map((w, i) => i === 0 ? w : w[0]!.toUpperCase() + w.slice(1))
-    .join('');
-  if (/^[0-9]/.test(name)) name = '_' + name;
-  if (!name) name = 'element';
-  // Disambiguate collisions.
-  if ([...taken.values()].includes(name)) {
-    let n = 2;
-    while ([...taken.values()].includes(name + n)) n++;
-    name = name + n;
-  }
-  return name;
-}
-
 /**
  * Look for a "fill + fill + click" sequence that appears at the top of 2+
  * scenarios. When found, synthesize a single action method. This handles the
  * canonical login flow cleanly without trying to be too clever for v1.
  */
-function synthesizeMethods(scenarios: Scenario[], intentToField: Map<string, string>): ActionMethod[] {
+function synthesizeMethods(scenarios: Scenario[], pc: PageClassPlan): ActionMethod[] {
   const methods: ActionMethod[] = [];
   const seenSignatures = new Set<string>();
 
@@ -610,20 +737,21 @@ function synthesizeMethods(scenarios: Scenario[], intentToField: Map<string, str
     if (occurrences < 2) continue;
 
     seenSignatures.add(sig);
-    methods.push(buildMethodFromLead(lead, intentToField, sig));
+    methods.push(buildMethodFromLead(lead, pc, sig));
   }
 
   return methods;
 }
 
+/** A step's action signature keys on the LOCATOR, so two fields never share a method slot. */
 function stepSignature(step: TraceStep): string {
-  if (step.kind === 'fill')  return `fill:${canonicalIntent(step.target.intent)}`;
-  if (step.kind === 'click') return `click:${canonicalIntent(step.target.intent)}`;
-  if (step.kind === 'press') return `press:${canonicalIntent(step.target.intent)}:${step.key}`;
+  if (step.kind === 'fill')  return `fill:${locatorIdentity(step.target)}`;
+  if (step.kind === 'click') return `click:${locatorIdentity(step.target)}`;
+  if (step.kind === 'press') return `press:${locatorIdentity(step.target)}:${step.key}`;
   return '';
 }
 
-function buildMethodFromLead(lead: TraceStep[], intentToField: Map<string, string>, signatureKey: string): ActionMethod {
+function buildMethodFromLead(lead: TraceStep[], pc: PageClassPlan, signatureKey: string): ActionMethod {
   // Derive a method name from the leading sequence.
   // Heuristic: if there are 2 fills + 1 click, name it after the click target
   // (most often "login button" → loginAs). Otherwise, "<click intent>".
@@ -640,7 +768,7 @@ function buildMethodFromLead(lead: TraceStep[], intentToField: Map<string, strin
   const usedNames = new Set<string>();
   for (const f of fills) {
     if (f.kind !== 'fill') continue;
-    let p = (intentToField.get(canonicalIntent(f.target.intent)) || 'value').replace(/^the_?/, '');
+    let p = (fieldFor(pc, f.target) || 'value').replace(/^the_?/, '');
     if (usedNames.has(p)) {
       let n = 2; while (usedNames.has(p + n)) n++;
       p = p + n;
@@ -715,7 +843,7 @@ function renderPageClass(plan: PageClassPlan, ext: 'ts' | 'js'): string {
     out.push(`  }`);
     for (const m of plan.methods) {
       out.push(``);
-      out.push(...emitMethod(m, plan.intentToField, ext).map((l) => '  ' + l));
+      out.push(...emitMethod(m, plan, ext).map((l) => '  ' + l));
     }
     out.push(`}`);
     out.push(``);
@@ -735,7 +863,7 @@ function renderPageClass(plan: PageClassPlan, ext: 'ts' | 'js'): string {
   out.push(`  }`);
   for (const m of plan.methods) {
     out.push(``);
-    out.push(...emitMethod(m, plan.intentToField, ext).map((l) => '  ' + l));
+    out.push(...emitMethod(m, plan, ext).map((l) => '  ' + l));
   }
   out.push(`}`);
   out.push(`module.exports = { ${plan.className} };`);
@@ -743,7 +871,7 @@ function renderPageClass(plan: PageClassPlan, ext: 'ts' | 'js'): string {
   return out.join('\n');
 }
 
-function emitMethod(method: ActionMethod, intentToField: Map<string, string>, ext: 'ts' | 'js'): string[] {
+function emitMethod(method: ActionMethod, pc: PageClassPlan, ext: 'ts' | 'js'): string[] {
   const paramList = method.params.map((p) => ext === 'ts' ? `${p.name}: ${p.type}` : p.name).join(', ');
   const sig = ext === 'ts'
     ? `async ${method.name}(${paramList}): Promise<void> {`
@@ -752,19 +880,19 @@ function emitMethod(method: ActionMethod, intentToField: Map<string, string>, ex
   let paramIdx = 0;
   for (const step of method.steps) {
     if (step.kind === 'fill') {
-      const field = intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const valueArg = method.params[paramIdx]?.name ?? q(step.value);
       paramIdx++;
       body.push(field
         ? `await this.${field}.fill(${valueArg});`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.fill(${valueArg});`);
     } else if (step.kind === 'click') {
-      const field = intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       body.push(field
         ? `await this.${field}.click();`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.click();`);
     } else if (step.kind === 'press') {
-      const field = intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       body.push(field
         ? `await this.${field}.press(${q(step.key)});`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.press(${q(step.key)});`);
@@ -855,13 +983,18 @@ function renderSpec(
     out.push(`    try { await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); }); } catch { /* about:blank */ }`);
   }
   out.push(`    ${handle} = new ${pc.className}(page);`);
-  out.push(`    await ${handle}.goto();`);
+  if (pc.sharedGoto) {
+    out.push(`    await ${handle}.goto();`);
+  } else {
+    // The feature spans pages: each test opens its own recorded first URL.
+    out.push(`    // Scenarios in this feature start on different pages; each test opens its own.`);
+  }
   out.push(`  });`);
   out.push('');
 
   for (const scenario of pc.scenarios) {
     if (param?.members.has(scenario)) continue; // collapsed into the data loop
-    out.push(...renderScenario(scenario, pc, ext, creds).map((l) => '  ' + l));
+    out.push(...renderScenario(scenario, pc, ext, creds, report.url).map((l) => '  ' + l));
     out.push('');
   }
 
@@ -898,7 +1031,9 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   out.push(`  test(\`[data] ${pc.feature} — \${c.name}\`, async ({ page }) => {`);
 
   // Action steps from the representative, fills parameterized by the case.
-  let initialNavSkipped = false;
+  // The first navigate is the beforeEach goto only when the feature shares
+  // one; a multi-page feature keeps it as the test's own goto.
+  let initialNavSkipped = !pc.sharedGoto;
   const actions: string[] = [];
   const closing: string[] = [];
   let pastActions = false;
@@ -911,7 +1046,7 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
     if (step.kind === 'wait' || step.kind === 'stability_wait' || step.kind === 'checkpoint') continue;
     if (step.kind === 'fill') {
       const key = canonicalIntent(step.target.intent);
-      const field = pc.intentToField.get(key);
+      const field = fieldFor(pc, step.target);
       const valueArg = `resolveData(c.values[${q(key)}] ?? '')`;
       actions.push(field
         ? `await ${handle}.${field}.fill(${valueArg});`
@@ -929,9 +1064,10 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   }
 
   for (const line of actions) out.push(`    ${line}`);
+  const errorField = param.errorTarget ? fieldFor(pc, param.errorTarget) : undefined;
   const errorLocExpr = param.errorTarget
-    ? (pc.intentToField.get(canonicalIntent(param.errorTarget.intent))
-        ? `${handle}.${pc.intentToField.get(canonicalIntent(param.errorTarget.intent))}`
+    ? (errorField
+        ? `${handle}.${errorField}`
         : emitLocatorCall(param.errorTarget.level, param.errorTarget.arg, param.errorTarget.ambiguous === true, param.errorTarget.frameChain, param.errorTarget.filterText))
     : null;
   if (errorLocExpr) {
@@ -948,7 +1084,7 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   return out;
 }
 
-function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js', creds: AuthCredentials | null = null): string[] {
+function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js', creds: AuthCredentials | null = null, fallbackUrl: string = pc.url): string[] {
   const handle = camelize(pc.className);
   const tag = scenario.category === 'happy' ? '[happy]'
             : scenario.category === 'negative' ? '[negative]'
@@ -973,8 +1109,8 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
     const fillValues = matched.steps
       .filter((s): s is Extract<TraceStep, { kind: 'fill' }> => s.kind === 'fill')
       .map((s) => {
-        // Find the corresponding step in THIS scenario to use its actual value.
-        const real = scenario.steps.find((x) => x.kind === 'fill' && canonicalIntent(x.target.intent) === canonicalIntent(s.target.intent));
+        // Find the corresponding step in THIS scenario (same locator) to use its actual value.
+        const real = scenario.steps.find((x) => x.kind === 'fill' && locatorIdentity(x.target) === locatorIdentity(s.target));
         const realFill = (real && real.kind === 'fill') ? real : s;
         // The REAL credentials in an auth-enabled login spec come from env,
         // never a literal (value-based match); a generated field passes a
@@ -988,12 +1124,17 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
     for (const step of lead) consumed.add(step);
   }
 
-  // The beforeEach already navigates to the base URL, so the scenario's FIRST
-  // navigate is redundant and dropped. Every LATER navigate is load-bearing
-  // (a reload, or a move to another URL) — a capture-and-compare scenario that
-  // captures a value, reloads, then asserts it changed needs that reload in the
-  // emitted spec, or the test re-reads the same page and can never go red.
-  let initialNavSkipped = false;
+  // When the feature shares one first URL, the beforeEach already navigates
+  // there, so the scenario's FIRST navigate is redundant and dropped. Every
+  // LATER navigate is load-bearing (a reload, or a move to another URL): a
+  // capture-and-compare scenario that captures a value, reloads, then asserts
+  // it changed needs that reload in the emitted spec, or the test re-reads the
+  // same page and can never go red. A multi-page feature has no shared goto:
+  // the first navigate is kept, and a scenario with none opens its page here.
+  let initialNavSkipped = !pc.sharedGoto;
+  if (!pc.sharedGoto && !scenario.steps.some((s) => s.kind === 'navigate')) {
+    out.push(`  await page.goto(${q(fallbackUrl)});`);
+  }
   for (const step of scenario.steps) {
     if (consumed.has(step)) continue;
     if (step.kind === 'navigate') {
@@ -1012,13 +1153,13 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
 function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds: AuthCredentials | null = null): string[] {
   switch (step.kind) {
     case 'click': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       return [field
         ? `await ${handle}.${field}.click();`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.click();`];
     }
     case 'fill': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const env = creds ? envForCredentialValue(step.value, creds) : null;
       const valueArg = env ? `process.env.${env} ?? ''` : step.generate ? uniqueCallExpr(step.generate) : q(step.value);
       return [field
@@ -1026,23 +1167,23 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.fill(${valueArg});`];
     }
     case 'press': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       return [field
         ? `await ${handle}.${field}.press(${q(step.key)});`
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.press(${q(step.key)});`];
     }
     case 'select_option': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const base = field ? `${handle}.${field}` : emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText);
       return [`await ${base}.${selectOptionExpr(step.by, step.option)};`];
     }
     case 'set_checked': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const base = field ? `${handle}.${field}` : emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText);
       return [`await ${base}.${step.checked ? 'check' : 'uncheck'}();`];
     }
     case 'set_input_files': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const base = field ? `${handle}.${field}` : emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText);
       return [`await ${base}.setInputFiles(${filesArg(step.files)});`];
     }
@@ -1111,7 +1252,7 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
       return lines;
     }
     case 'wait_for_state': {
-      const field = pc.intentToField.get(canonicalIntent(step.target.intent));
+      const field = fieldFor(pc, step.target);
       const locExpr = field
         ? `${handle}.${field}`
         : emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText);
@@ -1123,21 +1264,21 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
 function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string {
   switch (a.type) {
     case 'toBeVisible': {
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = a.timeout ? `{ timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).toBeVisible(${opts});`;
     }
     case 'toHaveText':
     case 'toContainText': {
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const fn = a.type === 'toHaveText' ? 'toHaveText' : 'toContainText';
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).${fn}(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`;
     }
     case 'toBeChecked': {
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
       return `await expect(${loc}).toBeChecked(${opts ? `{ ${opts} }` : ''});`;
@@ -1158,7 +1299,7 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       // toHaveCount needs the multi-match locator (invariant: a count check is
       // meaningless after .first()). A field whose intent was ever ambiguous
       // now emits .first(), so bypass it and emit the bare locator inline.
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const fieldRec = field ? pc.fields.find((f) => f.name === field)?.record : undefined;
       const loc = field && fieldRec && fieldRec.ambiguous !== true
         ? `${handle}.${field}`
@@ -1171,13 +1312,13 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       return `await expect(${loc}).toHaveCount(${a.count}${opts});`;
     }
     case 'toHaveAttribute': {
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).toHaveAttribute(${q(a.attribute)}, ${a.pattern ? regexLiteral(a.pattern) : q(a.value)}${opts});`;
     }
     case 'toHaveValue': {
-      const field = pc.intentToField.get(canonicalIntent(a.target.intent));
+      const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).toHaveValue(${q(a.value)}${opts});`;
