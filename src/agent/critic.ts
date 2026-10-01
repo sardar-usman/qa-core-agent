@@ -1024,6 +1024,26 @@ export function mergeRepairVerdicts(
   return { final, history };
 }
 
+/**
+ * The repair pass's outcome for the pipeline: the merged verdicts, the
+ * verdict history, and the repaired scenarios that go on to replay. Replay
+ * membership reads the MERGED final verdicts, never the second review's raw
+ * vote: a scenario the review voted rework with every required fix applied
+ * (or kept unjudged) is a final pass and replays; one the review voted pass
+ * with a required fix not applied is a final rework and does not. The
+ * runtime calls exactly this; smoke-repair-pass locks it.
+ */
+export function repairOutcome<S extends { name: string }>(opts: {
+  first: ScenarioVerdict[];
+  repaired: S[];
+  second: ScenarioVerdict[] | null;
+  unfunded?: { names: string[]; reason: string };
+}): { final: ScenarioVerdict[]; history: RepairHistoryEntry[]; replay: S[] } {
+  const merged = mergeRepairVerdicts(opts.first, opts.second, opts.unfunded);
+  const replay = opts.repaired.filter((s) => verdictFor(merged.final, s.name)?.verdict === 'pass');
+  return { final: merged.final, history: merged.history, replay };
+}
+
 function parseSummary(text: string): string {
   const m = text.match(/<summary>([\s\S]*?)<\/summary>/i);
   return m && m[1] ? m[1].trim() : '';

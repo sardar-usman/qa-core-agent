@@ -16,11 +16,12 @@
  *     every verdict (run 51d535 dropped three repaired scenarios on
  *     complaints the first verdict never made); a verdict with no per-fix
  *     judgement after the retry keeps the scenario unjudged with a note, a
- *     partial omission drops it naming the fix
+ *     partial omission drops it naming the fix; replay membership reads the
+ *     merged final verdicts (repairOutcome), never the second review's vote
  *
  * Fixture verdicts only. No live calls. No browser.
  */
-import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, REPAIR_REVIEW_PROMPT, UNJUDGED_REPAIR_NOTE, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
+import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, repairOutcome, REPAIR_REVIEW_PROMPT, UNJUDGED_REPAIR_NOTE, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
 import type { Scenario } from '../src/agent/trace.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
@@ -270,6 +271,26 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   // (b) partial omission: the review judged the scenario and skipped one listed fix = that fix is not applied = dropped naming it.
   const partial = mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: 'Add timeout:10000ms to the URL assertion', applied: true, reason: 'step 4' }], observations: [] }]);
   check('J14. a partial omission is DROPPED naming the fix the review listed nowhere', partial.history[0]?.outcome === 'dropped' && /required fix not applied: Capture the product name from the listing before clicking.*not judged by the second review/.test(partial.final[0]?.reasons[0] ?? '') && partial.history[0]?.fixes?.find((f) => f.fix.startsWith('Capture'))?.applied === false, JSON.stringify(partial));
+  /* ─── replay membership: what reaches replay is merged.final, never the second review's raw vote ── */
+  // repairOutcome is the function the runtime calls at the end of the repair
+  // block; `replay` is the set it hands on to Reality-Check.
+  const repairedTraces = first.map((v) => ({ name: v.scenario, category: 'happy' as const, steps: [] }));
+  const votes: ScenarioVerdict[] = [
+    // every fix applied, review votes REWORK on a new complaint
+    { scenario: first[0]!.scenario, verdict: 'rework', reasons: ['a new complaint'], required_fixes: [], fixes: first[0]!.required_fixes.map((fix) => ({ fix, applied: true, reason: 'step' })), observations: ['a new complaint'] },
+    // one fix applied:false, review votes PASS anyway
+    { scenario: first[1]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: first[1]!.required_fixes[0]!, applied: false, reason: 'still the visibility assertion' }] },
+    // no per-fix judgement at all (kept unjudged)
+    { scenario: first[2]!.scenario, verdict: 'reject', reasons: ['x'], required_fixes: [] },
+  ];
+  const outcome = repairOutcome({ first, repaired: repairedTraces, second: votes });
+  const replayNames = outcome.replay.map((s) => s.name);
+  check('R1. a rework vote with every required fix applied IS in the set handed to replay', replayNames.includes(first[0]!.scenario) && outcome.final.find((v) => v.scenario === first[0]!.scenario)?.verdict === 'pass', JSON.stringify(replayNames));
+  check('R2. a pass vote with one fix applied:false is NOT in the set handed to replay', !replayNames.includes(first[1]!.scenario) && outcome.final.find((v) => v.scenario === first[1]!.scenario)?.verdict === 'rework', JSON.stringify(replayNames));
+  check('R3. a kept-unjudged scenario (no per-fix judgement, even a reject vote) IS in the set', replayNames.includes(first[2]!.scenario) && outcome.history.find((h) => h.scenario === first[2]!.scenario)?.notes?.[0] === UNJUDGED_REPAIR_NOTE);
+  check('R4. the raw second vote decides nothing: the set equals the merged final passes, and differs from the pass votes', JSON.stringify(replayNames) === JSON.stringify(repairedTraces.filter((s) => outcome.final.find((v) => v.scenario === s.name)?.verdict === 'pass').map((s) => s.name)) && JSON.stringify(replayNames) !== JSON.stringify(votes.filter((v) => v.verdict === 'pass').map((v) => v.scenario)));
+  check('R5. a repaired scenario the review never re-recorded (no second verdict) is not in the set and drops', repairOutcome({ first: first.slice(0, 1), repaired: repairedTraces.slice(0, 1), second: [] }).replay.length === 0 && repairOutcome({ first: first.slice(0, 1), repaired: repairedTraces.slice(0, 1), second: null }).history[0]?.outcome === 'dropped');
+
   // (c) applied:false still drops (J4 above holds the full case).
   check('J15. a fix the review lists with applied:false drops, whatever its vote', mergeRepairVerdicts(first.slice(1, 2), [{ scenario: first[1]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: first[1]!.required_fixes[0]!, applied: false, reason: 'the visibility assertion is still there' }] }]).history[0]?.outcome === 'dropped');
 

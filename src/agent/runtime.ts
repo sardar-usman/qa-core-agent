@@ -6,7 +6,7 @@ import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolCo
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
-import { alignVerdictNames, critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
+import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
@@ -1435,13 +1435,15 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           secondVerdicts = null;
         }
       }
-      const merged = mergeRepairVerdicts(review.verdicts, secondVerdicts, decision.unfunded.length > 0 ? { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } : undefined);
-      review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
       // What goes on to replay is decided by the MERGED verdicts (the repair
-      // review's required-fix judgement), not by the second review's own
-      // vote: a scenario kept with every fix applied, or kept unjudged, is
-      // a final pass even when the review voted rework.
-      kept = [...kept, ...repairedScenarios.filter((s) => verdictFor(merged.final, s.name)?.verdict === 'pass')];
+      // review's required-fix judgement), never by the second review's own
+      // vote: repairOutcome is the one place that rule lives (invariant 32).
+      const merged = repairOutcome({
+        first: review.verdicts, repaired: repairedScenarios, second: secondVerdicts,
+        ...(decision.unfunded.length > 0 ? { unfunded: { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } } : {}),
+      });
+      review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
+      kept = [...kept, ...merged.replay];
       for (const h of merged.history) {
         const fixesNote = h.fixes ? `, ${h.fixes.filter((f) => f.applied).length} of ${h.fixes.length} required fixes applied` : '';
         opts.onEvent?.({
