@@ -202,6 +202,18 @@ export async function critique(opts: {
     return { text, costUsd: (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000 };
   };
 
+  // Repair review: a verdict with no per-fix judgement for a scenario that
+  // had required fixes is a parse failure, not a judgement. It earns the
+  // same one retry as a zero-verdict response; when the retry still returns
+  // none, the scenario is kept unjudged (mergeRepairVerdicts) and warned.
+  const unjudgedIn = (verdicts: ScenarioVerdict[]): string[] => {
+    if (!repairFixes) return [];
+    return opts.scenarios
+      .filter((s) => fixesFor(repairFixes, s.name).length > 0)
+      .filter((s) => { const v = verdictFor(verdicts, s.name); return !v || !v.fixes || v.fixes.length === 0; })
+      .map((s) => s.name);
+  };
+
   // One retry on a zero-verdict response, with the same input. A response
   // nothing can parse is usually a one-off (a refusal preamble, a format
   // slip); a second call is far cheaper than holding every scenario as
@@ -212,23 +224,39 @@ export async function critique(opts: {
   let raw: string | string[] = first.text;
   const warnings: string[] = [];
   let parsed = parseVerdicts(text);
-  if (parsed.length === 0) {
+  let unjudged = unjudgedIn(parsed);
+  if (parsed.length === 0 || unjudged.length > 0) {
     const second = await ask();
     costUsd += second.costUsd;
     raw = [first.text, second.text];
     const retryParsed = parseVerdicts(second.text);
-    if (retryParsed.length > 0) {
+    const retryUnjudged = unjudgedIn(retryParsed);
+    if (parsed.length === 0) {
+      if (retryParsed.length > 0) {
+        text = second.text;
+        parsed = retryParsed;
+        unjudged = retryUnjudged;
+        warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned ${retryParsed.length} verdict(s).`);
+      } else {
+        warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned none, so every scenario is held as rework. Both responses are kept on review.rawResponse.`);
+      }
+    } else if (retryParsed.length > 0 && retryUnjudged.length < unjudged.length) {
       text = second.text;
       parsed = retryParsed;
-      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned ${retryParsed.length} verdict(s).`);
+      unjudged = retryUnjudged;
+      warnings.push(`Repair review returned no per-fix judgement for ${unjudgedIn(parseVerdicts(first.text)).length} scenario(s); retried once with the same input and the retry judged all but ${retryUnjudged.length}.`);
     } else {
-      warnings.push(`Critic returned no parseable verdicts on the first call; retried once with the same input and the retry returned none, so every scenario is held as rework. Both responses are kept on review.rawResponse.`);
+      warnings.push(`Repair review returned no per-fix judgement for ${unjudged.length} scenario(s); retried once with the same input and the retry returned none either.`);
     }
+    for (const name of unjudged) warnings.push(`${UNJUDGED_REPAIR_NOTE}: "${name}"`);
   }
 
   const completed = completeVerdicts(opts.scenarios, parsed);
   return { verdicts: completed.verdicts, summary: parseSummary(text), costUsd, raw, unreviewed: completed.unreviewed, warnings };
 }
+
+/** The note (and console warning) on a repaired scenario whose review returned no per-fix judgement even after the retry. */
+export const UNJUDGED_REPAIR_NOTE = 'repair verdict unparseable: fixes not returned; scenario kept unjudged';
 
 /** Extra output budget per verdict in a repair review: the per-fix judgements and the observations. */
 export const REPAIR_REVIEW_EXTRA_TOKENS = 250;
@@ -928,9 +956,15 @@ export function judgeRequiredFixes(required: string[], judged: FixJudgement[]): 
  * whatever the second review's own vote and whatever it observed anew; the
  * observations, and the review's reasons when it still voted rework, are
  * recorded on the history entry as notes. A listed fix not applied drops
- * it, with the unapplied fixes as the reasons. A second verdict without the
- * shape (an older response, or a first verdict that listed no fixes) is
- * read as before: pass keeps, anything else drops.
+ * it, with the unapplied fixes as the reasons. A second verdict with NO
+ * per-fix judgement (missing or empty `fixes`) for a scenario that had
+ * required fixes is a parse failure, not a judgement: after critique's one
+ * retry the scenario is KEPT with the UNJUDGED_REPAIR_NOTE on its history
+ * entry. A listed fix judged applied:false still drops; a fix the review
+ * listed nowhere while listing others for the same scenario (a partial
+ * omission) counts as not applied, because the review judged that scenario
+ * and skipped one item. A first verdict that listed no fixes is read as
+ * before: pass keeps, anything else drops.
  */
 export function mergeRepairVerdicts(
   original: ScenarioVerdict[],
@@ -955,6 +989,15 @@ export function mergeRepairVerdicts(
     if (!second) {
       final.push(v);
       history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped', ...(unfunded && unfundedByOriginal.has(v.scenario) ? { notRepaired: unfunded.reason } : {}) });
+      continue;
+    }
+    if (v.required_fixes.length > 0 && (!second.fixes || second.fixes.length === 0)) {
+      // The review returned no per-fix judgement for a scenario that had
+      // required fixes, after its retry: a parse failure, not a judgement.
+      // Kept unjudged, with the note on the history entry; never dropped on
+      // a verdict nobody can check against the fixes.
+      final.push({ ...second, verdict: 'pass' });
+      history.push({ scenario: v.scenario, first: 'rework', second: second.verdict, outcome: 'kept', notes: [UNJUDGED_REPAIR_NOTE, ...(second.observations ?? [])] });
       continue;
     }
     if (second.fixes && second.fixes.length > 0 && v.required_fixes.length > 0) {

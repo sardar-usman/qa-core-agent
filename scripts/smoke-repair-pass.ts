@@ -14,11 +14,13 @@
  *     observed (the observations are notes on the report), one fix not
  *     applied drops it; the per-fix shape parses with the same leniency as
  *     every verdict (run 51d535 dropped three repaired scenarios on
- *     complaints the first verdict never made)
+ *     complaints the first verdict never made); a verdict with no per-fix
+ *     judgement after the retry keeps the scenario unjudged with a note, a
+ *     partial omission drops it naming the fix
  *
  * Fixture verdicts only. No live calls. No browser.
  */
-import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, REPAIR_REVIEW_PROMPT, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
+import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, REPAIR_REVIEW_PROMPT, UNJUDGED_REPAIR_NOTE, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
 import type { Scenario } from '../src/agent/trace.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
@@ -244,7 +246,32 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   // judgeRequiredFixes: by position when counts agree, by text when not, unjudged fixes count as not applied.
   const byText = judgeRequiredFixes(['Add timeout:10000ms to the URL assertion', 'Capture the name first'], [{ fix: 'capture the name first', applied: true, reason: 'step 2' }]);
   check('J6. a fix the second review did not judge counts as not applied; a judged one matches by text', byText.allApplied === false && byText.fixes[1]?.applied === true && byText.fixes[0]?.reason === 'not judged by the second review' && byText.missing.length === 1, JSON.stringify(byText));
-  check('J7. a second verdict without the per-fix shape is read as before: pass keeps, rework drops', mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'rework', reasons: ['x'], required_fixes: [] }]).history[0]?.outcome === 'dropped' && mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'pass', reasons: [], required_fixes: [] }]).history[0]?.outcome === 'kept');
+  const noFixesListed: ScenarioVerdict = { scenario: 'kept login', verdict: 'rework', reasons: ['weak'], required_fixes: [] };
+  check('J7. a first verdict that listed no fixes is read as before: pass keeps, rework drops', mergeRepairVerdicts([noFixesListed], [{ scenario: 'kept login', verdict: 'rework', reasons: ['x'], required_fixes: [] }]).history[0]?.outcome === 'dropped' && mergeRepairVerdicts([noFixesListed], [{ scenario: 'kept login', verdict: 'pass', reasons: [], required_fixes: [] }]).history[0]?.outcome === 'kept');
+
+  /* ─── the three outcomes of a repair verdict's `fixes` ─────────────────── */
+  // (a) fixes missing: a parse failure, not a judgement. One retry; still
+  // missing = kept unjudged with the note and a warning line.
+  const noFixesText = JSON.stringify([{ scenario: first[0]!.scenario, verdict: 'rework', reasons: ['re-reads the listing locator'], required_fixes: ['remove it'] }]) + '<summary>s</summary>';
+  let calls = 0;
+  const noFixesClient: CriticClient = { messages: { create: async () => { calls++; return { id: 'm', type: 'message', role: 'assistant', model: 'fake', content: [{ type: 'text', text: noFixesText, citations: null }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } as never; } } };
+  const clickedScenario = { name: first[0]!.scenario, category: 'happy', steps: [] } as unknown as Scenario;
+  const unjudgedReview = await critique({ scenarios: [clickedScenario], url: 'https://x.example/', apiKey: 'fake', client: noFixesClient, repairFixes: new Map([[first[0]!.scenario, first[0]!.required_fixes]]) });
+  check('J13a. fixes missing on the first response earns exactly one retry', calls === 2 && Array.isArray(unjudgedReview.raw) && unjudgedReview.raw.length === 2);
+  check('J13b. still missing after the retry: the warning line says so and names the scenario', unjudgedReview.warnings.some((w) => w === `${UNJUDGED_REPAIR_NOTE}: "${first[0]!.scenario}"`) && unjudgedReview.warnings.some((w) => /retry returned none either/.test(w)), JSON.stringify(unjudgedReview.warnings));
+  const unjudgedMerge = mergeRepairVerdicts(first.slice(0, 1), unjudgedReview.verdicts);
+  check('J13c. the scenario is KEPT unjudged: final verdict pass, the note on review.repair[].notes', unjudgedMerge.history[0]?.outcome === 'kept' && unjudgedMerge.final[0]?.verdict === 'pass' && unjudgedMerge.history[0]?.notes?.[0] === UNJUDGED_REPAIR_NOTE && unjudgedMerge.history[0]?.notes?.[0] === 'repair verdict unparseable: fixes not returned; scenario kept unjudged', JSON.stringify(unjudgedMerge.history));
+  check('J13d. an empty fixes array is the same parse failure', mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'rework', reasons: ['x'], required_fixes: [], fixes: [], observations: ['new'] }]).history[0]?.notes?.join('|') === `${UNJUDGED_REPAIR_NOTE}|new`);
+  calls = 0;
+  const fixedOnRetryText = JSON.stringify([{ scenario: first[0]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: first[0]!.required_fixes.map((fix) => ({ fix, applied: true, reason: 'step' })), observations: [] }]) + '<summary>s</summary>';
+  const retryClient: CriticClient = { messages: { create: async () => { calls++; return { id: 'm', type: 'message', role: 'assistant', model: 'fake', content: [{ type: 'text', text: calls === 1 ? noFixesText : fixedOnRetryText, citations: null }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } as never; } } };
+  const retried = await critique({ scenarios: [clickedScenario], url: 'https://x.example/', apiKey: 'fake', client: retryClient, repairFixes: new Map([[first[0]!.scenario, first[0]!.required_fixes]]) });
+  check('J13e. a retry that returns the judgement is used, no unjudged warning', calls === 2 && retried.verdicts[0]?.fixes?.length === 2 && !retried.warnings.some((w) => w.startsWith(UNJUDGED_REPAIR_NOTE)) && retried.warnings.some((w) => /retry judged all but 0/.test(w)), JSON.stringify(retried.warnings));
+  // (b) partial omission: the review judged the scenario and skipped one listed fix = that fix is not applied = dropped naming it.
+  const partial = mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: 'Add timeout:10000ms to the URL assertion', applied: true, reason: 'step 4' }], observations: [] }]);
+  check('J14. a partial omission is DROPPED naming the fix the review listed nowhere', partial.history[0]?.outcome === 'dropped' && /required fix not applied: Capture the product name from the listing before clicking.*not judged by the second review/.test(partial.final[0]?.reasons[0] ?? '') && partial.history[0]?.fixes?.find((f) => f.fix.startsWith('Capture'))?.applied === false, JSON.stringify(partial));
+  // (c) applied:false still drops (J4 above holds the full case).
+  check('J15. a fix the review lists with applied:false drops, whatever its vote', mergeRepairVerdicts(first.slice(1, 2), [{ scenario: first[1]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: first[1]!.required_fixes[0]!, applied: false, reason: 'the visibility assertion is still there' }] }]).history[0]?.outcome === 'dropped');
 
   // The per-fix shape parses with the same leniency as every verdict: a
   // trailing comma, a bad escape inside a reason, applied as a string.

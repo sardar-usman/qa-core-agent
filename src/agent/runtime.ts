@@ -1367,6 +1367,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       // the live Review panel and events.jsonl name why it was never repaired.
       for (const s of decision.unfunded) opts.onEvent?.({ type: 'repair_scenario', name: s.name, outcome: 'not re-recorded', reason: `not repaired: ${decision.fundsLabel}` });
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
+      let repairedScenarios: Scenario[] = [];
       let repairUsd = 0;
       if (decision.run) {
         opts.onEvent?.({ type: 'repair_started', count: decision.rework.length, budgetUsd: decision.budgetUsd });
@@ -1418,7 +1419,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           } else {
             secondVerdicts = [];
           }
-          kept = [...kept, ...repair.scenarios.filter((s) => verdictFor(secondVerdicts ?? [], s.name)?.verdict === 'pass')];
+          repairedScenarios = repair.scenarios;
         } catch (err) {
           const cls = classifyRunError(err);
           if (cls.kind !== 'other') {
@@ -1436,6 +1437,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       }
       const merged = mergeRepairVerdicts(review.verdicts, secondVerdicts, decision.unfunded.length > 0 ? { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } : undefined);
       review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
+      // What goes on to replay is decided by the MERGED verdicts (the repair
+      // review's required-fix judgement), not by the second review's own
+      // vote: a scenario kept with every fix applied, or kept unjudged, is
+      // a final pass even when the review voted rework.
+      kept = [...kept, ...repairedScenarios.filter((s) => verdictFor(merged.final, s.name)?.verdict === 'pass')];
       for (const h of merged.history) {
         const fixesNote = h.fixes ? `, ${h.fixes.filter((f) => f.applied).length} of ${h.fixes.length} required fixes applied` : '';
         opts.onEvent?.({
