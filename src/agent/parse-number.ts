@@ -27,6 +27,24 @@ export function parseNumber(text: string | number | null | undefined): number | 
   return Number.isFinite(n) ? n : null;
 }
 
+// A currency amount: a symbol or ISO code before or after a number ("$48.41",
+// "EUR 12", "12,50 €", "48.41 USD"). The number part is what NUMBER_RE parses.
+const CURRENCY_AMOUNT_RE = /(?:[$€£¥₹]|\b(?:usd|eur|gbp|chf|jpy|cad|aud|inr)\b)\s?-?\d[\d,]*(?:[.,]\d+)?|-?\d[\d,]*(?:[.,]\d+)?\s?(?:[$€£¥₹]|\b(?:usd|eur|gbp|chf|jpy|cad|aud|inr)\b)/i;
+
+/**
+ * The first currency amount inside the text ("Bolt Cutters ABCDE$48.41" gives
+ * "$48.41"), or null when there is none. The amount must parse through the
+ * same parser assert_compare uses, so a symbol with no number is not an
+ * amount. Gate RULE 8 uses it: a locator name that carries a price pins a
+ * catalogue value (run 51d535: three Critic reworks were role or label hints
+ * whose accessible name concatenated the card's badge and price).
+ */
+export function currencyAmountIn(text: string | null | undefined): string | null {
+  const m = CURRENCY_AMOUNT_RE.exec(String(text ?? ''));
+  if (!m) return null;
+  return parseNumber(m[0]) === null ? null : m[0].trim();
+}
+
 /** The loud failure every caller reports when a side has no number. */
 export function noNumberMessage(text: string): string {
   return `no number found in ${JSON.stringify(String(text))}`;

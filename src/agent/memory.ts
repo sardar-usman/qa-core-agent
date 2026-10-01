@@ -43,6 +43,14 @@ export interface SiteFingerprint {
   };
   /** Past run summaries — capped to the last N for context size. */
   recentRuns: RecentRun[];
+  /**
+   * The test-id attribute this host's pages use (`data-test` or
+   * `data-testid`), the dominant one seen by get_dom over the last run that
+   * saw either. Run 51d535 guessed data-testid on a data-test site twice, at
+   * 59 s each, a convention run 4 had already seen; now the memory block says
+   * it before the first tool call.
+   */
+  testIdAttribute?: string;
 }
 
 export interface KnownIntent {
@@ -140,6 +148,8 @@ export interface RunSummary {
   resolvedIntents: Array<{ intent: string; level: CascadeLevel }>;
   /** Optional auth hint to remember. */
   authHint?: SiteFingerprint['authHint'];
+  /** The dominant test-id attribute get_dom saw this run; null keeps the remembered one. */
+  testIdAttribute?: string | null;
 }
 
 export function saveRun(summary: RunSummary): void {
@@ -170,6 +180,7 @@ export function saveRun(summary: RunSummary): void {
     knownIntents: intents.slice(0, MAX_INTENTS_KEPT),
     authHint: summary.authHint ?? existing?.authHint,
     recentRuns,
+    ...(summary.testIdAttribute || existing?.testIdAttribute ? { testIdAttribute: summary.testIdAttribute || existing?.testIdAttribute } : {}),
   };
   fs.writeFileSync(siteFile(host), JSON.stringify(fingerprint, null, 2));
 
@@ -231,8 +242,11 @@ export function renderMemoryBlock(url: string): string | null {
 
   const parts: string[] = [];
 
-  if (site && (site.knownIntents.length > 0 || site.recentRuns.length > 0)) {
+  if (site && (site.knownIntents.length > 0 || site.recentRuns.length > 0 || site.testIdAttribute)) {
     parts.push(`Site memory for ${site.host}:`);
+    if (site.testIdAttribute) {
+      parts.push(`  This host uses ${site.testIdAttribute} as its test-id attribute: write css hints as [${site.testIdAttribute}="..."] (the testid hint resolves against it).`);
+    }
     if (site.recentRuns.length > 0) {
       const last = site.recentRuns[0];
       if (last) {

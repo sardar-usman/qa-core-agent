@@ -1,6 +1,7 @@
 import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import { generatedIdFragment } from './volatile-id.js';
+import { currencyAmountIn } from './parse-number.js';
 
 /**
  * Static validation gate — runs after the Explorer closes a scenario and
@@ -14,6 +15,9 @@ import { generatedIdFragment } from './volatile-id.js';
  *           gate no longer injects a completion constant. It only raises a
  *           missing or below-floor timeout up to the 5000 ms floor, so legacy or
  *           externally-built scenarios never ship with a too-short budget.
+ *           A toHaveURL that follows an action is floored like every other
+ *           type (run 51d535: four reworks read "URL assert [no-timeout]" as
+ *           a one-shot check); one recorded before any action is untouched.
  *   RULE 3: No FRAGILE CSS-tier locator on animated or dynamically-changing
  *           elements. Stable selectors (unique ID, data-* attr, single semantic
  *           class) are always allowed, even on animated elements. Exception:
@@ -37,6 +41,12 @@ import { generatedIdFragment } from './volatile-id.js';
  *           "capture the value, act, assert_compare". Messages, alerts,
  *           headings and fields the model filled itself are never catalogue
  *           data. Also applied in-run at assert time (tools.ts).
+ *   RULE 8: No currency amount in a locator name. A role name, label or text
+ *           hint that carries a price ("Bolt Cutters ABCDE$48.41", the card's
+ *           accessible name concatenating badge and price, run 51d535) pins
+ *           a catalogue value into the locator itself. The steer: use the
+ *           shortest distinguishing prefix of the name; never include a
+ *           price.
  *   RULE 5: Unused captures are stripped. A capture whose varName no
  *           assert_compare ever reads is dead weight the Critic flags every
  *           run; nothing can reference it later (assert_compare is the only
@@ -46,10 +56,18 @@ import { generatedIdFragment } from './volatile-id.js';
  * The gate is pure and synchronous: no network, no LLM. It reads and
  * optionally mutates the Scenario object that end_scenario is about to push
  * to ctx.scenarios.
+ *
+ * Record time. RULE 3, RULE 6 and RULE 8 are decidable from one selector, so
+ * tools.ts checks them when a capture, assert, assert_compare or action is
+ * recorded (generatedIdReason, fragileCompareReason, fragileAssertReason,
+ * priceInNameReason, the same functions this gate calls) and returns
+ * ok:false with the same message, recording nothing. Run 51d535 spent 15
+ * calls on a sort scenario RULE 3 rejected at end_scenario. The end gate
+ * stays as the backstop.
  */
 
 export interface GateViolation {
-  rule: 1 | 3 | 4 | 6 | 7;
+  rule: 1 | 3 | 4 | 6 | 7 | 8;
   stepIndex: number;
   detail: string;
 }
@@ -127,15 +145,11 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
     // survive a reseed.
     for (const target6 of [targetOf(step), step.kind === 'assert_compare' ? step.readTarget ?? null : null]) {
       if (!target6) continue;
-      const text6 = selectorText(target6);
-      const fragment = generatedIdFragment(text6);
-      if (fragment) {
-        violations.push({
-          rule: 6,
-          stepIndex: i,
-          detail: `step ${i + 1}: selector ${JSON.stringify(text6)} embeds the generated id "${fragment}", which rots when the data reseeds; locate the element by role, label, or a testid that carries no id, or by a table-scoped path`,
-        });
-      }
+      const r6 = generatedIdReason(target6);
+      if (r6) violations.push({ rule: 6, stepIndex: i, detail: `step ${i + 1}: ${r6}` });
+      // RULE 8: no currency amount in a locator name, whatever the step.
+      const r8 = priceInNameReason(target6);
+      if (r8) violations.push({ rule: 8, stepIndex: i, detail: `step ${i + 1}: ${r8}` });
     }
 
     // RULE 7: no literal catalogue value (see catalogueLiteralReason).
@@ -152,41 +166,18 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
     // The compare's own re-read element (readTarget) is held to the same rule.
     const compareTargets = step.kind === 'capture' ? [step.target] : step.kind === 'assert_compare' ? [step.target, ...(step.readTarget ? [step.readTarget] : [])] : [];
     for (const ct of compareTargets) {
-      if (ct.level !== 'css') continue;
-      const sel = String(ct.arg);
-      // Table-context exception: inside a table, a positional address (row 1,
-      // column 1) is stable and correct — that cell HAS no role or id of its own
-      // because its content changes by design when you sort. Position is exactly
-      // what a sort test must read, so the gate allows it here. Outside a table,
-      // and for hashed/auto-generated classes even inside one, position stays
-      // fragile and rejected.
-      if (isFragileCssSelector(sel) && !isTablePositionalSelector(sel)) {
-        violations.push({
-          rule: 3,
-          stepIndex: i,
-          detail: `step ${i + 1}: fragile CSS-tier selector "${sel}" used with ${step.kind} — switch to role/label tier, or use a stable #id or [data-*] selector`,
-        });
-      }
+      const r3 = fragileCompareReason(ct, step.kind as 'capture' | 'assert_compare');
+      if (r3) violations.push({ rule: 3, stepIndex: i, detail: `step ${i + 1}: ${r3}` });
     }
 
     // RULE 3b: fragile CSS-tier assertion on an element shown to be dynamic
     if (step.kind === 'assert' && 'target' in step.assertion && step.assertion.target.level === 'css') {
       const a = step.assertion;
-      if (a.type === 'toHaveText' || a.type === 'toContainText' || a.type === 'toHaveAttribute' || a.type === 'toHaveValue' || a.type === 'toBeVisible') {
-        const sel = String(a.target.arg);
-        if (isFragileCssSelector(sel) && !isTablePositionalSelector(sel)) {
-          const existingTimeout = (a as { timeout?: number }).timeout ?? 0;
-          const knownLong = existingTimeout >= DYNAMIC_TIMEOUT_THRESHOLD;
-          const corroborated = hasDynamicCorroboration(scenario, i, sel);
-          if (knownLong || corroborated) {
-            violations.push({
-              rule: 3,
-              stepIndex: i,
-              detail: `step ${i + 1}: fragile CSS-tier selector "${sel}" on a dynamic element — switch to role/label tier, or use a stable #id or [data-*] selector`,
-            });
-          }
-        }
-      }
+      const existingTimeout = (a as { timeout?: number }).timeout ?? 0;
+      const knownLong = existingTimeout >= DYNAMIC_TIMEOUT_THRESHOLD;
+      const corroborated = hasDynamicCorroboration(scenario, i, String(a.target.arg));
+      const r3b = fragileAssertReason(a, knownLong || corroborated);
+      if (r3b) violations.push({ rule: 3, stepIndex: i, detail: `step ${i + 1}: ${r3b}` });
     }
 
     // RULE 4: no intermediate numeric text assertion on a known-animated element.
@@ -235,24 +226,25 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
     }
     injections.reverse(); // strips were collected back-to-front
 
-    const hasAction = scenario.steps.some(
-      (s) => s.kind === 'click' || s.kind === 'fill' || s.kind === 'press' || s.kind === 'navigate'
-        || s.kind === 'select_option' || s.kind === 'set_checked' || s.kind === 'set_input_files',
-    );
+    const hasAction = scenario.steps.some(isActionStep);
+    let actionSeen = false;
     for (let i = 0; i < scenario.steps.length; i++) {
       const step = scenario.steps[i]!;
+      if (isActionStep(step)) actionSeen = true;
       if (step.kind !== 'assert') continue;
       const a = step.assertion;
       // Every timeout-bearing assertion type is floored, including
       // toBeHidden (absence waits for the element to leave) and toHaveCount
-      // (counts settle after async actions). toHaveURL has no element and
-      // polls on its own, so a toHaveURL WITHOUT a timeout is left as it is;
-      // one the model gave a timeout gets the same floor and cap as every
-      // other type. The floor applies after an action; the ceiling applies
-      // always.
+      // (counts settle after async actions). A toHaveURL that FOLLOWS an
+      // action is floored too: without a timeout the record reads
+      // "[no-timeout]" and the Critic reworks it as a one-shot check (run
+      // 51d535: four reworks, "assert URL matches regex "/auth/register"
+      // [no-timeout]" the only or first reason). A toHaveURL recorded before
+      // any action in the scenario (the page the scenario opened on) is left
+      // as it is. The floor applies after an action; the ceiling always.
       const current = (a as { timeout?: number }).timeout;
-      if (a.type === 'toHaveURL' && current === undefined) continue;
-      if (hasAction && (!current || current < ASYNC_TIMEOUT_FLOOR)) {
+      const floors = a.type === 'toHaveURL' ? actionSeen : hasAction;
+      if (floors && (!current || current < ASYNC_TIMEOUT_FLOOR)) {
         (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
         injections.push({
           stepIndex: i,
@@ -391,6 +383,73 @@ function hasDynamicCorroborationByIntent(scenario: Scenario, excludeIdx: number,
   });
 }
 
+/** A state-changing step: what an assertion that follows one must wait for. */
+function isActionStep(s: TraceStep): boolean {
+  return s.kind === 'click' || s.kind === 'fill' || s.kind === 'press' || s.kind === 'navigate'
+    || s.kind === 'select_option' || s.kind === 'set_checked' || s.kind === 'set_input_files';
+}
+
+/* ─────────────── Per-target rules shared with record time (tools.ts) ─────────────── */
+
+/** RULE 6 reason for one selector record, or null. */
+export function generatedIdReason(t: SelectorRecord): string | null {
+  const text = selectorText(t);
+  const fragment = generatedIdFragment(text);
+  if (!fragment) return null;
+  return `selector ${JSON.stringify(text)} embeds the generated id "${fragment}", which rots when the data reseeds; locate the element by role, label, or a testid that carries no id, or by a table-scoped path`;
+}
+
+/**
+ * RULE 3a reason for a capture / assert_compare target, or null. Table
+ * context exception: inside a table, a positional address (row 1, column 1)
+ * is stable and correct, because that cell has no role or id of its own and
+ * its content changes by design when you sort. Outside a table, and for
+ * hashed classes even inside one, position stays fragile and rejected.
+ */
+export function fragileCompareReason(t: SelectorRecord, kind: 'capture' | 'assert_compare'): string | null {
+  if (t.level !== 'css') return null;
+  const sel = String(t.arg);
+  if (isFragileCssSelector(sel) && !isTablePositionalSelector(sel)) {
+    return `fragile CSS-tier selector "${sel}" used with ${kind} — switch to role/label tier, or use a stable #id or [data-*] selector`;
+  }
+  return null;
+}
+
+/**
+ * RULE 3b reason for an assertion on a css target, or null. `knownDynamic`
+ * is true when the element is shown to be dynamic: the recorded timeout is at
+ * or above the dynamic threshold (every adaptive timeout is, since the floor
+ * is 5000 ms) or another step captures or compares the same selector.
+ */
+export function fragileAssertReason(a: Assertion, knownDynamic: boolean): string | null {
+  if (!('target' in a) || a.target.level !== 'css') return null;
+  if (a.type !== 'toHaveText' && a.type !== 'toContainText' && a.type !== 'toHaveAttribute' && a.type !== 'toHaveValue' && a.type !== 'toBeVisible') return null;
+  const sel = String(a.target.arg);
+  if (!knownDynamic || !isFragileCssSelector(sel) || isTablePositionalSelector(sel)) return null;
+  return `fragile CSS-tier selector "${sel}" on a dynamic element — switch to role/label tier, or use a stable #id or [data-*] selector`;
+}
+
+/** The steer every RULE 8 rejection carries. */
+export const PRICE_IN_NAME_STEER = 'use the shortest distinguishing prefix of the name; never include a price';
+
+/**
+ * RULE 8 reason: a role name, label or text locator that carries a currency
+ * amount, or null. Run 51d535: the Critic reworked three scenarios whose
+ * role or label hint was the card's whole accessible name, badge and price
+ * included ("Bolt Cutters ABCDE$48.41"), a volatile catalogue value pinned
+ * into the locator. The amount is found by the same parser assert_compare
+ * uses (currencyAmountIn).
+ */
+export function priceInNameReason(t: SelectorRecord): string | null {
+  let name: string | null = null;
+  if (t.level === 'role') name = (t.arg as { name?: string }).name ?? null;
+  else if (t.level === 'label' || t.level === 'text' || t.level === 'placeholder' || t.level === 'alt' || t.level === 'title') name = String(t.arg);
+  if (!name) return null;
+  const amount = currencyAmountIn(name);
+  if (!amount) return null;
+  return `locator name ${JSON.stringify(name)} contains the price "${amount}", a catalogue value that changes when the data reseeds; ${PRICE_IN_NAME_STEER}`;
+}
+
 /** The step's locator record, for rules that inspect every selector. */
 function targetOf(step: TraceStep): SelectorRecord | null {
   if (step.kind === 'assert') return 'target' in step.assertion ? step.assertion.target : null;
@@ -415,6 +474,7 @@ export function gateRuleLabel(rule: GateViolation['rule']): string {
     case 4: return 'RULE 4 (intermediate value on animated element)';
     case 6: return 'RULE 6 (generated id in selector)';
     case 7: return 'RULE 7 (literal catalogue value)';
+    case 8: return 'RULE 8 (price in locator name)';
   }
 }
 
@@ -426,6 +486,7 @@ export function gateBrokenReason(rule: GateViolation['rule']): string {
     case 4: return 'intermediate value assertion on animated element';
     case 6: return 'selector embeds a generated id';
     case 7: return 'literal catalogue value asserted';
+    case 8: return 'locator name carries a price';
   }
 }
 

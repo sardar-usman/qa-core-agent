@@ -15,7 +15,8 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, ASYNC_TIMEOUT_CEILING } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING } from '../src/agent/gate.js';
+import { currencyAmountIn } from '../src/agent/parse-number.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
@@ -143,7 +144,18 @@ const r2AtFloorSteps: TraceStep[] = [
 check('AJ2. RULE 2 — timeout exactly at the 5000 floor is not re-injected', runGate(makeScenario(r2AtFloorSteps)).injections.length === 0);
 
 check('AK. RULE 2 — no injection when no action steps', runGate(makeScenario([{ kind: 'assert', name: 'v', assertion: { type: 'toBeVisible', target: { level: 'role', arg: { role: 'heading', name: 'Home' }, intent: 'h' } } }])).injections.length === 0);
-check('AL. RULE 2: toHaveURL without a timeout is not injected (it behaves as before)', runGate(makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }])).injections.length === 0);
+// Run 51d535: four reworks read 'assert URL matches regex "/auth/register" [no-timeout]'
+// as a one-shot check. A toHaveURL that follows an action is floored like every
+// other type; one recorded before any action stays untouched.
+const urlAfterAction = makeScenario([NAV, CLICK_ROLE, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }]);
+const urlAfterActionResult = runGate(urlAfterAction);
+check('AL. RULE 2: a toHaveURL with no timeout that follows an action is raised to the 5000 floor and logged', urlAfterActionResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was unset/.test(i.detail)) && (urlAfterAction.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(urlAfterActionResult.injections));
+const urlFirst = makeScenario([{ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }, NAV, CLICK_ROLE, ASSERT_ROLE]);
+const urlFirstResult = runGate(urlFirst);
+check('AL0. RULE 2: a toHaveURL recorded before any action in the scenario is left without a timeout', !urlFirstResult.injections.some((i) => i.assertionType === 'toHaveURL') && (urlFirst.steps[0] as { assertion: { timeout?: number } }).assertion.timeout === undefined, JSON.stringify(urlFirstResult.injections));
+const urlAfterNav = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }]);
+runGate(urlAfterNav);
+check('AL1. RULE 2: a navigate counts as the action a toHaveURL follows', (urlAfterNav.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 5000);
 // A toHaveURL the model gave a timeout gets the same floor and cap as every
 // other timeout-bearing type (run 591732 passed 15000, which was never
 // recorded; now it is, and 3000 or 60000 are corrected like any other).
@@ -505,6 +517,27 @@ check('R7A6. a name-shaped pattern on the user menu is allowed',
 check('R7A7. runGate passes known names through to RULE 7',
   runGate(makeScenario([NAV, ...loginFills, { kind: 'assert', name: 'g', assertion: { type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'Admin User' } }]), { knownNames: ['Admin User'] }).violations.some((v) => v.rule === 7 && /SRS names/.test(v.detail)));
 
+/* ─── RULE 8: a currency amount in a locator name ────────────────────────── */
+// Run 51d535: the Critic reworked three scenarios whose role or label hint was
+// the card's whole accessible name, badge and price included.
+check('R8A. currencyAmountIn finds "$48.41" in the concatenated card name', currencyAmountIn('Bolt Cutters ABCDE$48.41') === '$48.41');
+check('R8B. currencyAmountIn handles a code before and a symbol after the number, and thousands', currencyAmountIn('Combination Pliers EUR 14,15') === 'EUR 14,15' && currencyAmountIn('Drill 1,299.00 €') === '1,299.00 €' && currencyAmountIn('Total: 12 USD') === '12 USD');
+check('R8C. currencyAmountIn is null for a name with a plain number, a symbol alone, or no digit', currencyAmountIn('Bolt Cutters 2') === null && currencyAmountIn('Price in $') === null && currencyAmountIn('Hammer') === null);
+const pricedLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Bolt Cutters ABCDE$48.41' }, intent: 'first product card' };
+const pricedLabel: SelectorRecord = { level: 'label', arg: 'Pliers $14.15', intent: 'pliers card' };
+const pricedText: SelectorRecord = { level: 'text', arg: 'Combination Pliers $14.15', intent: 'pliers card' };
+const plainLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Bolt Cutters' }, intent: 'first product card' };
+const r8Role = priceInNameReason(pricedLink);
+check('R8D. a role name carrying a price is rejected with the prefix steer', /"\$48\.41"/.test(r8Role ?? '') && (r8Role ?? '').endsWith(PRICE_IN_NAME_STEER), r8Role ?? 'null');
+check('R8E. a label and a text locator carrying a price are rejected too', /\$14\.15/.test(priceInNameReason(pricedLabel) ?? '') && /\$14\.15/.test(priceInNameReason(pricedText) ?? ''));
+check('R8F. the shortest distinguishing prefix passes, and a css or testid locator is never judged', priceInNameReason(plainLink) === null && priceInNameReason({ level: 'css', arg: '[data-test="product-price"]', intent: 'p' }) === null && priceInNameReason({ level: 'testid', arg: 'product-48.41', intent: 'p' }) === null);
+const r8Click = runGate(makeScenario([NAV, { kind: 'click', target: pricedLink }, ASSERT_ROLE]));
+check('R8G. runGate rejects a click on a priced role name under RULE 8 at the right step', r8Click.violations.some((v) => v.rule === 8 && v.stepIndex === 1 && /step 2:/.test(v.detail) && /\$48\.41/.test(v.detail)), JSON.stringify(r8Click.violations));
+const r8Compare = runGate(makeScenario([NAV, CLICK_ROLE, { kind: 'capture', varName: 'c', source: 'text', target: { level: 'testid', arg: 'product-price', intent: 'first price' }, intent: 'first price' }, { kind: 'assert_compare', varName: 'c', relation: 'less', source: 'text', target: { level: 'testid', arg: 'product-price', intent: 'first price' }, intent: 'first price', readVar: 'cn', readTarget: pricedText }]));
+check('R8H. a compare re-read target with a price in its text locator is rejected under RULE 8', r8Compare.violations.some((v) => v.rule === 8 && v.stepIndex === 3));
+check('R8I. the shared label and drop reason exist for rule 8', gateRuleLabel(8) === 'RULE 8 (price in locator name)' && gateBrokenReason(8) === 'locator name carries a price');
+check('R8J. the clean steps of the same scenario carry no RULE 8 violation', !runGate(makeScenario([NAV, { kind: 'click', target: plainLink }, ASSERT_ROLE])).violations.some((v) => v.rule === 8));
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms, all timeout-bearing types), RULE 4 (intermediate value), RULE 5 (unused captures stripped), assert_freeze counting.');
+console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms, all timeout-bearing types, a toHaveURL after an action), RULE 4 (intermediate value), RULE 5 (unused captures stripped), RULE 8 (price in a locator name), assert_freeze counting.');

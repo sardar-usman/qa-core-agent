@@ -8,7 +8,7 @@ export { recoverResolve, type ResolveInput };
 import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation } from './trace.js';
 import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique } from './unique-data.js';
-import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason } from './gate.js';
+import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
@@ -52,6 +52,17 @@ const CLOSEOUT_GRACE = 4;
  * assertion path).
  */
 const RECOVERY_CAP = 2;
+
+/**
+ * The live wait of an Explorer count or absence probe (toHaveCount with count
+ * or atLeast, toHaveCount 0, toBeHidden). During exploration a selector that
+ * matches nothing used to wait the full adaptive ceiling (run 51d535: two 59 s
+ * waits on `a[data-testid^="product-"]` against a data-test site). A count
+ * that has not settled in 10 s is a wrong selector, not a slow page. Only the
+ * LIVE probe is capped; the RECORDED and EMITTED timeout are unchanged (the
+ * model's value or the adaptive observation, floored and capped by the gate).
+ */
+export const LIVE_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Thrown by resolveAndRecord when a selector could not be resolved OR recovered
@@ -201,6 +212,14 @@ export interface ToolContext {
    * 'heal' event consume it.
    */
   heals: Array<{ scenario?: string; intent: string; from: string; to: string }>;
+  /**
+   * How many elements each get_dom call saw carrying `data-testid` and
+   * `data-test`, summed over the run. The dominant attribute is the host's
+   * test-id convention: printed as the first line of every get_dom result
+   * and saved on the per-host fingerprint (run 51d535 guessed data-testid on
+   * a data-test site twice, at 59 s each, a convention run 4 had already seen).
+   */
+  _testIdCounts: Record<string, number>;
 }
 
 /** A single live capture, held for the current scenario only. */
@@ -241,9 +260,83 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     findings: [],
     _recoveryAttempts: new Map(),
     heals: [],
+    _testIdCounts: {},
   };
   attachDiagnostics(ctx);
   return ctx;
+}
+
+/**
+ * The test-id attribute this run's pages use most (`data-test` or
+ * `data-testid`), or null when no get_dom call saw either. Saved on the
+ * per-host fingerprint so the next run starts knowing it.
+ */
+export function dominantTestIdAttribute(ctx: Pick<ToolContext, '_testIdCounts'>): string | null {
+  const entries = Object.entries(ctx._testIdCounts).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  return entries[0]?.[0] ?? null;
+}
+
+/** The first line of every get_dom result: the test-id attribute the page uses. */
+export function testIdAttributeLine(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return 'test-id attribute on this page: none';
+  const [top, ...rest] = entries;
+  const also = rest.map(([attr, n]) => `${attr} also appears on ${n} element(s)`).join('; ');
+  return `test-id attribute on this page: ${top![0]}${also ? ` (${also})` : ''}`;
+}
+
+/**
+ * Record-time gate. RULE 3, RULE 6 and RULE 8 are decidable from the locator
+ * alone, so they are checked the moment a capture, assert, assert_compare or
+ * action is called, on the record its hints build (the same shape the in-run
+ * RULE 7 check uses), and the call is refused with the message the
+ * end_scenario gate would give. Nothing is recorded. Run 51d535 spent 15
+ * calls on a sort scenario RULE 3 rejected at end_scenario, and the model
+ * re-recorded the whole scenario. The end gate stays as the backstop.
+ */
+function recordTimeGateError(
+  what: 'capture' | 'assert_compare' | 'assert' | 'action',
+  record: SelectorRecord,
+  assertion?: { shape: Assertion; knownDynamic: boolean },
+): string | null {
+  const hit = (rule: GateViolation['rule'], reason: string | null): string | null =>
+    reason ? `${gateRuleLabel(rule)} rejected this ${what === 'action' ? 'action' : what}: ${reason}.` : null;
+  const r6 = hit(6, generatedIdReason(record));
+  if (r6) return r6;
+  const r8 = hit(8, priceInNameReason(record));
+  if (r8) return r8;
+  if (what === 'capture' || what === 'assert_compare') {
+    const r3 = hit(3, fragileCompareReason(record, what));
+    if (r3) return r3;
+  }
+  if (what === 'assert' && assertion) {
+    const r3b = hit(3, fragileAssertReason(assertion.shape, assertion.knownDynamic));
+    if (r3b) return r3b;
+  }
+  return null;
+}
+
+/** The record the hints build, or null when no locating hint was given (the resolve will say so). */
+function hintRecord(input: Record<string, unknown>, fallback: 'element' | 'elements' | 're-read element' = 'element'): SelectorRecord | null {
+  try {
+    const hints = input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string };
+    const record = recordFromHints({ ...hints, intent: deriveIntent(hints, fallback) });
+    // A stated role takes its accessible name from the label hint, else the
+    // intent (the cascade does the same), so a price in the intent lands in
+    // the role name when no stronger hint is given.
+    if (record.level === 'role' && !(record.arg as { name?: string }).name && hints.intent?.trim() && !hints.testid && !hints.css) {
+      return { ...record, arg: { ...(record.arg as { role: string }), name: hints.intent.trim() } };
+    }
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+/** Refuse an action tool call up front when its locator breaks RULE 6 or RULE 8. */
+function actionGateError(input: Record<string, unknown>): string | null {
+  const record = hintRecord(input);
+  return record ? recordTimeGateError('action', record) : null;
 }
 
 function attachDiagnostics(ctx: ToolContext): void {
@@ -1245,6 +1338,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         return { ok: true, data: { url: ctx.page.url() } };
       }
       case 'click': {
+        const clickGate = actionGateError(call.input);
+        if (clickGate) return { ok: false, error: clickGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         await loc.click();
         ctx.lastActionAt = Date.now();
@@ -1253,6 +1348,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
       }
       case 'fill': {
         const value = String(call.input.value ?? '');
+        const fillGate = actionGateError(call.input);
+        if (fillGate) return { ok: false, error: fillGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         // Detect the real control type before acting. fill() throws "Element is
         // not an <input>" on a <select>, and silently no-ops nothing useful on a
@@ -1305,6 +1402,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         return { ok: true, data: { filled: record.intent, generated: generate ?? undefined, ...(overrode ? { identifierOverridden: overrode } : {}) } };
       }
       case 'select_option': {
+        const selectGate = actionGateError(call.input);
+        if (selectGate) return { ok: false, error: selectGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         const hasValue = typeof call.input.optionValue === 'string' && call.input.optionValue.trim() !== '';
         const hasLabel = typeof call.input.optionLabel === 'string' && call.input.optionLabel.trim() !== '';
@@ -1321,6 +1420,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         return { ok: true, data: { selected: record.intent, by, option } };
       }
       case 'set_checked': {
+        const checkedGate = actionGateError(call.input);
+        if (checkedGate) return { ok: false, error: checkedGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         const checked = call.input.checked === undefined ? true : call.input.checked === true;
         if (checked) await loc.check(); else await loc.uncheck();
@@ -1336,6 +1437,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
             : [];
         const files = raw.map((f) => f.trim()).filter(Boolean);
         if (files.length === 0) return { ok: false, error: 'set_input_files needs files (array) or path (string).' };
+        const filesGate = actionGateError(call.input);
+        if (filesGate) return { ok: false, error: filesGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         await loc.setInputFiles(files);
         ctx.lastActionAt = Date.now();
@@ -1344,6 +1447,8 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
       }
       case 'press': {
         const key = String(call.input.key ?? '');
+        const pressGate = actionGateError(call.input);
+        if (pressGate) return { ok: false, error: pressGate };
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
         await loc.press(key);
         ctx.lastActionAt = Date.now();
@@ -1375,8 +1480,14 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         return { ok: true, data: { waited: ms } };
       }
       case 'get_dom': {
-        const summary = await summarizeDom(ctx.page);
-        return { ok: true, data: summary };
+        const summary = await summarizeDom(ctx.page) as { testIdCounts: Record<string, number> } & Record<string, unknown>;
+        const { testIdCounts, ...rest } = summary;
+        for (const [attr, n] of Object.entries(testIdCounts)) {
+          ctx._testIdCounts[attr] = (ctx._testIdCounts[attr] ?? 0) + n;
+        }
+        // The first line of every get_dom result names the test-id attribute
+        // the page uses, so the model writes css hints against the right one.
+        return { ok: true, data: { note: testIdAttributeLine(testIdCounts), testIdAttribute: dominantTestIdAttribute({ _testIdCounts: testIdCounts }), ...rest } };
       }
       case 'capture': {
         const name = String(call.input.name ?? '').trim();
@@ -1392,6 +1503,12 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         if (source === 'attribute' && !attribute) {
           return { ok: false, error: 'capture with source="attribute" needs an attribute name (e.g. "id").' };
         }
+        // RULE 3, 6 and 8 at record time: a fragile positional selector outside
+        // a table, a generated id, or a price in the locator name is refused
+        // now, not at end_scenario after the whole scenario was recorded.
+        const captureHint = hintRecord(call.input, source === 'count' ? 'elements' : 'element');
+        const captureGate = captureHint ? recordTimeGateError('capture', captureHint) : null;
+        if (captureGate) return { ok: false, error: captureGate };
         let record: SelectorRecord;
         let value: string;
         if (source === 'count') {
@@ -1448,6 +1565,9 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         const hasHints = relation !== 'absent' && hintKeys.some((k) => typeof call.input[k] === 'string' && String(call.input[k]).trim());
         let readTarget: SelectorRecord | undefined;
         if (hasHints) {
+          const compareHint = hintRecord(call.input, 're-read element');
+          const compareGate = compareHint ? recordTimeGateError('assert_compare', compareHint) : null;
+          if (compareGate) return { ok: false, error: compareGate };
           const hints = {
             intent: deriveIntent(call.input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string }, 're-read element'),
             role: call.input.role as string | undefined,
@@ -1523,6 +1643,9 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         // not a getByText() hint. Passing it would cause the cascade to look for an
         // element that already has that text, failing when the animation hasn't arrived yet.
         const { text: _wftExpected, timeoutMs: _wftMs, ...wftSelectorHints } = call.input as Record<string, unknown>;
+        const wftHint = hintRecord(wftSelectorHints);
+        const wftGate = wftHint ? recordTimeGateError('assert', wftHint, { shape: { type: 'toHaveText', target: wftHint, text: wftText }, knownDynamic: true }) : null;
+        if (wftGate) return { ok: false, error: wftGate };
         const { record: wftRecord, loc: wftLoc } = await resolveAndRecord(ctx, wftSelectorHints as never);
         const wftStart = Date.now();
         let wftMatched = false;
@@ -1914,6 +2037,11 @@ async function executeAssertion(
   // adaptive timeout from that observation, never a constant. The live probe
   // uses the ceiling so even a slow but real settle is fully observable.
   const probe = { timeout: ADAPTIVE_CEILING_MS };
+  // Count and absence probes fail fast: a selector that matches nothing is a
+  // wrong selector, not a slow page (run 51d535 waited 59 s twice on a
+  // data-testid css against a data-test site). The recorded timeout is
+  // unchanged: the model's value or the adaptive observation.
+  const countProbe = { timeout: Math.min(input.timeout && input.timeout > 0 ? input.timeout : LIVE_PROBE_TIMEOUT_MS, LIVE_PROBE_TIMEOUT_MS) };
   switch (input.type) {
     case 'toBeVisible': {
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
@@ -2000,7 +2128,7 @@ async function executeAssertion(
         const record = recordFromHints({ ...input, intent: deriveIntent(input, 'elements') });
         const countLoc = baseLocator(ctx.page, record);
         const t0 = Date.now();
-        await expect.poll(async () => countLoc.count(), probe).toBeGreaterThanOrEqual(minimum);
+        await expect.poll(async () => countLoc.count(), countProbe).toBeGreaterThanOrEqual(minimum);
         const observed = recordedTimeout(ctx, input.timeout, t0);
         pushStep(ctx, {
           kind: 'assert',
@@ -2017,7 +2145,7 @@ async function executeAssertion(
         const record = recordFromHints(input);
         const countLoc = baseLocator(ctx.page, record);
         const t0 = Date.now();
-        await expect(countLoc).toHaveCount(0, probe);
+        await expect(countLoc).toHaveCount(0, countProbe);
         const observed = recordedTimeout(ctx, input.timeout, t0);
         pushStep(ctx, {
           kind: 'assert',
@@ -2030,7 +2158,7 @@ async function executeAssertion(
       // toHaveCount needs the multi-match locator; .first() would collapse the
       // count to 1 and any count > 1 assertion would be impossible.
       const countLoc = baseLocator(ctx.page, record);
-      await expect(countLoc).toHaveCount(input.count, assertTimeout);
+      await expect(countLoc).toHaveCount(input.count, countProbe);
       pushStep(ctx, {
         kind: 'assert',
         name: `${record.intent} count is ${input.count}`,
@@ -2050,7 +2178,7 @@ async function executeAssertion(
       const record = recordFromHints(input);
       const loc = baseLocator(ctx.page, record).first();
       const t0 = Date.now();
-      await expect(loc).toBeHidden(probe);
+      await expect(loc).toBeHidden(countProbe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
@@ -2196,6 +2324,23 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
       return { ok: false, error: `RULE 7 (literal catalogue value) rejected this assertion: ${r7}.` };
     }
   }
+  // RULE 3, 6 and 8 at record time, on every assertion with a target: the
+  // same checks the end_scenario gate runs, before the probe waits on the
+  // element and before the retry cap counts anything.
+  if (input.type !== 'toHaveURL') {
+    // With a regex the `text` field is not a locator hint (the handler drops it too).
+    const forHint = (input.regex ? { ...input, text: undefined } : input) as unknown as Record<string, unknown>;
+    const assertHint = hintRecord(forHint, input.type === 'toHaveCount' ? 'elements' : 'element');
+    if (assertHint) {
+      // The recorded timeout is the model's value or the adaptive observation
+      // (never under the 5000 ms floor), so the element counts as dynamic
+      // unless the model asked for a shorter wait.
+      const knownDynamic = !(typeof input.timeout === 'number' && input.timeout > 0 && input.timeout < ADAPTIVE_FLOOR_MS);
+      const shape = { type: input.type, target: assertHint, text: String(input.text ?? ''), attribute: String(input.attribute ?? ''), value: String(input.value ?? '') } as unknown as Assertion;
+      const recordGate = recordTimeGateError('assert', assertHint, { shape, knownDynamic });
+      if (recordGate) return { ok: false, error: recordGate };
+    }
+  }
   const sig = assertionSignature(input);
   try {
     const result = await executeAssertion(ctx, input);
@@ -2328,6 +2473,11 @@ async function summarizeDom(page: Page): Promise<unknown> {
     const inputs = Array.from(document.querySelectorAll('input, textarea, select')).slice(0, MAX_INTERACTIVE).map(pick);
     const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).slice(0, MAX_INTERACTIVE).map(pick);
     const links = Array.from(document.querySelectorAll('a[href]')).slice(0, MAX_LINKS).map(pick);
+    // How many elements carry each test-id attribute, over the whole document.
+    const testIdCounts = {
+      'data-testid': document.querySelectorAll('[data-testid]').length,
+      'data-test': document.querySelectorAll('[data-test]').length,
+    };
     return {
       title: document.title,
       url: location.href,
@@ -2335,6 +2485,7 @@ async function summarizeDom(page: Page): Promise<unknown> {
       inputs,
       buttons,
       links,
+      testIdCounts,
     };
   });
 }

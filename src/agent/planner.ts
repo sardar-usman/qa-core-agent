@@ -1158,7 +1158,41 @@ interface PageEvidence {
 }
 
 /** The evidence-side shape of a snapshot: the top document plus every content frame. */
-export type PageFitSnapshot = Pick<PageSnapshot, 'inputs' | 'buttons' | 'headings' | 'textSample' | 'frames'> & Partial<Pick<PageSnapshot, 'tableHeaders'>> & { flags?: Partial<PageFlags> };
+export type PageFitSnapshot = Pick<PageSnapshot, 'inputs' | 'buttons' | 'headings' | 'textSample' | 'frames'> & Partial<Pick<PageSnapshot, 'tableHeaders' | 'title' | 'url'>> & { flags?: Partial<PageFlags> };
+
+/**
+ * The phrases that name the page's own form: a heading, a title segment or a
+ * path segment of two or more words that contains a field term ("forgot
+ * password", "reset password", "sign in"). In a scenario name on that page
+ * such a phrase names the form, not a field, so it is removed from the name
+ * before field matching. Run 51d535 dropped three valid forgot-password
+ * scenarios on /auth/forgot-password as "names password which the page
+ * snapshot does not show": the word named the form. A bare "password" in a
+ * scenario name on that page still names the field (a registration scenario
+ * planned there stays dropped). Exported for the smoke.
+ */
+export function formNamePhrases(snap: Pick<PageFitSnapshot, 'headings' | 'title' | 'url'>): string[] {
+  const candidates: string[] = [];
+  for (const h of snap.headings) if (h.label) candidates.push(h.label);
+  if (snap.title) candidates.push(...snap.title.split(/[|:·•\-]+/));
+  if (snap.url) {
+    try { candidates.push(...new URL(snap.url).pathname.split('/')); } catch { /* not a URL */ }
+  }
+  const out = new Set<string>();
+  for (const c of candidates) {
+    const words = normalizeWords(c);
+    if (words.split(' ').length < 2) continue;
+    if (PAGE_FIT_TERMS.some((t) => t.from === 'inputs' && t.named.test(words))) out.add(words);
+  }
+  return [...out];
+}
+
+/** The scenario name with the page's own form-name phrases removed. */
+function nameWithoutFormNames(name: string, phrases: string[]): string {
+  let out = name;
+  for (const p of phrases) out = out.split(p).join(' ');
+  return out.replace(/\s+/g, ' ').trim();
+}
 
 function elWords(el: PickedEl): string {
   return [el.label, el.labelText, el.id, el.type, el.tag].filter((x): x is string => !!x).join(' ');
@@ -1217,7 +1251,9 @@ function termEvidenced(t: PageFitTerm, ev: PageEvidence): boolean {
  * would have failed or thrashed in the Explorer. Exported for the smoke.
  */
 export function pageFitReason(s: PlannedScenario, snapshot: PageFitSnapshot): { control: string; reason: string } | null {
-  const name = normalizeWords(s.name);
+  // "forgot-password form" on the forgot-password page names the form, not a
+  // password field: the page's own form-name phrases are not judged.
+  const name = nameWithoutFormNames(normalizeWords(s.name), formNamePhrases(snapshot));
   const ev = buildEvidence(snapshot);
   // A navigation scenario is judged only on its first action's controls on
   // the planned page; what it reads after the click lives on another page.
