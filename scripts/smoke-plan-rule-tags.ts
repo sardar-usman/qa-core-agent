@@ -10,7 +10,8 @@
  *
  * This drives the REAL exported parsePlan, not a mirror.
  */
-import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor, applyCitationChecks, lockoutScenarioNames, knownAccountIdentifiers } from '../src/agent/planner.js';
+import { parsePlan, PLANNER_SYSTEM, CREDENTIAL_STEERING, credentialSteeringFor, applyCitationChecks, lockoutScenarioNames, knownAccountIdentifiers, contradictionReason, rejectContradictions, negatedActionIn, retryUncoveredRules, ruleRetryAsk, RULE_RETRY_CAP, type PlannedScenario } from '../src/agent/planner.js';
+import { computeDerivation } from '../src/agent/rule-coverage.js';
 import { citationMismatchReason } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
@@ -143,6 +144,72 @@ check('I8. citationMismatchReason covers the rejection words and leaves plausibl
   check('J4. plain words are not identifiers', !ids.includes('user') && !ids.includes('login'));
 }
 
+/* ─── K. contradictions are dropped at plan time; a rule they leave uncited gets ONE retry ── */
+// Run 51d535 planned "[negative] sorted by price low-to-high and the list
+// remained unsorted" citing R4 (the sort rule); the Critic rejected it with
+// five reasons and R4 read not-planned.
+{
+  const map: RequirementsMap = {
+    features: [
+      { name: 'catalogue', description: 'Products are listed, sorted and filtered.', rules: [
+        { id: 'R1', text: 'The catalogue lists every product with name, image and price.', type: 'behavior' },
+        { id: 'R4', text: 'Sorting by price low to high orders the visible products by ascending price.', type: 'behavior' },
+        { id: 'R5', text: 'Clicking a product opens its detail page.', type: 'navigation' },
+      ] },
+      { name: 'contact', description: 'The contact form.', rules: [
+        { id: 'R13', text: 'Submitting the form with an empty message shows a required-field error.', type: 'validation' },
+        { id: 'R14', text: 'An email address without an @ sign is rejected with a format error.', type: 'validation' },
+      ] },
+    ],
+    roles: [], truncated: false,
+  };
+  const sc = (name: string, category: PlannedScenario['category'], feature: string, ruleIds?: string[]): PlannedScenario => ({ name, category, feature, rationale: 'r', ...(ruleIds ? { ruleIds } : {}) });
+  const unsorted = sc('sorted by price low-to-high and the list remained unsorted', 'negative', 'catalogue', ['R4']);
+  const r1 = contradictionReason(unsorted, map);
+  check('K1. the run 5 shape is a contradiction: the name asserts the opposite of the cited sort rule', /asserts the opposite of R4/.test(r1 ?? '') && /remained unsorted/.test(r1 ?? ''), r1 ?? 'null');
+  check('K2. negatedActionIn finds the negated stem, and never a plain "rejected"', negatedActionIn('the list remained unsorted', map.features[0]!.rules[1]!.text) === 'remained unsorted' && negatedActionIn('did not redirect to the detail page', 'Clicking a product redirects to its detail page.') === 'did not redirect' && negatedActionIn('rejected an empty message with an error', 'Submitting the form with an empty message shows a required-field error.') === null);
+  const onlyBehavior = sc('searched for a nonsense term and the catalogue showed no products', 'negative', 'catalogue', ['R1']);
+  check('K3. a negative whose only cited rules state no rejection is a contradiction', /only cited rules \(R1\) state no rejection/.test(contradictionReason(onlyBehavior, map) ?? ''), contradictionReason(onlyBehavior, map) ?? 'null');
+  const trueNegative = sc('rejected an email address without an @ sign and showed the format error', 'negative', 'contact', ['R14']);
+  check('K4. a true negative citing a validation rule is kept', contradictionReason(trueNegative, map) === null);
+  const mixed = sc('rejected an empty message and the catalogue still listed products', 'negative', 'catalogue', ['R1', 'R13']);
+  check('K5. a negative citing a rejection rule among others is kept (not every cited rule states no rejection)', contradictionReason(mixed, map) === null);
+  const edgeBehavior = sc('sorted by price with a single product and it stayed first', 'edge', 'catalogue', ['R4']);
+  check('K6. an edge scenario citing a behavior rule is kept (boundary of the behavior, not its negation)', contradictionReason(edgeBehavior, map) === null);
+  const edgeNegated = sc('sorted by price with equal prices and the list was not sorted', 'edge', 'catalogue', ['R4']);
+  check('K7. an edge scenario whose name asserts the opposite of its rule is a contradiction', /asserts the opposite of R4/.test(contradictionReason(edgeNegated, map) ?? ''));
+  check('K8. a happy scenario, a [-] scenario and a plan with no map are never judged', contradictionReason(sc('sorted by price low-to-high and the first price was the lowest', 'happy', 'catalogue', ['R4']), map) === null && contradictionReason(sc('the list remained unsorted', 'negative', 'catalogue', []), map) === null && contradictionReason(unsorted, undefined) === null);
+  const plan = [sc('sorted by price low-to-high and the first price was the lowest', 'happy', 'catalogue', ['R4']), unsorted, trueNegative, onlyBehavior];
+  const rejected = rejectContradictions(plan, map);
+  check('K9. rejectContradictions keeps plan order and names each drop', rejected.kept.map((s) => s.name).join('|') === `${plan[0]!.name}|${trueNegative.name}` && rejected.rejected.length === 2 && rejected.rejected[0]?.scenario === unsorted, JSON.stringify(rejected.rejected.map((r) => r.scenario.name)));
+  // The derivation record names the drop for an applicable category: R13
+  // ("required-field") makes required-omission applicable to the contact
+  // feature, and the dropped negative is a required-omission shape.
+  const contactContradiction = sc('submitted the form with an empty message and the error was not shown', 'negative', 'contact', ['R13']);
+  check('K9a. the contact shape is a contradiction too (the name negates the rule\'s "shows")', /asserts the opposite of R13/.test(contradictionReason(contactContradiction, map) ?? ''), contradictionReason(contactContradiction, map) ?? 'null');
+  const derivation = computeDerivation({ map, planned: [trueNegative], contradictionRejected: [contactContradiction] });
+  check('K10. the derivation report names the contradiction drop as `contradiction`', derivation.find((d) => d.feature === 'contact')?.skipped.some((k) => k.category === 'required-omission' && k.reason === 'contradiction') === true, JSON.stringify(derivation));
+
+  // The retry: R4 is uncited after the drop; R1 too. One call per uncovered rule, never past the cap.
+  const asked: string[] = [];
+  const ask = async (rule: { id: string }) => {
+    asked.push(rule.id);
+    return { text: rule.id === 'R4' ? '<plan>\n1. [catalogue][happy][R4] sorted by price low-to-high and the first card held the lowest price — fails if the sort stops ordering\n</plan>' : 'no plan', costUsd: 0.001 };
+  };
+  const budget = { remaining: RULE_RETRY_CAP };
+  const retry = await retryUncoveredRules({ dropped: [unsorted, onlyBehavior], kept: [trueNegative], map, budget, ask });
+  check('K11. the retry is called once per uncovered rule, in plan order', asked.join(',') === 'R4,R1', asked.join(','));
+  check('K12. a planned retry is appended citing its rule, and an empty reply is itemized as none', retry.added.length === 1 && retry.added[0]?.ruleIds?.includes('R4') === true && retry.retries.map((r) => `${r.ruleId}:${r.outcome}`).join(',') === 'R4:planned,R1:none' && retry.retries.every((r) => r.costUsd === 0.001), JSON.stringify(retry.retries));
+  check('K13. a rule a kept scenario still cites is not retried', (await retryUncoveredRules({ dropped: [unsorted], kept: [plan[0]!], map, budget: { remaining: 5 }, ask: async () => { throw new Error('must not be called'); } })).retries.length === 0);
+  const capBudget = { remaining: 1 };
+  const capped = await retryUncoveredRules({ dropped: [unsorted, onlyBehavior], kept: [], map, budget: capBudget, ask });
+  check('K14. the per-run cap stops the retries: one remaining means one call, and the budget is spent', capped.retries.length === 1 && capBudget.remaining === 0 && (await retryUncoveredRules({ dropped: [unsorted], kept: [], map, budget: capBudget, ask })).retries.length === 0 && RULE_RETRY_CAP === 5);
+  const rejectedRetry = await retryUncoveredRules({ dropped: [unsorted], kept: [], map, budget: { remaining: 5 }, ask, accept: () => 'names price which the page snapshot does not show' });
+  check('K15. a retried scenario the accept check refuses is itemized as rejected with the reason and never added', rejectedRetry.added.length === 0 && rejectedRetry.retries[0]?.outcome === 'rejected' && /names price/.test(rejectedRetry.retries[0]?.reason ?? ''));
+  const askText = ruleRetryAsk(map.features[0]!.rules[1]!, map.features[0]!, 'https://s.example/');
+  check('K16. the ask names the one rule, the page, the feature tag and the citation bracket', /Plan ONE scenario verifying rule R4 on this page \(https:\/\/s\.example\/\)/.test(askText) && /\[catalogue\]\[happy\]\[R4\]/.test(askText));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the rule-citation bracket parses ids and [-], and the pre-SRS formats parse byte-identically with no ruleIds key.');
+console.log('OK: the rule-citation bracket parses ids and [-], the pre-SRS formats parse byte-identically with no ruleIds key, a contradiction is dropped at plan time, and an uncited rule gets one capped retry.');

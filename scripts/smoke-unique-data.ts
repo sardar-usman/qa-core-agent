@@ -194,7 +194,8 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     check('D2. the step records the override the way unique data does (generate email, override marker)', emailStep?.kind === 'fill' && emailStep.generate === 'email' && emailStep.override === 'non-existent-account');
     check('D3. the password fill itself keeps the wrong password literally', tctx.current?.steps.some((st) => st.kind === 'fill' && st.target.intent === 'password input' && st.value === 'wrongPassword!') === true);
     await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    await runTool(tctx, { name: 'end_scenario', input: {} });
+    const endU1 = await runTool(tctx, { name: 'end_scenario', input: {} });
+    check('end1. end_scenario accepts scenario 1', endU1.ok === true, endU1.error);
 
     // D4: the lockout scenario is exempt and keeps the real account.
     await page.setContent(loginHtml, { waitUntil: 'load' });
@@ -203,7 +204,8 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     const pwExempt = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrong' } });
     check('D4. a scenario whose rule names a locked account keeps the real identifier', pwExempt.ok === true && !(pwExempt.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === KNOWN) === true);
     await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    await runTool(tctx, { name: 'end_scenario', input: {} });
+    const endU2 = await runTool(tctx, { name: 'end_scenario', input: {} });
+    check('end2. end_scenario accepts scenario 2', endU2.ok === true, endU2.error);
 
     // D5: a happy login keeps the real account; D6: an unknown identifier is untouched.
     await page.setContent(loginHtml, { waitUntil: 'load' });
@@ -212,14 +214,16 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     const pwHappy = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'welcome01' } });
     check('D5. a happy login keeps the real account', pwHappy.ok === true && !(pwHappy.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === KNOWN) === true);
     await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    await runTool(tctx, { name: 'end_scenario', input: {} });
+    const endU3 = await runTool(tctx, { name: 'end_scenario', input: {} });
+    check('end3. end_scenario accepts scenario 3', endU3.ok === true, endU3.error);
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(tctx, { name: 'begin_scenario', input: { name: 'rejected an unknown e-mail', category: 'negative', feature: 'login' } });
     await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'nobody@example.invalid' } });
     const pwUnknown = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'x' } });
     check('D6. an identifier that is not a known account is left alone', pwUnknown.ok === true && !(pwUnknown.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === 'nobody@example.invalid') === true);
     await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    await runTool(tctx, { name: 'end_scenario', input: {} });
+    const endU4 = await runTool(tctx, { name: 'end_scenario', input: {} });
+    check('end4. end_scenario accepts scenario 4', endU4.ok === true, endU4.error);
 
     // D7: with no SRS at all, the account a happy login in this run signed in with is known.
     const fresh = createContext(page, 60);
@@ -228,7 +232,8 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });
     await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'secret_sauce' } });
     await runTool(fresh, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    await runTool(fresh, { name: 'end_scenario', input: {} });
+    const endU5 = await runTool(fresh, { name: 'end_scenario', input: {} });
+    check('end5. end_scenario accepts scenario 5', endU5.ok === true, endU5.error);
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(fresh, { name: 'begin_scenario', input: { name: 'rejected a wrong password with the mismatch error', category: 'negative', feature: 'login' } });
     await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });

@@ -394,7 +394,13 @@ export interface RunReport {
      * rework -> pass (kept) or rework -> rework/reject/not-re-recorded
      * (dropped). The verdicts array above holds the FINAL verdicts.
      */
-    repair?: Array<{ scenario: string; first: 'rework'; second?: 'pass' | 'rework' | 'reject'; outcome: 'kept' | 'dropped'; notRepaired?: string }>;
+    repair?: Array<{
+      scenario: string; first: 'rework'; second?: 'pass' | 'rework' | 'reject'; outcome: 'kept' | 'dropped'; notRepaired?: string;
+      /** The first verdict's required fixes as the repair review judged them. */
+      fixes?: Array<{ fix: string; applied: boolean; reason: string }>;
+      /** The repair review's new observations: recorded, never a drop. */
+      notes?: string[];
+    }>;
   };
   /**
    * Reality check: each scenario was re-executed in a fresh Playwright context

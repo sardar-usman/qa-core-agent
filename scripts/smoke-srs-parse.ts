@@ -8,13 +8,18 @@
  *     recovers a fenced response, accepts a clean response, tolerates prose
  *     around the JSON, normalizes feature names to kebab-case, renumbers
  *     colliding rule ids, and throws clearly on a malformed response.
+ *   - requirementsMapForSrs caches the map by SRS content hash under
+ *     output/<slug>/srs/<hash>/requirements-map.json: a second run with the
+ *     same bytes reuses it with no build call, --rebuild-srs-map builds
+ *     again, and a changed byte is a new hash and a new build (run 51d535:
+ *     the same SRS gave five features in run 4 and four in run 5).
  *
  * No network. No LLM. Temp files only.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadSrsText, parseRequirementsResponse, SRS_TEXT_CAP } from '../src/agent/requirements.js';
+import { loadSrsText, parseRequirementsResponse, requirementsMapForSrs, cachedMapPath, srsContentHash, SRS_MAP_HASH_PREFIX, SRS_TEXT_CAP, type RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
 let fail = 0;
@@ -108,8 +113,37 @@ check('G2. a JSON array (wrong shape) throws', throws('[1,2,3]').length > 0);
 check('G3. an object without features throws', throws('{"roles":[]}').includes('features'));
 check('G4. an object with zero usable features throws', throws('{"features":[{"rules":[]}],"roles":[]}').length > 0);
 
+/* ─── H. the map cache: one map per SRS content hash ──────────────────────── */
+{
+  const outputRoot = path.join(tmpRoot, 'output');
+  const slug = 'practicesoftwaretesting-com';
+  const srsFile = path.join(tmpRoot, 'toolshop-srs.md');
+  fs.writeFileSync(srsFile, FIXTURE_SRS);
+  let builds = 0;
+  const fiveFeatures: RequirementsMap = { features: Array.from({ length: 5 }, (_, i) => ({ name: `feature-${i + 1}`, description: 'd', rules: [{ id: `R${i + 1}`, text: 'rule', type: 'behavior' as const }] })), roles: [], truncated: false };
+  const build = async () => { builds++; return { map: fiveFeatures, costUsd: 0.0123 }; };
+  const common = { outputRoot, slug, apiKey: 'fake', build };
+  const first = await requirementsMapForSrs({ ...common, srsPath: srsFile });
+  const hash = srsContentHash(fs.readFileSync(srsFile)).slice(0, SRS_MAP_HASH_PREFIX);
+  check('H1. the first run builds the map, prints "built (<hash>)" and charges the build', builds === 1 && first.reused === false && first.line === `requirements map: built (${hash})` && first.costUsd === 0.0123, first.line);
+  check('H2. the map is cached under output/<slug>/srs/<hash>/requirements-map.json', first.cachePath === cachedMapPath(outputRoot, slug, hash) && fs.existsSync(first.cachePath) && first.cachePath.includes(path.join('output', slug, 'srs', hash, 'requirements-map.json')), first.cachePath);
+  const second = await requirementsMapForSrs({ ...common, srsPath: srsFile });
+  check('H3. a second run with the same bytes reuses it: no build call, "reused (<hash>)", zero cost, the same five features', builds === 1 && second.reused === true && second.line === `requirements map: reused (${hash})` && second.costUsd === 0 && second.map.features.length === 5 && JSON.stringify(second.map) === JSON.stringify(fiveFeatures), second.line);
+  const forced = await requirementsMapForSrs({ ...common, srsPath: srsFile, rebuild: true });
+  check('H4. --rebuild-srs-map builds again on the same bytes', builds === 2 && forced.reused === false && forced.line === `requirements map: built (${hash})`, forced.line);
+  fs.writeFileSync(srsFile, FIXTURE_SRS + ' ');
+  const changed = await requirementsMapForSrs({ ...common, srsPath: srsFile });
+  const hash2 = srsContentHash(fs.readFileSync(srsFile)).slice(0, SRS_MAP_HASH_PREFIX);
+  check('H5. a changed byte is a new hash and a new build, and the old cache entry stays', builds === 3 && changed.reused === false && hash2 !== hash && changed.line === `requirements map: built (${hash2})` && fs.existsSync(first.cachePath) && fs.existsSync(changed.cachePath), changed.line);
+  fs.writeFileSync(first.cachePath, '{ not json');
+  fs.writeFileSync(srsFile, FIXTURE_SRS);
+  const corrupt = await requirementsMapForSrs({ ...common, srsPath: srsFile });
+  check('H6. an unreadable cache entry is rebuilt, never trusted', builds === 4 && corrupt.reused === false && JSON.parse(fs.readFileSync(first.cachePath, 'utf8')).features.length === 5);
+  check('H7. the hash prefix names the directory with 12 hex characters', /^[0-9a-f]{12}$/.test(hash) && SRS_MAP_HASH_PREFIX === 12);
+}
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: SRS loading caps and rejects correctly, and the requirements parser recovers fenced/prose responses and fails loud on malformed ones.');
+console.log('OK: SRS loading caps and rejects correctly, the requirements parser recovers fenced/prose responses and fails loud on malformed ones, and the map is cached by SRS content hash (reused, rebuilt on the flag, rebuilt on a changed byte).');

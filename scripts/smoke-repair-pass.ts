@@ -9,10 +9,17 @@
  *   - verdict history records every rework journey
  *   - reconciliation sees the FINAL verdicts, so a repaired-to-pass scenario
  *     is not counted as a critic drop
+ *   - the repair review judges the first verdict's REQUIRED FIXES: every
+ *     listed fix applied keeps the scenario whatever else the second review
+ *     observed (the observations are notes on the report), one fix not
+ *     applied drops it; the per-fix shape parses with the same leniency as
+ *     every verdict (run 51d535 dropped three repaired scenarios on
+ *     complaints the first verdict never made)
  *
  * Fixture verdicts only. No live calls. No browser.
  */
-import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, type ScenarioVerdict } from '../src/agent/critic.js';
+import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, REPAIR_REVIEW_PROMPT, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
+import type { Scenario } from '../src/agent/trace.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RunReport } from '../src/agent/trace.js';
@@ -202,6 +209,69 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   check('I8. rule coverage names the cause on a planned-but-dropped rule whose citing scenarios were not repaired, and R1 (kept by the repaired scenario) is covered', /not repaired: budget funds 5 of 14|critic rework/.test(coverage.uncovered.find((u) => u.ruleId === 'R3')?.detail ?? '') && /critic rework/.test(coverage.uncovered.find((u) => u.ruleId === 'R4')?.detail ?? '') && coverage.covered.some((c) => c.ruleId === 'R1'), JSON.stringify(coverage));
 }
 
+/* ─── J. the repair review judges the first verdict's required fixes ──────── */
+{
+  const first: ScenarioVerdict[] = [
+    { scenario: 'clicked a product and landed on its detail page', verdict: 'rework', reasons: ['no capture before the click', 'URL assert has no timeout'], required_fixes: ['Capture the product name from the listing before clicking, then assert_compare it equals the detail heading', 'Add timeout:10000ms to the URL assertion'] },
+    { scenario: 'rejected an email without an @ sign', verdict: 'rework', reasons: ['vacuous visibility assertion'], required_fixes: ['Replace the submit-button visibility assertion with a count=0 of the thank-you message'] },
+    { scenario: 'added a product from its detail page', verdict: 'rework', reasons: ['count captured instead of text'], required_fixes: ['Capture the badge TEXT, not the element count', 'assert_compare greater on the badge text'] },
+  ];
+  // The second review: scenario 1 applied both fixes but the Critic voted
+  // rework on a NEW complaint (the run 5 shape); scenario 2 applied its fix
+  // and passed with an observation; scenario 3 left one fix unapplied.
+  const second: ScenarioVerdict[] = [
+    { scenario: '[happy] clicked a product and landed on its detail page', verdict: 'rework', reasons: ['The compare re-reads the listing locator after navigation, which may resolve to nothing'], required_fixes: ['Remove the listing re-read'],
+      fixes: [{ fix: 'Capture the product name from the listing before clicking, then assert_compare it equals the detail heading', applied: true, reason: 'step 2 captures, step 6 compares equal at [data-test="product-name"]' }, { fix: 'Add timeout:10000ms to the URL assertion', applied: true, reason: 'step 4 carries [timeout:10000ms]' }],
+      observations: ['The compare re-reads the listing locator after navigation, which may resolve to nothing'] },
+    { scenario: 'rejected an email without an @ sign', verdict: 'pass', reasons: ['count=0 of the thank-you message is falsifiable'], required_fixes: [],
+      fixes: [{ fix: 'Replace the submit-button visibility assertion with a count=0 of the thank-you message', applied: true, reason: 'step 5 asserts count=0 [timeout:5000ms]' }],
+      observations: ['Many browsers block an invalid email natively, so the body regex may never match'] },
+    { scenario: 'added a product from its detail page', verdict: 'rework', reasons: ['still a count'], required_fixes: ['capture text'],
+      fixes: [{ fix: 'Capture the badge TEXT, not the element count', applied: false, reason: 'step 3 still captures count of [data-test="cart-quantity"]' }, { fix: 'assert_compare greater on the badge text', applied: true, reason: 'step 6 compares greater' }],
+      observations: [] },
+  ];
+  const m = mergeRepairVerdicts(first, second);
+  const clicked = m.history.find((h) => h.scenario === first[0]!.scenario);
+  check('J1. every listed fix applied plus a new complaint = KEPT, final verdict pass, the complaint recorded as a note', clicked?.outcome === 'kept' && clicked.second === 'rework' && m.final.find((v) => v.scenario === first[0]!.scenario || verdictMatchesScenario(v.scenario, first[0]!.scenario))?.verdict === 'pass' && clicked.notes?.length === 1 && /re-reads the listing locator/.test(clicked.notes[0] ?? ''), JSON.stringify(clicked));
+  check('J2. the per-fix judgements travel on the history entry', clicked?.fixes?.length === 2 && clicked.fixes.every((f) => f.applied) && /step 4 carries/.test(clicked.fixes[1]?.reason ?? ''));
+  const email = m.history.find((h) => h.scenario === first[1]!.scenario);
+  check('J3. a pass with an observation is kept and the observation is a note (the run 5 "browsers block invalid email" complaint)', email?.outcome === 'kept' && email.notes?.length === 1 && /block an invalid email natively/.test(email.notes[0] ?? ''));
+  const added = m.history.find((h) => h.scenario === first[2]!.scenario);
+  const addedFinal = m.final.find((v) => v.scenario === first[2]!.scenario);
+  check('J4. one listed fix not applied = DROPPED, with the unapplied fix as the reason', added?.outcome === 'dropped' && added.second === 'rework' && addedFinal?.verdict === 'rework' && /required fix not applied: Capture the badge TEXT/.test(addedFinal?.reasons[0] ?? ''), JSON.stringify({ added, addedFinal }));
+  check('J5. the verdict history carries kept 2 / dropped 1 into repair_done', repairDoneEvent(m.history, 0.5).kept === 2 && repairDoneEvent(m.history, 0.5).dropped === 1);
+
+  // judgeRequiredFixes: by position when counts agree, by text when not, unjudged fixes count as not applied.
+  const byText = judgeRequiredFixes(['Add timeout:10000ms to the URL assertion', 'Capture the name first'], [{ fix: 'capture the name first', applied: true, reason: 'step 2' }]);
+  check('J6. a fix the second review did not judge counts as not applied; a judged one matches by text', byText.allApplied === false && byText.fixes[1]?.applied === true && byText.fixes[0]?.reason === 'not judged by the second review' && byText.missing.length === 1, JSON.stringify(byText));
+  check('J7. a second verdict without the per-fix shape is read as before: pass keeps, rework drops', mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'rework', reasons: ['x'], required_fixes: [] }]).history[0]?.outcome === 'dropped' && mergeRepairVerdicts(first.slice(0, 1), [{ scenario: first[0]!.scenario, verdict: 'pass', reasons: [], required_fixes: [] }]).history[0]?.outcome === 'kept');
+
+  // The per-fix shape parses with the same leniency as every verdict: a
+  // trailing comma, a bad escape inside a reason, applied as a string.
+  const lenient = parseVerdicts(`[
+    { "scenario": "clicked a product", "verdict": "rework", "reasons": ["re-reads /a\\.card/"], "required_fixes": [],
+      "fixes": [ { "fix": "Add timeout", "applied": "true", "reason": "step 4 [timeout:10000ms]", }, { "fix": "Capture first", "applied": false, "reason": "still missing" } ],
+      "observations": ["one new thing", ""], },
+  ]
+  <summary>fine</summary>`);
+  check('J8. the per-fix shape parses leniently: trailing commas, a bad escape, applied as a string, empty observations dropped', lenient.length === 1 && lenient[0]?.fixes?.length === 2 && lenient[0]?.fixes?.[0]?.applied === true && lenient[0]?.fixes?.[1]?.applied === false && JSON.stringify(lenient[0]?.observations) === '["one new thing"]', JSON.stringify(lenient));
+  check('J9. a verdict without the fields carries neither key', !('fixes' in parseVerdicts('[{"scenario":"a","verdict":"pass","reasons":[],"required_fixes":[]}]')[0]!) && !('observations' in parseVerdicts('[{"scenario":"a","verdict":"pass","reasons":[],"required_fixes":[]}]')[0]!));
+
+  // The repair review call: the first verdict's fixes are rendered per scenario and the REPAIR REVIEW block is the second system block.
+  let captured: { system: unknown; content: string } | null = null;
+  const client: CriticClient = { messages: { create: async (params) => {
+    captured = { system: params.system, content: String((params.messages[0]?.content as string) ?? '') };
+    return { id: 'm', type: 'message', role: 'assistant', model: 'fake', content: [{ type: 'text', text: JSON.stringify([{ scenario: first[1]!.scenario, verdict: 'pass', reasons: [], required_fixes: [], fixes: [{ fix: first[1]!.required_fixes[0], applied: true, reason: 'step 5' }], observations: [] }]) + '<summary>s</summary>', citations: null }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } as never;
+  } } };
+  const scenario = { name: first[1]!.scenario, category: 'negative', steps: [] } as unknown as Scenario;
+  const reviewed = await critique({ scenarios: [scenario], url: 'https://x.example/', apiKey: 'fake', client, repairFixes: new Map([[first[1]!.scenario, first[1]!.required_fixes]]) });
+  const sys = (captured as unknown as { system: Array<{ text: string }> } | null)?.system ?? [];
+  check('J10. the repair review renders the first verdict\'s REQUIRED FIXES under the scenario and adds the REPAIR REVIEW system block after the cached prompt', /REQUIRED FIXES from the first review:\n        1\. Replace the submit-button visibility assertion/.test((captured as unknown as { content: string } | null)?.content ?? '') && sys.length === 2 && sys[1]?.text === REPAIR_REVIEW_PROMPT && /"fixes"/.test(REPAIR_REVIEW_PROMPT) && /never as the ground for a rework verdict/.test(REPAIR_REVIEW_PROMPT), JSON.stringify(captured).slice(0, 300));
+  check('J11. the parsed repair verdict carries the per-fix judgement', reviewed.verdicts[0]?.fixes?.[0]?.applied === true);
+  const plain = await critique({ scenarios: [scenario], url: 'https://x.example/', apiKey: 'fake', client });
+  check('J12. a first-pass review renders no fixes block and one system block', plain.verdicts.length === 1 && !/REQUIRED FIXES/.test((captured as unknown as { content: string } | null)?.content ?? '') && ((captured as unknown as { system: unknown[] } | null)?.system ?? []).length === 1);
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: reject drops, rework earns exactly one repair pass, second-time rework/reject drops for real, and the funnel counts final verdicts.');
+console.log('OK: reject drops, rework earns exactly one repair pass, the repair review judges the first verdict\'s required fixes (all applied keeps with notes, one unapplied drops), and the funnel counts final verdicts.');

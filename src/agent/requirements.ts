@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -260,6 +261,82 @@ export async function buildRequirementsMap(
     }
   }
   return { map: { ...parsed, truncated }, costUsd };
+}
+
+/* ─────────────── The requirements-map cache (deterministic across runs) ─────────────── */
+
+/** How many hex characters of the SRS content hash name the cache directory. */
+export const SRS_MAP_HASH_PREFIX = 12;
+
+/** The sha256 of the SRS bytes, the identity the cache is keyed by. */
+export function srsContentHash(bytes: Buffer | string): string {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+/** output/<slug>/srs/<hash-prefix>/requirements-map.json under the output root. */
+export function cachedMapPath(outputRoot: string, slug: string, hash: string): string {
+  return path.join(outputRoot, slug, 'srs', hash.slice(0, SRS_MAP_HASH_PREFIX), 'requirements-map.json');
+}
+
+export interface RequirementsMapForSrsOptions {
+  /** The SRS file; its BYTES are hashed, so the same document always maps to the same cache entry. */
+  srsPath: string;
+  /** The output root (the directory holding the per-project folders), e.g. <project>/output. */
+  outputRoot: string;
+  /** The project slug (projectSlug of the entry URL). */
+  slug: string;
+  /** --rebuild-srs-map: ignore the cache and build again. */
+  rebuild?: boolean;
+  apiKey: string;
+  model?: string;
+  /** Test seam: the builder to call when the cache misses. Production leaves it unset. */
+  build?: (opts: BuildRequirementsMapOptions) => Promise<{ map: RequirementsMap; costUsd: number }>;
+}
+
+export interface RequirementsMapForSrsResult {
+  map: RequirementsMap;
+  /** 0 on a reuse. */
+  costUsd: number;
+  reused: boolean;
+  /** The hash prefix the cache entry is named by. */
+  hash: string;
+  /** The cache file. */
+  cachePath: string;
+  /** "requirements map: reused (<hash>)" or "requirements map: built (<hash>)". */
+  line: string;
+}
+
+/**
+ * The requirements map for an SRS, deterministic across runs. The same SRS
+ * bytes gave five features in run 591732 and four in run 51d535 (login and
+ * registration merged into "account"), which produced a two-page feature and
+ * two registration scenarios planned on the login page. The map is now built
+ * once per SRS content hash and cached under output/<slug>/srs/<hash>/
+ * requirements-map.json; every later run with the same bytes reuses it, so
+ * the plan is derived from one map, not from a fresh Haiku reading. A
+ * changed byte is a new hash and a new build; --rebuild-srs-map forces one.
+ * A cache file that no longer parses is rebuilt, never trusted.
+ */
+export async function requirementsMapForSrs(opts: RequirementsMapForSrsOptions): Promise<RequirementsMapForSrsResult> {
+  const bytes = fs.readFileSync(opts.srsPath);
+  const hash = srsContentHash(bytes).slice(0, SRS_MAP_HASH_PREFIX);
+  const cachePath = cachedMapPath(opts.outputRoot, opts.slug, hash);
+  if (!opts.rebuild && fs.existsSync(cachePath)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as RequirementsMap;
+      if (Array.isArray(cached.features) && cached.features.length > 0) {
+        return { map: cached, costUsd: 0, reused: true, hash, cachePath, line: `requirements map: reused (${hash})` };
+      }
+    } catch { /* unreadable cache: rebuild below */ }
+  }
+  const { text, truncated } = await loadSrsText(opts.srsPath);
+  const build = opts.build ?? buildRequirementsMap;
+  const built = await build({ srsText: text, truncated, apiKey: opts.apiKey, ...(opts.model ? { model: opts.model } : {}) });
+  if (built.map.features.length > 0) {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify(built.map, null, 2));
+  }
+  return { map: built.map, costUsd: built.costUsd, reused: false, hash, cachePath, line: `requirements map: built (${hash})` };
 }
 
 /** Total rule count across every feature of a map. */

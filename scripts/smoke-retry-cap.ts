@@ -90,7 +90,8 @@ check('D3. failure counts are NOT wiped by begin_scenario (they survive restarts
 // The negative scenario asserts the real visible failure state — this passes.
 const realAssert = await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'failure alert', role: 'alert' } });
 check('D4. a real, observable assertion still passes normally', realAssert.ok === true, JSON.stringify(realAssert));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endD = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('D4a. end_scenario accepts the scenario', endD.ok === true, endD.error);
 check('D5. the well-formed negative scenario ships', ctx.scenarios.some((s) => s.name === 'rejected duplicate email shows error'));
 
 /* ─── F. the cap survives a scenario RESTART: the same assertion failing once,

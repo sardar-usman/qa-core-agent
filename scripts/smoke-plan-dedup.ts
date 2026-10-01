@@ -6,8 +6,9 @@
  * different relation on the same value is NOT a duplicate. Non-capture
  * scenarios (login happy/negative) are never collapsed.
  */
-import { dedupePlan } from '../src/agent/planner.js';
+import { dedupePlan, rejectContradictions } from '../src/agent/planner.js';
 import type { PlannedScenario } from '../src/agent/planner.js';
+import type { RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
 let fail = 0;
@@ -67,6 +68,21 @@ check('E1. same value+relation across different features: both kept', e.kept.len
 /* ─── F. order is preserved among kept scenarios ──────────────────────────── */
 check('F1. kept scenarios keep plan order', a.kept[0]?.name.includes('clicked it') === true && a.kept[1]?.name.includes('no longer matches') === true);
 
+/* ─── G. a contradiction is dropped beside the dedup; a true negative survives ── */
+{
+  const map: RequirementsMap = { features: [{ name: 'catalogue', description: '', rules: [
+    { id: 'R4', text: 'Sorting by price low to high orders the visible products by ascending price.', type: 'behavior' },
+    { id: 'R9', text: 'A coupon code that does not exist is rejected with an error.', type: 'validation' },
+  ] }], roles: [], truncated: false };
+  const g = rejectContradictions(dedupePlan([
+    { ...sc('catalogue', 'negative', 'sorted by price low-to-high and the list remained unsorted', 'r'), ruleIds: ['R4'] },
+    { ...sc('catalogue', 'negative', 'rejected a coupon code that does not exist with an error', 'r'), ruleIds: ['R9'] },
+    { ...sc('catalogue', 'negative', 'applied a sort and the products were not sorted by price', 'r'), ruleIds: ['R4'] },
+  ]).kept, map);
+  check('G1. the two contradictions are dropped (a negated sort rule, twice) and the true negative citing a validation rule is kept', g.kept.length === 1 && g.kept[0]?.name.startsWith('rejected a coupon') === true && g.rejected.length === 2, JSON.stringify(g));
+  check('G2. each drop names the rule it contradicts', g.rejected.every((r) => /asserts the opposite of R4/.test(r.reason)));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: Planner de-dup — same value + same relation + same feature collapses to one, everything else survives.');
+console.log('OK: Planner de-dup — same value + same relation + same feature collapses to one, everything else survives; a contradiction of a cited rule is dropped beside it.');

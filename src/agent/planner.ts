@@ -1,8 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { chromium, type Frame, type Page } from 'playwright';
 import { installEvalShim } from './eval-shim.js';
-import { renderRequirementsBlock, type RequirementsMap } from './requirements.js';
-import { citationMismatchReason, scenarioNameKey } from './rule-coverage.js';
+import { renderRequirementsBlock, type RequirementsMap, type RequirementRule, type RequirementFeature } from './requirements.js';
+import { citationMismatchReason, scenarioNameKey, REJECTION_RULE_RE } from './rule-coverage.js';
 
 /**
  * Planner — Step 1 of the multi-agent pipeline.
@@ -98,6 +98,31 @@ export interface PlanResult {
    * derivation report as the `page-fit` skip reason.
    */
   pageFitRejected: PageFitRejection[];
+  /**
+   * Scenarios removed by `rejectContradictions`: a negative whose only cited
+   * rules state no rejection, or a negative or edge whose name asserts the
+   * opposite of a cited rule ("remained unsorted" citing the sort rule, run
+   * 51d535, which cost R4). Never in the plan; the derivation report names
+   * the category as skipped for `contradiction`.
+   */
+  contradictionRejected: Array<{ scenario: PlannedScenario; reason: string }>;
+  /**
+   * The one-rule retries made for rules a contradiction drop left uncited:
+   * one Haiku call per rule, capped at RULE_RETRY_CAP per run, each itemized
+   * with its cost and outcome. Their cost is included in `costUsd`.
+   */
+  ruleRetries: RuleRetry[];
+}
+
+/** One rule retry: the rule, what the call cost, and what came of it. */
+export interface RuleRetry {
+  ruleId: string;
+  costUsd: number;
+  outcome: 'planned' | 'none' | 'rejected';
+  /** The scenario added, when planned. */
+  scenario?: string;
+  /** Why the retried scenario was rejected, or why none came back. */
+  reason?: string;
 }
 
 /** One scenario dropped by the page-fit pass, with the control it named. */
@@ -657,6 +682,12 @@ export async function plan(opts: {
    * reaches the page by durable interaction, never the GUID URL.
    */
   volatilePage?: boolean;
+  /**
+   * The per-run budget of one-rule retries (RULE_RETRY_CAP). The runtime
+   * shares one object across every page's plan() so the cap is per run;
+   * a caller that passes none gets a fresh budget for this call.
+   */
+  ruleRetryBudget?: RuleRetryBudget;
 }): Promise<PlanResult> {
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
@@ -755,7 +786,38 @@ export async function plan(opts: {
     // none) is dropped here, before the Explorer spends on it. Deterministic,
     // never a prompt nudge. Runs before the iframe injection so a synthesized
     // frame scenario (built from real frame content) is never judged.
-    const { kept, rejected: pageFitRejected } = rejectPageFit(deduped, snapshot);
+    const { kept: fit, rejected: pageFitRejected } = rejectPageFit(deduped, snapshot);
+    // Contradictions: a negative whose only cited rules state no rejection,
+    // or a name that asserts the opposite of a cited rule, is dropped here;
+    // a rule the drops left uncited gets ONE retry call of its own.
+    const { kept: coherent, rejected: contradictionRejected } = rejectContradictions(fit, opts.requirements);
+    let kept = coherent;
+    let ruleRetries: RuleRetry[] = [];
+    if (opts.requirements && contradictionRejected.length > 0) {
+      const map = opts.requirements;
+      const retry = await retryUncoveredRules({
+        dropped: contradictionRejected.map((r) => r.scenario),
+        kept: coherent,
+        map,
+        budget: opts.ruleRetryBudget ?? { remaining: RULE_RETRY_CAP },
+        ask: async (rule, feature) => {
+          const r = await client.messages.create({
+            model,
+            max_tokens: 400,
+            system: systemBlocks,
+            messages: [{ role: 'user', content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${credentialBlock}\n\n${ruleRetryAsk(rule, feature, opts.url)}` }],
+          });
+          const u = r.usage;
+          return {
+            text: r.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n'),
+            costUsd: (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000,
+          };
+        },
+        accept: (sc) => circularUnchangedReason(sc) ?? vacuousAbsenceReason(sc) ?? pageFitReason(sc, snapshot)?.reason ?? contradictionReason(sc, map),
+      });
+      kept = [...coherent, ...retry.added];
+      ruleRetries = retry.retries;
+    }
     // Guarantee iframe coverage deterministically. The SYSTEM rule + steering
     // block ask the model to plan an inside-frame scenario, but a prompt nudge
     // can miss. When the page has content-bearing iframes and the plan still
@@ -770,9 +832,10 @@ export async function plan(opts: {
     // the category makes impossible, so coverage never counts them.
     const { scenarios: cited, citationDrops } = applyCitationChecks(covered, opts.requirements);
     const u = response.usage;
-    const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000;
+    const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000
+      + ruleRetries.reduce((n, r) => n + r.costUsd, 0);
 
-    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, fillableFields: snapshot.fillableCount };
+    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, ruleRetries, fillableFields: snapshot.fillableCount };
   } finally {
     await browser.close();
   }
@@ -1001,6 +1064,156 @@ export function rejectCircular(scenarios: PlannedScenario[]): {
     else kept.push(s);
   }
   return { kept, rejected };
+}
+
+/* ── Contradictions and the one-rule retry ───────────────────────────────── */
+
+/**
+ * Action stems a rule can state and a scenario name can negate. Only action
+ * verbs: a validation word (required, rejected) is what a negative is
+ * supposed to assert, so it is never a stem here.
+ */
+const ACTION_STEM_RE = /\b(sort|filter|paginat|search|display|show|list|redirect|navigat|add|remov|delet|updat|increas|decreas|apply|appli|order|mask|lock|expir|clear|select|submit|send|log|register|load|render|count|match|highlight|persist|sav|refresh|reload)\w*/gi;
+
+/**
+ * The negated form of one of the rule's action stems inside the scenario
+ * name, or null. "remained unsorted" negates a rule that sorts; "did not
+ * redirect" negates a rule that redirects; "not filtered" negates a filter
+ * rule. A plain "rejected ..." never matches: rejection is not a negation
+ * of an action stem.
+ */
+export function negatedActionIn(name: string, ruleText: string): string | null {
+  const stems = new Set<string>();
+  for (const m of ruleText.matchAll(ACTION_STEM_RE)) stems.add(m[1]!.toLowerCase());
+  if (stems.size === 0) return null;
+  const hay = name.toLowerCase();
+  for (const stem of stems) {
+    const re = new RegExp(
+      `\\b(?:remain(?:s|ed)?|stay(?:s|ed)?|was|were|is|are|left)?\\s*un${stem}\\w*\\b` +
+      `|\\b(?:(?:did|does|do|was|were|is|are|could|would|will|has|have) not|not|never|no longer|without being|fail(?:s|ed)? to|did ?n(?:'|’)?t|does ?n(?:'|’)?t|was ?n(?:'|’)?t|were ?n(?:'|’)?t|is ?n(?:'|’)?t|are ?n(?:'|’)?t|cannot|could ?n(?:'|’)?t)\\s+(?:be |being |get |getting )?${stem}\\w*\\b`,
+      'i',
+    );
+    const m = re.exec(hay);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/**
+ * Why a scenario contradicts the rules it cites, or null. Two shapes. (1) A
+ * NEGATIVE scenario whose only cited rules state no rejection (type behavior
+ * or navigation with no rejection wording): there is no failure mode to
+ * verify, so the scenario can only assert that the rule does not hold. (2) A
+ * negative or edge scenario whose name asserts the opposite of a cited
+ * rule's action: run 51d535 planned "[negative] sorted by price low-to-high
+ * and the list remained unsorted" citing R4 (the sort rule), the Critic
+ * rejected it with five reasons, and R4 read not-planned. A scenario with no
+ * citations, or no map, is never judged. Exported for the smoke.
+ */
+export function contradictionReason(s: PlannedScenario, map?: RequirementsMap): string | null {
+  if (!map) return null;
+  if (s.category !== 'negative' && s.category !== 'edge') return null;
+  const ids = (s.ruleIds ?? []).map((id) => id.toUpperCase());
+  if (ids.length === 0) return null;
+  const byId = new Map<string, RequirementRule>();
+  for (const f of map.features) for (const r of f.rules) byId.set(r.id.toUpperCase(), r);
+  const rules = ids.map((id) => byId.get(id)).filter((r): r is RequirementRule => r !== undefined);
+  if (rules.length === 0) return null;
+  for (const r of rules) {
+    const negated = negatedActionIn(s.name, r.text);
+    if (negated) return `the name asserts the opposite of ${r.id} ("${negated}" against a rule that states: ${r.text}); a scenario cannot verify a rule by asserting it does not hold`;
+  }
+  if (s.category === 'negative' && rules.every((r) => (r.type === 'behavior' || r.type === 'navigation') && !REJECTION_RULE_RE.test(r.text))) {
+    return `a negative scenario whose only cited rules (${rules.map((r) => r.id).join(', ')}) state no rejection (${rules.map((r) => r.type).join(', ')} rules with no rejection wording); there is no failure mode to verify`;
+  }
+  return null;
+}
+
+/**
+ * Drop every scenario that contradicts its cited rules. Runs after the
+ * page-fit pass and before the one-rule retry; the kept list preserves plan
+ * order and each rejection names why.
+ */
+export function rejectContradictions(scenarios: PlannedScenario[], map?: RequirementsMap): {
+  kept: PlannedScenario[];
+  rejected: Array<{ scenario: PlannedScenario; reason: string }>;
+} {
+  const kept: PlannedScenario[] = [];
+  const rejected: Array<{ scenario: PlannedScenario; reason: string }> = [];
+  for (const s of scenarios) {
+    const reason = contradictionReason(s, map);
+    if (reason) rejected.push({ scenario: s, reason });
+    else kept.push(s);
+  }
+  return { kept, rejected };
+}
+
+/** How many one-rule retry calls a run may make, across every page. */
+export const RULE_RETRY_CAP = 5;
+
+/** The per-run retry budget, shared across pages by the runtime. */
+export interface RuleRetryBudget { remaining: number }
+
+/** The one-rule ask the retry sends after the page snapshot. Exported for the smoke. */
+export function ruleRetryAsk(rule: RequirementRule, feature: RequirementFeature, url: string): string {
+  return `Plan ONE scenario verifying rule ${rule.id} on this page (${url}).\n` +
+    `Rule ${rule.id} [${rule.type}], feature "${feature.name}": ${rule.text}\n` +
+    `A previous scenario for this rule contradicted it (it asserted the opposite of what the rule states), so plan one that goes red only when THIS rule breaks. ` +
+    `Return exactly one line in the plan format, inside <plan> tags, with the feature tag "${feature.name}" and the rule cited in the third bracket, for example:\n` +
+    `<plan>\n1. [${feature.name}][happy][${rule.id}] <past-tense outcome> — fails if <the regression>\n</plan>`;
+}
+
+/**
+ * One retry call per rule that the contradiction drops left with no citing
+ * scenario, in plan order, while the budget lasts. Each call plans one
+ * scenario for that rule alone; the result is parsed, must cite the rule
+ * (the id is added when the line omits it), must pass the caller's accept
+ * check (circular, page fit, contradiction, citation), and is appended to
+ * the plan. Every call is itemized with its cost and outcome. Exported with
+ * an injectable `ask` so the smoke drives it without a model.
+ */
+export async function retryUncoveredRules(opts: {
+  dropped: PlannedScenario[];
+  kept: PlannedScenario[];
+  map: RequirementsMap;
+  budget: RuleRetryBudget;
+  ask: (rule: RequirementRule, feature: RequirementFeature) => Promise<{ text: string; costUsd: number }>;
+  /** A reason to reject the retried scenario, or null to accept it. */
+  accept?: (s: PlannedScenario) => string | null;
+}): Promise<{ added: PlannedScenario[]; retries: RuleRetry[] }> {
+  const cited = new Set(opts.kept.flatMap((s) => (s.ruleIds ?? []).map((id) => id.toUpperCase())));
+  const uncovered: string[] = [];
+  for (const s of opts.dropped) {
+    for (const id of s.ruleIds ?? []) {
+      const u = id.toUpperCase();
+      if (!cited.has(u) && !uncovered.includes(u)) uncovered.push(u);
+    }
+  }
+  const owner = new Map<string, { rule: RequirementRule; feature: RequirementFeature }>();
+  for (const f of opts.map.features) for (const r of f.rules) owner.set(r.id.toUpperCase(), { rule: r, feature: f });
+  const added: PlannedScenario[] = [];
+  const retries: RuleRetry[] = [];
+  for (const ruleId of uncovered) {
+    const o = owner.get(ruleId);
+    if (!o) continue;
+    if (opts.budget.remaining <= 0) break;
+    opts.budget.remaining -= 1;
+    const { text, costUsd } = await opts.ask(o.rule, o.feature);
+    const first = parsePlan(text)[0];
+    if (!first) { retries.push({ ruleId, costUsd, outcome: 'none', reason: 'the retry returned no parseable scenario' }); continue; }
+    const ids = (first.ruleIds ?? []).map((id) => id.toUpperCase());
+    const scenario: PlannedScenario = { ...first, feature: first.feature ?? o.feature.name, ruleIds: ids.includes(ruleId) ? ids : [...ids, ruleId] };
+    const reason = opts.accept?.(scenario) ?? null;
+    if (reason) { retries.push({ ruleId, costUsd, outcome: 'rejected', scenario: scenario.name, reason }); continue; }
+    if (citationMismatchReason(scenario.category, o.rule.text)) {
+      retries.push({ ruleId, costUsd, outcome: 'rejected', scenario: scenario.name, reason: `a ${scenario.category} scenario cannot verify ${ruleId}: ${citationMismatchReason(scenario.category, o.rule.text)}` });
+      continue;
+    }
+    added.push(scenario);
+    cited.add(ruleId);
+    retries.push({ ruleId, costUsd, outcome: 'planned', scenario: scenario.name });
+  }
+  return { added, retries };
 }
 
 /**

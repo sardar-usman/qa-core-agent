@@ -134,7 +134,8 @@ const recorded = ctx.current!.steps.find((s) => s.kind === 'assert' && s.asserti
 const recordedVal = recorded && recorded.kind === 'assert' && recorded.assertion.type === 'toHaveValue' ? recorded.assertion.value : undefined;
 check('G. the recorded assertion value is the EXACT filled string', recordedVal === TYPED, `recorded="${recordedVal}"`);
 check('H. the recorded assertion is NOT the model-supplied mismatched string', recordedVal !== MISMATCH);
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endV1 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end1. end_scenario accepts scenario 1 (a gate rejection here passed silently until PR #31)', endV1.ok === true, endV1.error);
 
 /* ─── a generated field: the assertion uses the generated value, unknowable ── */
 const regHtml = `<!doctype html><html><body>
@@ -154,7 +155,8 @@ const regStep = ctx.current!.steps.find((s) => s.kind === 'assert' && s.assertio
 const regVal = regStep && regStep.kind === 'assert' && regStep.assertion.type === 'toHaveValue' ? regStep.assertion.value : undefined;
 check('I. a registration email field generated a unique value (not the literal)', generated === 'email' && liveValue !== 'test@example.com', `live="${liveValue}"`);
 check('J. the assertion passes and records the generated value, not the literal', regAssert.ok === true && regVal === liveValue && regVal !== 'test@example.com', `recorded="${regVal}"`);
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endV2 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end2. end_scenario accepts scenario 2 (a gate rejection here passed silently until PR #31)', endV2.ok === true, endV2.error);
 
 /* ─── special characters: the fill literal and the toHaveValue literal must be
  *     byte-identical after escaping, AND the assert must bind to the fill even
@@ -185,7 +187,8 @@ const specialFillVal = specialFill && specialFill.kind === 'fill' ? specialFill.
 const specialAssertVal = specialRec && specialRec.kind === 'assert' && specialRec.assertion.type === 'toHaveValue' ? specialRec.assertion.value : undefined;
 check('L. the recorded fill value is the exact special string', specialFillVal === SPECIAL);
 check('M. the recorded assert value equals the filled value, not the artifact', specialAssertVal === SPECIAL && specialAssertVal !== ARTIFACT, `recorded="${specialAssertVal}"`);
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endV3 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end3. end_scenario accepts scenario 3 (a gate rejection here passed silently until PR #31)', endV3.ok === true, endV3.error);
 
 /* ─── LIVE: three fills of three distinct values, three assertions ─────────────
  *   The exact bug that recurred across three ui.vision runs: a scenario fills N
@@ -242,7 +245,8 @@ check('V. each live field holds its own recorded value (swap would fail)',
 // all three, yet fields 1 and 2 recorded V1 and V2, which the model never gave them.
 check('W. fields 1 and 2 recorded values the model never supplied for them',
   recVals[0] !== V3 && recVals[1] !== V3, JSON.stringify(recVals));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endV4 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end4. end_scenario accepts scenario 4 (a gate rejection here passed silently until PR #31)', endV4.ok === true, endV4.error);
 
 await browser.close();
 

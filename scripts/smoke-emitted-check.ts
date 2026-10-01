@@ -276,7 +276,7 @@ function buildLoginReport(withContact: boolean): RunReport {
   check('E2. the skip took no Playwright run and said so', ms < 5_000 && lines.some((l) => /skipped \(--no-emitted-check\)/.test(l)), lines.join('\n'));
   const parsed = parseExploreTokens(['--no-emitted-check']);
   check('E3. --no-emitted-check parses on every surface (CLI and gateway share the parser)', parsed.ok && parsed.request.emittedCheck === false && parseExploreTokens([]).ok && (parseExploreTokens([]) as { ok: true; request: { emittedCheck: boolean } }).request.emittedCheck === true);
-  const mcp = exploreRequestFromToolArgs({ url: 'https://s.example/', language: 'ts', discover: false, pom: true, replay: true, stability: true, stabilityIterations: 3, stabilize: true, stabilizeAttempts: 3, emittedCheck: false });
+  const mcp = exploreRequestFromToolArgs({ url: 'https://s.example/', language: 'ts', discover: false, pom: true, replay: true, stability: true, stabilityIterations: 3, stabilize: true, stabilizeAttempts: 3, emittedCheck: false, rebuildSrsMap: false });
   check('E4. the MCP argument emittedCheck: false maps to the same request field', mcp.emittedCheck === false);
 }
 

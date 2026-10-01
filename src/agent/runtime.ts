@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, type PlannedScenario } from './planner.js';
+import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
@@ -705,6 +705,21 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // snapshot does not show). Never in the plan; the derivation report names
   // the category they would have filled as skipped for 'page-fit'.
   let pageFitRejected: PlannedScenario[] = [];
+  // Scenarios the contradiction pass dropped (a negative whose only cited
+  // rules state no rejection, or a name asserting the opposite of a cited
+  // rule). Never in the plan; the derivation report names the category as
+  // skipped for 'contradiction'. The one-rule retry budget is per RUN, shared
+  // across every page's plan() call.
+  let contradictionRejected: PlannedScenario[] = [];
+  const ruleRetryBudget = { remaining: RULE_RETRY_CAP };
+  const ruleRetryLine = (rr: RuleRetry): string => {
+    const what = rr.outcome === 'planned'
+      ? `planned "${rr.scenario}"`
+      : rr.outcome === 'rejected'
+        ? `rejected "${rr.scenario}": ${rr.reason}`
+        : `no scenario returned (${rr.reason})`;
+    return `Planner rule retry ${rr.ruleId}: ${what} · $${rr.costUsd.toFixed(4)}`;
+  };
 
   if (opts.resume) {
     // ── Resume: restore instead of re-doing ─────────────────────────────────
@@ -815,6 +830,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           features: pg.feature ? [pg.feature] : opts.features,
           requirements: subMapFor(opts.requirements, pg.feature),
           ...(pg.volatile ? { volatilePage: true } : {}),
+          ruleRetryBudget,
         });
       } catch (err) {
         // Billing/credit exhaustion or a persistent API failure must not be
@@ -849,6 +865,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}` });
         pageFitRejected.push({ ...r.scenario, pageUrl: pg.url, ...(pg.feature && !r.scenario.feature ? { feature: pg.feature } : {}) });
       }
+      for (const r of p.contradictionRejected) {
+        opts.onEvent?.({ type: 'message', text: `Rejected contradiction scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}` });
+        contradictionRejected.push({ ...r.scenario, pageUrl: pg.url, ...(pg.feature && !r.scenario.feature ? { feature: pg.feature } : {}) });
+      }
+      for (const rr of p.ruleRetries) opts.onEvent?.({ type: 'message', text: ruleRetryLine(rr) });
       if (scen.length > PER_PAGE_SCENARIO_CAP) {
         planCapHit = true;
         opts.onEvent?.({
@@ -943,7 +964,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // the checkpoint and prints the resume hint before stopping.
     let p: Awaited<ReturnType<typeof plan>>;
     try {
-      p = await plan({ url: opts.url, apiKey, features: opts.features, requirements: opts.requirements });
+      p = await plan({ url: opts.url, apiKey, features: opts.features, requirements: opts.requirements, ruleRetryBudget });
     } catch (err) {
       const cls = classifyRunError(err);
       if (cls.kind !== 'other') {
@@ -969,6 +990,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
 
     planResult = { scenarios: p.scenarios, usd: p.costUsd, fillableFields: p.fillableFields };
     pageFitRejected = p.pageFitRejected.map((r) => r.scenario);
+    contradictionRejected = p.contradictionRejected.map((r) => r.scenario);
     // Phase boundary: plan done.
     cpState.plan = p.scenarios;
     cpState.fillableFields = p.fillableFields;
@@ -979,6 +1001,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     for (const r of p.pageFitRejected) {
       opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${opts.url}: ${r.reason}` });
     }
+    for (const r of p.contradictionRejected) {
+      opts.onEvent?.({ type: 'message', text: `Rejected contradiction scenario: "${r.scenario.name}" on ${opts.url}: ${r.reason}` });
+    }
+    for (const rr of p.ruleRetries) opts.onEvent?.({ type: 'message', text: ruleRetryLine(rr) });
     for (const d of p.dropped) {
       opts.onEvent?.({
         type: 'message',
@@ -1377,7 +1403,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           }
           for (const ev of repairScenarioEvents(decision.rework.map((s) => s.name), repair.scenarios.map((s) => s.name), repair.reasons)) opts.onEvent?.(ev);
           if (repair.scenarios.length > 0) {
-            const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey });
+            // The repair review judges the FIRST verdict's required fixes,
+            // not the scenario afresh (invariant 32).
+            const firstVerdicts = review?.verdicts ?? [];
+            const repairFixes = new Map(decision.rework.map((s) => [s.name, verdictFor(firstVerdicts, s.name)?.required_fixes ?? []] as const));
+            const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey, repairFixes });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
             secondVerdicts = alignVerdictNames(repair.scenarios.map((s) => s.name), c2.verdicts);
             for (const w of c2.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
@@ -1407,10 +1437,13 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       const merged = mergeRepairVerdicts(review.verdicts, secondVerdicts, decision.unfunded.length > 0 ? { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } : undefined);
       review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
       for (const h of merged.history) {
+        const fixesNote = h.fixes ? `, ${h.fixes.filter((f) => f.applied).length} of ${h.fixes.length} required fixes applied` : '';
         opts.onEvent?.({
           type: 'message',
-          text: `Repair verdict: "${h.scenario}" rework -> ${h.second ?? (h.notRepaired ? `not repaired (${h.notRepaired})` : 'not re-recorded')} (${h.outcome})`,
+          text: `Repair verdict: "${h.scenario}" rework -> ${h.second ?? (h.notRepaired ? `not repaired (${h.notRepaired})` : 'not re-recorded')}${fixesNote} (${h.outcome})`,
         });
+        // New observations of the repair review are notes on the report, never a drop.
+        for (const n of h.notes ?? []) opts.onEvent?.({ type: 'message', text: `Repair note: "${h.scenario}": ${n}` });
       }
       if (decision.run) opts.onEvent?.(repairDoneEvent(merged.history, repairUsd));
     }
@@ -1678,6 +1711,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         planned: planResult.scenarios,
         budgetHit: planCapHit,
         pageFitRejected,
+        contradictionRejected,
       }),
     };
     for (const line of renderRuleCoverage(report.ruleCoverage)) {

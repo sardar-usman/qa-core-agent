@@ -55,7 +55,8 @@ check('A2. assert_compare(changed) passes after the id regenerated', cmpA.ok ===
 const stepsA = ctx.current!.steps;
 check('A3. recorded a capture step (attribute, id)', stepsA.some((s) => s.kind === 'capture' && s.source === 'attribute' && s.attribute === 'id'));
 check('A4. recorded an assert_compare(changed) step', stepsA.some((s) => s.kind === 'assert_compare' && s.relation === 'changed'));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endA = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('A5. end_scenario accepts the scenario', endA.ok === true, endA.error);
 
 /* ─── B. capture a count, act, assert it INCREASED ────────────────────────── */
 const listHtml = `
@@ -71,7 +72,8 @@ check('B1. capture(count) read the starting count "2"', capB.ok === true && (cap
 await runTool(ctx, { name: 'click', input: { intent: 'Add button', role: 'button', label: 'Add' } });
 const cmpB = await runTool(ctx, { name: 'assert_compare', input: { name: 'startCount', relation: 'greater', css: '.item' } });
 check('B2. assert_compare(greater) passes after the count went up', cmpB.ok === true, JSON.stringify(cmpB));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endB = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('B3. end_scenario accepts the scenario', endB.ok === true, endB.error);
 
 /* ─── C. capture a value, act, assert the OLD value is ABSENT ─────────────── */
 await page.setContent(dynamicIdHtml, { waitUntil: 'load' });
@@ -81,7 +83,8 @@ check('C1. capture read the id before the action', capC.ok === true && (capC.dat
 await runTool(ctx, { name: 'click', input: { intent: 'Go button', role: 'button', label: 'Go' } });
 const cmpC = await runTool(ctx, { name: 'assert_compare', input: { name: 'goneId', relation: 'absent' } });
 check('C2. assert_compare(absent) passes — the old id matches nothing now', cmpC.ok === true, JSON.stringify(cmpC));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endC = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('C3. end_scenario accepts the scenario', endC.ok === true, endC.error);
 
 /* ─── D. falsifiability: changed must FAIL when the value did not change ───── */
 const staticIdHtml = `
@@ -177,7 +180,8 @@ const cmpAfter = await runTool(ctx, { name: 'assert_compare', input: { name: 'fi
 check('H2. assert_compare(after) FAILS when the new first name sorts before the captured one', cmpAfter.ok === false && /relation does not hold/.test(cmpAfter.error ?? ''), JSON.stringify(cmpAfter));
 const cmpBefore = await runTool(ctx, { name: 'assert_compare', input: { name: 'firstName', relation: 'before', role: 'listitem' } });
 check('H3. assert_compare(before) passes: "Adjustable Wrench" sorts before "Combination Pliers"', cmpBefore.ok === true, JSON.stringify(cmpBefore));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endH = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('H3a. end_scenario accepts the scenario', endH.ok === true, endH.error);
 const hRecorded = ctx.scenarios[ctx.scenarios.length - 1];
 check('H4. the recorded scenario carries the before relation', hRecorded?.steps.some((st: TraceStep) => st.kind === 'assert_compare' && st.relation === 'before') === true, JSON.stringify(hRecorded?.steps));
 
@@ -218,7 +222,8 @@ const iSteps = ctx.current!.steps;
 const iCompare = iSteps.find((st) => st.kind === 'assert_compare' && st.varName === 'cap_listingName');
 check('I6. the recorded compare carries readTarget = the heading, target = the card',
   !!iCompare && iCompare.kind === 'assert_compare' && iCompare.readTarget?.level === 'css' && String(iCompare.readTarget?.arg) === 'h1' && String(iCompare.target.arg) === 'a.card h5', JSON.stringify(iCompare));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endI = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('I6a. end_scenario accepts the scenario', endI.ok === true, endI.error);
 const iRecorded = ctx.scenarios[ctx.scenarios.length - 1]!;
 const iReplay = await replayScenarioOnce(browser, { ...iRecorded, steps: [{ kind: 'navigate', url: listingUrl }, ...iRecorded.steps] }, undefined, 8000);
 check('I7. replay reads the heading (readTarget), so the cross-element compare passes on a fresh context', iReplay.passed === true, JSON.stringify(iReplay));
@@ -249,7 +254,8 @@ const cmpJ3 = await runTool(ctx, { name: 'assert_compare', input: { name: 'label
 check('J4. a captured side with no number is a loud rejection, never a silent false', cmpJ3.ok === false && /no number found in "Loading"/.test(cmpJ3.error ?? ''), JSON.stringify(cmpJ3));
 const cmpJ4 = await runTool(ctx, { name: 'assert_compare', input: { name: 'num', relation: 'less' } });
 check('J5. a re-read side with no number is a loud rejection naming the text', cmpJ4.ok === false && /no number found in "n\/a"/.test(cmpJ4.error ?? ''), JSON.stringify(cmpJ4));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endJ = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('J5a. end_scenario accepts the scenario', endJ.ok === true, endJ.error);
 const jRecorded = ctx.scenarios[ctx.scenarios.length - 1]!;
 const jReplay = await replayScenarioOnce(browser, { ...jRecorded, steps: [{ kind: 'navigate', url: 'data:text/html,' + encodeURIComponent(priceHtml) }, ...jRecorded.steps] }, undefined, 8000);
 check('J6. replay parses the same numbers and the greater compares pass', jReplay.passed === true, JSON.stringify(jReplay));
@@ -271,7 +277,8 @@ check('K3. equal against a DIFFERENT element with no action is a real comparison
 await runTool(ctx, { name: 'click', input: { intent: 'Reload view button', role: 'button', label: 'Reload view' } });
 const cmpK4 = await runTool(ctx, { name: 'assert_compare', input: { name: 'held', relation: 'equal' } });
 check('K4. equal after an action is falsifiable and passes', cmpK4.ok === true, JSON.stringify(cmpK4));
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endK = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('K5. end_scenario accepts the scenario', endK.ok === true, endK.error);
 
 await browser.close();
 
