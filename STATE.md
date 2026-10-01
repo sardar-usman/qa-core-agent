@@ -130,7 +130,7 @@ QA_CORE_EXPLORER_MODEL / QA_CORE_CRITIC_MODEL.
 | 3 5e4394 | Sept 18 | #21, #22 | 7 | 20 | 16 | 1 | $6.09 | completed | docs/audit/run-5e4394-diagnosis.md |
 | 4 591732 | Sept 22 | #23 to #26 | 7 | 20 | 13 | 5 | $4.57 | completed | docs/audit/run-591732-diagnosis.md |
 | 5 51d535 | Sept 24 | #25 to #29 | 8 | 17 | 13 | 5 | $6.03 | stopped at ceiling, framework written | docs/audit/run-51d535-diagnosis.md |
-| 6 | NEXT | #30 to #32 | | | | | | same command | |
+| 6 44cb3d | Oct 1 | #30 to #32 | 8 | 20 | 16 | 12 | $6.09 | completed, repair stopped at its budget | docs/audit/run-44cb3d-diagnosis.md |
 
 Run 4 verdict: hypothesis confirmed (the tool surface was the bottleneck;
 zero reworks asked for a missing capability). Framework ran 6 of 6.
@@ -141,6 +141,16 @@ passed replay and 3x stability: a field-identity defect in the POM emitter,
 fixed in #30 with the emitted-spec check stage. The other run 5 findings are
 fixed in #31 and #32. The own-account design (finding 8) is the next PR
 after the audit report.
+
+Run 6 verdict: bar missed on the rework rate (62.5 percent against under
+50; run 5: 69) and met on the other three lines: explorer cost $0.274 per
+explored scenario on the main pass ($0.371 including the repair pass), no
+rework for a missing URL timeout (the gate floored six at end_scenario), and
+the emitted-spec check green for every shipped test, which cannot fail by
+construction; the honest measure is 13 of 14, one emitter divergence (an
+unwaited count capture) caught and dropped before the zip. 12 shipped, 10 of
+14 rules, $6.09, and the zip ran 13 of 13 on a clean install. Defects D1 to
+D9 are in the diagnosis; D1 to D7 are in the backlog below.
 
 Run 6 bar, set before the run: rework rate under 50 percent (run 5: 69),
 explorer cost per explored scenario under $0.35 (run 5: $0.40), zero
@@ -153,9 +163,10 @@ parse currency; no pattern, toBeChecked or minimum-count assertions).
 
 saucedemo proof runs: Sept 14 $0.6187 4 shipped; Sept 17 after #18 $0.4536
 3 shipped, 95.8 percent cache; Sept 17 after #19 $0.3437 4 shipped, 0 rework.
-Next proof run: after run 6, same day, as the regression check for #25 to #32.
+Oct 1 after #32 $0.5961, 4 shipped, 2 reworks repaired, emitted 6 of 6 with
+credentials. That run was the regression check for #25 to #32.
 
-Live spend on Toolshop to date: $27.74 over five runs.
+Live spend on Toolshop to date: $33.83 over six runs.
 
 ## The audit plan
 
@@ -182,6 +193,26 @@ using the qa-core-heal evaluation report as the template.
 
 ## Audit backlog (open)
 
+- D1 (run 6): the emitted count capture reads once with no wait, unlike
+  replay; a too-early 0 passes a greater compare for the wrong reason.
+  docs/audit/run-44cb3d-diagnosis.md.
+- D2 (run 6): a planned page abandoned by the Explorer (empty /rentals)
+  shipped a hand-tools test under the rental name with no finding recorded.
+  docs/audit/run-44cb3d-diagnosis.md.
+- D3 (run 6): two unjustified Critic reworks (a success message the site
+  never shows; a timeout already at the gate floor) and cart verdicts that
+  took a badge element count for the badge's value.
+  docs/audit/run-44cb3d-diagnosis.md.
+- D4 (run 6): a repair stopped by its budget is filed as a critic drop with
+  the first-pass reasons. docs/audit/run-44cb3d-diagnosis.md.
+- D5 (run 6): the printed cost total excludes the requirements map cost on
+  both sites. docs/audit/run-44cb3d-diagnosis.md.
+- D6 (run 6): the findings key is omitted when empty (top level absent,
+  reconciliation.findings []). docs/audit/run-44cb3d-diagnosis.md.
+- D7 (run 6): fake-credential substitution rewrote the saucedemo
+  wrong-password username on the first fill and not the second, and makes
+  Toolshop R11 (duplicate email) unautomatable; belongs to the own-account
+  design. docs/audit/run-44cb3d-diagnosis.md.
 - Own account (run 5 finding 8): the happy registration scenario's generated
   account becomes the run's login and the duplicate-email seed, so no run
   depends on the shared demo account. Run 5's happy login failed with no
