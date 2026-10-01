@@ -34,6 +34,7 @@ import {
   pageFitReason,
   rejectPageFit,
   normalizeWords,
+  formNamePhrases,
   dedupeAcrossPages,
   uniqueScenarioNames,
   unreachableFeatures,
@@ -121,6 +122,27 @@ const table: PageFitSnapshot = {
   tableHeaders: ['Last Name', 'First Name', 'Email', 'Due', 'Web Site', 'Action'],
   frames: [],
 };
+
+/* ─── A0. run 51d535: the page's own form name is not a field ─────────────── */
+// Three valid forgot-password scenarios were dropped on /auth/forgot-password
+// as "names password which the page snapshot does not show": the word named
+// the form. The heading (and the path) give the form-name phrase, which is
+// removed from the name before field matching; a bare "password" still names
+// the field.
+const run5Names = [
+  'submitted forgot-password form with a valid email and received a confirmation message',
+  'rejected forgot-password form with empty email field and showed required-field error',
+  'rejected forgot-password form with an invalid email format and showed format error',
+];
+check('A0a. the forgot-password snapshot yields the form-name phrase "forgot password"', formNamePhrases(forgotPassword).join(',') === 'forgot password', JSON.stringify(formNamePhrases(forgotPassword)));
+for (const [i, n] of run5Names.entries()) {
+  const r = pageFitReason(sc(n, i === 0 ? 'happy' : 'negative', 'account'), forgotPassword);
+  check(`A0${'bcd'[i]}. run 5 name ${i + 1} is KEPT on the forgot-password page`, r === null, JSON.stringify(r));
+}
+check('A0e. a "first name" scenario on that page is still dropped', pageFitReason(sc('rejected forgot-password form with an empty first name', 'negative', 'account'), forgotPassword)?.control === 'first name');
+const fromPath = formNamePhrases({ headings: [], url: 'https://s.example/auth/forgot-password' });
+const fromTitle = formNamePhrases({ headings: [], title: 'Reset Password | Toolshop' });
+check('A0f. the path segment and a title segment give the phrase too; a one-word heading and a non-field heading give none', fromPath.join(',') === 'forgot password' && fromTitle.join(',') === 'reset password' && formNamePhrases({ headings: [{ tag: 'h1', label: 'Password' }, { tag: 'h2', label: 'Hand Tools' }] }).length === 0, JSON.stringify([fromPath, fromTitle]));
 
 /* ─── A. the password-reset page ──────────────────────────────────────────── */
 const a1 = pageFitReason(sc('rejected registration with first name field left empty', 'negative'), forgotPassword);
@@ -344,4 +366,4 @@ const map: RequirementsMap = {
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: page-fit drops a scenario that names a control the snapshot does not show, cross-page duplicates collapse to one, the funnel balances after the drops, derivation says page-fit, and an unreachable SRS feature prints its line.');
+console.log('OK: page-fit drops a scenario that names a control the snapshot does not show, keeps a scenario that names the page\'s own form, cross-page duplicates collapse to one, the funnel balances after the drops, derivation says page-fit, and an unreachable SRS feature prints its line.');

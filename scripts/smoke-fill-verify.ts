@@ -209,14 +209,17 @@ await runTool(ctx, { name: 'begin_scenario', input: { name: 'filled three inputs
 // Three fields, identical hints on purpose. Only the element key separates them.
 const V1 = 'value-one-111', V2 = 'value-two-222', V3 = 'value-three-333';
 // Address each by nth so the model's hint is generic and identical in shape.
-await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V1, css: 'form .txt >> nth=0' } });
-await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V2, css: 'form .txt >> nth=1' } });
-await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V3, css: 'form .txt >> nth=2' } });
+// A two-part chain (`.txt >> nth=i`), not `form .txt >> nth=i`: the three-part
+// chain is fragile under gate RULE 3, which tools.ts now refuses at the tool
+// call (the end_scenario gate was already rejecting it, unchecked here).
+await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V1, css: '.txt >> nth=0' } });
+await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V2, css: '.txt >> nth=1' } });
+await runTool(ctx, { name: 'fill', input: { intent: 'text input', value: V3, css: '.txt >> nth=2' } });
 // The model asserts each field but (as it really did) re-supplies the SAME value
 // V3 for all three. The binding must override each with its own fill value.
-const t1 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: 'form .txt >> nth=0', value: V3 } });
-const t2 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: 'form .txt >> nth=1', value: V3 } });
-const t3 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: 'form .txt >> nth=2', value: V3 } });
+const t1 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: '.txt >> nth=0', value: V3 } });
+const t2 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: '.txt >> nth=1', value: V3 } });
+const t3 = await runTool(ctx, { name: 'assert', input: { type: 'toHaveValue', intent: 'text input value', css: '.txt >> nth=2', value: V3 } });
 check('Q. all three live toHaveValue assertions pass', t1.ok && t2.ok && t3.ok, JSON.stringify([t1, t2, t3]));
 const recVals = ctx.current!.steps
   .filter((s): s is Extract<TraceStep, { kind: 'assert' }> => s.kind === 'assert' && s.assertion.type === 'toHaveValue')

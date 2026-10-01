@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createContext, runTool, TOOL_DEFS, type ToolContext } from './tools.js';
+import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, type PlannedScenario } from './planner.js';
@@ -1018,6 +1018,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   let context: BrowserContext | undefined;
   let scenarios: Scenario[] = [];
   let cascadeStats: Record<CascadeLevel, number> = { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 };
+  let testIdAttribute: string | null = null;
   let steps = 0;
   let cost: RunReport['cost'] = {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
@@ -1189,6 +1190,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // exactly as a single run would.
     scenarios = opts.resume ? [...restoredCompleted, ...ctx.scenarios] : ctx.scenarios;
     cascadeStats = ctx.cascadeStats;
+    testIdAttribute = dominantTestIdAttribute(ctx);
     steps = ctx.steps;
     cost = { ...explorerCost, plannerUsd: planResult.usd };
     if (opts.resume) {
@@ -1705,6 +1707,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     durationSec: Math.round((Date.now() - startMs) / 1000),
     cascadeStats,
     resolvedIntents,
+    testIdAttribute,
   };
   try { saveRun(summary); } catch (err) {
     // Memory is best-effort, but silent failure is worse than a one-line warning.

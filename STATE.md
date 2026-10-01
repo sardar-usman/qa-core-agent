@@ -120,8 +120,11 @@ Toolshop runs, same site, same SRS, same $6 ceiling:
 
 Run 5 verdict: bar missed (5 shipped, 4 rules). Emitted framework failed
 3 of 6 on a clean install: field identity defect in the POM emitter, fixed
-in PR #30 with an emitted-spec check stage. Next: PR 5 (gate and cost),
-PR 6 (planning, critic, own account), then run 6. Run 6 bar: rework rate
+in PR #30 with an emitted-spec check stage. Run 5 findings 2 to 5 (the
+toHaveURL floor, fast-failing count probes plus the per-host test-id
+attribute, gate rules at record time plus RULE 8, the forgot-password
+page-fit false positive) are fixed on branch fix/gate-and-cost (PR 5,
+gate and cost). Next: PR 6 (planning, critic, own account), then run 6. Run 6 bar: rework rate
 under 50 percent, explorer cost per explored scenario under $0.35, zero
 reworks whose only reason is a missing URL timeout, emitted-spec check
 green for every shipped test.
@@ -191,17 +194,16 @@ item ranked there is either merged (see the PR list above) or listed below.
 - Explorer start-up waste: an orientation load of the entry page before
   the first planned scenario although the plan names each page
   (finding 8).
-- A toHaveURL with no model timeout stays [no-timeout] on the record and
-  the Critic reworks it as a one-shot check: four reworks in run 5; floor
-  it at the gate like every other assertion (run 51d535 finding 2).
-- Per-host memory of the test-id attribute: run 5 spent two 60 s dead
-  waits on data-testid against a data-test site that run 4 had already
-  seen (run 51d535 finding 3).
-- Gate RULE 3 and RULE 4 fire at end_scenario after 15 and 12 calls and
-  force a full re-record; check them at the tool call like RULE 7, and
-  trim a currency amount off a role or label name (run 51d535 finding 4).
-- Page-fit false positive: "forgot-password form" names the form, not a
-  password field; three recovery scenarios lost (run 51d535 finding 5).
+- FIXED in PR 5 (fix/gate-and-cost): a toHaveURL with no model timeout
+  that follows an action is floored by gate RULE 2 (run 51d535 finding 2);
+  count and absence probes fail fast at LIVE_PROBE_TIMEOUT_MS and the
+  per-host fingerprint remembers the test-id attribute, which get_dom
+  prints first (finding 3); RULE 3, 6 and the new RULE 8 (price in a
+  locator name) are refused at the tool call with nothing recorded
+  (finding 4); page fit strips the page's own form-name phrase before
+  field matching, so the three forgot-password scenarios are kept
+  (finding 5). RULE 4 still fires at end_scenario only: it needs the
+  whole scenario for corroboration.
 - The requirements map is not deterministic across runs: the same SRS
   gave five features in run 4 and four in run 5 (login and registration
   merged), which produced the multi-page account feature and two
