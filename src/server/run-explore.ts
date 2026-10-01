@@ -5,7 +5,7 @@ import type { RunReport } from '../agent/trace.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
 import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
-import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } from '../agent/requirements.js';
+import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
@@ -14,7 +14,7 @@ import {
   applyCheckpointFlags, buildExploreOptions, outDirForRequest, resumeConflicts,
   type ExploreRequest,
 } from '../agent/explore-request.js';
-import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
+import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent, appendRunNote } from './events.js';
 import os from 'node:os';
 
@@ -249,9 +249,10 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('--srs needs ANTHROPIC_API_KEY set (the requirements map is built with a Haiku call).');
     const srsPath = path.resolve(root, req.srs);
-    const { text, truncated } = await loadSrsText(srsPath);
-    const built = await buildRequirementsMap({ srsText: text, truncated, apiKey });
+    // One map per SRS content hash, cached under output/<slug>/srs/<hash>/ (invariant 26).
+    const built = await requirementsMapForSrs({ srsPath, outputRoot: base, slug: projectSlug(url), rebuild: req.rebuildSrsMap, apiKey });
     requirements = built.map;
+    notes.push(`  ${built.line}`);
     if (requirements.features.length === 0) {
       throw new Error(`The SRS at ${req.srs} yielded no features. Nothing to plan from; check the document.`);
     }

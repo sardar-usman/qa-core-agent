@@ -62,7 +62,8 @@ check('A2. fill reports it auto-dispatched to select_option', (fillSelect.data a
 check('A3. recorded step kind is select_option, not fill', ctx.current!.steps.some((s) => s.kind === 'select_option') && !ctx.current!.steps.some((s) => s.kind === 'fill'));
 check('A4. the select actually moved to Canada (value "ca")', (await sel('country').inputValue()) === 'ca');
 await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'country dropdown', label: 'Country' } });
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endF1 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end1. end_scenario accepts scenario 1', endF1.ok === true, endF1.error);
 
 /* ─── B. fill() on a checkbox auto-routes to check ─────────────────────────── */
 await page.setContent(formHtml, { waitUntil: 'load' });
@@ -73,7 +74,8 @@ check('B2. fill reports it auto-dispatched to set_checked', (fillCheck.data as {
 check('B3. recorded step kind is set_checked, not fill', ctx.current!.steps.some((s) => s.kind === 'set_checked'));
 check('B4. the checkbox is actually checked', (await sel('terms').isChecked()) === true);
 await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'accept terms', role: 'checkbox', label: 'I accept the terms' } });
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endF2 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end2. end_scenario accepts scenario 2', endF2.ok === true, endF2.error);
 
 /* ─── C. explicit select_option by value, label, and index ─────────────────── */
 await page.setContent(formHtml, { waitUntil: 'load' });
@@ -87,7 +89,8 @@ check('C3. select_option by index 2 selects Canada (value "ca")', byIndex.ok ===
 const noPick = await runTool(ctx, { name: 'select_option', input: { intent: 'country', label: 'Country' } });
 check('C4. select_option with no option given is rejected', noPick.ok === false && /optionValue|optionLabel|optionIndex/.test(noPick.error ?? ''));
 await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'country', label: 'Country' } });
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endF3 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end3. end_scenario accepts scenario 3', endF3.ok === true, endF3.error);
 
 /* ─── D. explicit set_checked check then uncheck ───────────────────────────── */
 await page.setContent(formHtml, { waitUntil: 'load' });
@@ -97,7 +100,8 @@ check('D1. set_checked(true) ticks the box', (await sel('terms').isChecked()) ==
 await runTool(ctx, { name: 'set_checked', input: { intent: 'terms', checked: false, role: 'checkbox', label: 'I accept the terms' } });
 check('D2. set_checked(false) unticks the box', (await sel('terms').isChecked()) === false);
 await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'terms', role: 'checkbox', label: 'I accept the terms' } });
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endF4 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end4. end_scenario accepts scenario 4', endF4.ok === true, endF4.error);
 
 /* ─── E. fill() on a radio checks it; fill() on a textarea still fills ──────── */
 await page.setContent(formHtml, { waitUntil: 'load' });
@@ -108,7 +112,8 @@ const fillTextarea = await runTool(ctx, { name: 'fill', input: { intent: 'bio', 
 check('E2. fill on a textarea still fills (kind stays fill)', fillTextarea.ok === true && (await sel('bio').inputValue()) === 'hello there');
 check('E3. textarea recorded as a real fill step', ctx.current!.steps.some((s) => s.kind === 'fill' && s.value === 'hello there'));
 await runTool(ctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'bio', label: 'Bio' } });
-await runTool(ctx, { name: 'end_scenario', input: {} });
+const endF5 = await runTool(ctx, { name: 'end_scenario', input: {} });
+check('end5. end_scenario accepts scenario 5', endF5.ok === true, endF5.error);
 
 await browser.close();
 

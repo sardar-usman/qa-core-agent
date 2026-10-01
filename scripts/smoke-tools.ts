@@ -98,7 +98,8 @@ const hidden = await runTool(toolCtx, { name: 'assert', input: { type: 'toBeHidd
 check('3f. toBeHidden on a missing element passes at once', hidden.ok && Date.now() - t2 < 3000);
 
 /* ─── 4. gate rules at record time ───────────────────────────────────────── */
-await runTool(toolCtx, { name: 'end_scenario', input: {} });
+const endProbe = await runTool(toolCtx, { name: 'end_scenario', input: {} });
+check('3g. end_scenario accepts the probe-timing scenario', endProbe.ok === true, endProbe.error);
 await runTool(toolCtx, { name: 'begin_scenario', input: { name: 'sorted by price', category: 'happy', feature: 'catalogue' } });
 await page.setContent(html, { waitUntil: 'load' });
 const before = stepsRecorded();

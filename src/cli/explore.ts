@@ -5,7 +5,7 @@ import { explore, type ReviewPaused } from '../agent/runtime.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
 import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
-import { buildRequirementsMap, countRules, loadSrsText, type RequirementsMap } from '../agent/requirements.js';
+import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
@@ -17,7 +17,7 @@ import {
   type ExploreRequest,
 } from '../agent/explore-request.js';
 import os from 'node:os';
-import { finalizeRunDir, newRunId, writeRunMeta } from '../agent/output-layout.js';
+import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent } from '../server/events.js';
 
 /**
@@ -219,9 +219,11 @@ async function main(): Promise<void> {
       console.error('✗ --srs needs ANTHROPIC_API_KEY set (the requirements map is built with a Haiku call).');
       process.exit(1);
     }
-    const { text, truncated } = await loadSrsText(args.srs);
-    const built = await buildRequirementsMap({ srsText: text, truncated, apiKey });
+    // One map per SRS content hash, cached under output/<slug>/srs/<hash>/:
+    // the same bytes always plan from the same map (invariant 26).
+    const built = await requirementsMapForSrs({ srsPath: args.srs, outputRoot: base, slug: projectSlug(url), rebuild: args.rebuildSrsMap, apiKey });
     requirements = built.map;
+    console.log(`  ${built.line}`);
     if (requirements.features.length === 0) {
       console.error(`✗ The SRS at ${args.srs} yielded no features. Nothing to plan from — check the document.`);
       process.exit(1);

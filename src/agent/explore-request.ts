@@ -26,6 +26,8 @@ export interface ExploreRequest {
   features: string[];
   /** SRS document path (.md/.txt/.pdf/.docx). */
   srs?: string;
+  /** --rebuild-srs-map: build the requirements map again instead of reusing the cached one for these SRS bytes. */
+  rebuildSrsMap: boolean;
   /** Multi-page discovery. Also activated by urls or srs. */
   discover: boolean;
   /** Explicit page list from --urls. */
@@ -135,6 +137,7 @@ export const EXPLORE_FLAGS: ReadonlyArray<{ flag: string; takesValue: boolean; m
   { flag: '--lang', takesValue: true, mcp: 'language', gateway: true, form: 'lang' },
   { flag: '--features', takesValue: true, mcp: 'features', gateway: true, form: 'features' },
   { flag: '--srs', takesValue: true, mcp: 'srs', gateway: true, note: 'the Terminal page attaches the SRS as a file upload saved into the run folder, which becomes --srs' },
+  { flag: '--rebuild-srs-map', takesValue: false, mcp: 'rebuildSrsMap', gateway: true },
   { flag: '--urls', takesValue: true, mcp: 'urls', gateway: true, form: 'urls' },
   { flag: '--discover', takesValue: false, mcp: 'discover', gateway: true, form: 'discover' },
   { flag: '--pom', takesValue: false, mcp: 'pom', gateway: true, form: 'pom' },
@@ -170,6 +173,7 @@ export function defaultExploreRequest(): ExploreRequest {
     pom: true,
     features: [],
     discover: false,
+    rebuildSrsMap: false,
     urls: [],
     replay: true,
     stability: true,
@@ -243,6 +247,7 @@ export function parseExploreTokens(tokens: string[]): ParseRequestResult {
         req.features = parseCommaSeparated(v); i++; break;
       }
       case '--discover': req.discover = true; break;
+      case '--rebuild-srs-map': req.rebuildSrsMap = true; break;
       case '--urls': {
         const v = need(a, i);
         if (!v) return { ok: false, error: '--urls expects a comma-separated list of page URLs' };

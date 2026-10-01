@@ -48,7 +48,7 @@ export const DERIVATION_CATEGORIES: DerivationCategory[] = [
   'state-transition',
 ];
 
-export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable' | 'page-fit';
+export type DerivationSkipReason = 'no-matching-control' | 'budget' | 'not-applicable' | 'page-fit' | 'contradiction';
 
 /**
  * Which checklist categories produced scenarios for one feature, and which
@@ -252,6 +252,9 @@ export function categoryApplicable(feature: { rules: Array<{ text: string; type:
  *                           scenario because it named a control the page
  *                           snapshot does not show (a first-name field on a
  *                           password-reset form)
+ *   - contradiction       : applicable, and the Planner did derive a scenario
+ *                           for it, but it contradicted the rules it cited
+ *                           ("remained unsorted" citing the sort rule)
  *   - no-matching-control — applicable, nothing produced, no cap hit; the page
  *                           most likely lacks the control the category needs
  */
@@ -262,11 +265,14 @@ export function computeDerivation(opts: {
   budgetHit?: boolean;
   /** Scenarios the page-fit pass rejected; a category they would have filled skips as 'page-fit'. */
   pageFitRejected?: DerivableScenario[];
+  /** Scenarios the contradiction pass rejected; a category they would have filled skips as 'contradiction'. */
+  contradictionRejected?: DerivableScenario[];
 }): FeatureDerivation[] {
   const out: FeatureDerivation[] = [];
   for (const feature of opts.map.features) {
     const mine = opts.planned.filter((s) => s.feature === feature.name);
     const unfit = (opts.pageFitRejected ?? []).filter((s) => s.feature === feature.name);
+    const contradicted = (opts.contradictionRejected ?? []).filter((s) => s.feature === feature.name);
     const cited = new Set<string>();
     for (const s of mine) for (const id of s.ruleIds ?? []) cited.add(id);
     const produced: FeatureDerivation['produced'] = [];
@@ -281,6 +287,8 @@ export function computeDerivation(opts: {
         skipped.push({ category, reason: 'not-applicable' });
       } else if (unfit.some((s) => classifyDerivationCategory(s) === category)) {
         skipped.push({ category, reason: 'page-fit' });
+      } else if (contradicted.some((s) => classifyDerivationCategory(s) === category)) {
+        skipped.push({ category, reason: 'contradiction' });
       } else {
         skipped.push({ category, reason: opts.budgetHit ? 'budget' : 'no-matching-control' });
       }

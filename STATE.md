@@ -123,8 +123,13 @@ Run 5 verdict: bar missed (5 shipped, 4 rules). Emitted framework failed
 in PR #30 with an emitted-spec check stage. Run 5 findings 2 to 5 (the
 toHaveURL floor, fast-failing count probes plus the per-host test-id
 attribute, gate rules at record time plus RULE 8, the forgot-password
-page-fit false positive) are fixed on branch fix/gate-and-cost (PR 5,
-gate and cost). Next: PR 6 (planning, critic, own account), then run 6. Run 6 bar: rework rate
+page-fit false positive) are fixed in PR #31 (gate and cost). Findings 6,
+7 and 9 (the requirements map cached by SRS content hash, the Critic's
+second pass judging the first pass's required fixes, contradiction
+rejection at plan time with a capped one-rule retry) are fixed on branch
+fix/planning-and-critic-second-pass (PR 6, planning and critic). The
+own-account design (finding 8) stays on the backlog as the next PR after
+run 6. Next: run 6. Run 6 bar: rework rate
 under 50 percent, explorer cost per explored scenario under $0.35, zero
 reworks whose only reason is a missing URL timeout, emitted-spec check
 green for every shipped test.
@@ -204,16 +209,17 @@ item ranked there is either merged (see the PR list above) or listed below.
   field matching, so the three forgot-password scenarios are kept
   (finding 5). RULE 4 still fires at end_scenario only: it needs the
   whole scenario for corroboration.
-- The requirements map is not deterministic across runs: the same SRS
-  gave five features in run 4 and four in run 5 (login and registration
-  merged), which produced the multi-page account feature and two
-  registration scenarios planned on the login page (run 51d535 finding 6).
-- The Critic's second pass complains about things its first pass never
-  required, so an applied fix is still dropped; scope the second pass to
-  the required fixes (run 51d535 finding 7).
-- A negated-action scenario ("sorted ... and the list remained unsorted")
-  reaches the Explorer and the Critic rejects it, costing its rule;
-  reject the shape at plan time (run 51d535 finding 9).
+- FIXED in PR 6 (fix/planning-and-critic-second-pass): the requirements
+  map is cached by SRS content hash under output/<slug>/srs/<hash>/ and
+  reused on every run with the same bytes, --rebuild-srs-map forces a
+  build (run 51d535 finding 6); the Critic's second pass judges the first
+  pass's required fixes, all applied keeps the scenario with any new
+  complaint as a note, one unapplied drops it (finding 7); a contradiction
+  (a negative whose only cited rules state no rejection, or a name that
+  asserts the opposite of a cited rule) is dropped at plan time and a
+  rule it leaves uncited gets one capped retry call (finding 9).
+- Own account (finding 8): the next PR after run 6. Design as listed
+  under the shared demo account lockout item above.
 
 ## Then: go to market
 

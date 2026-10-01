@@ -31,6 +31,7 @@ export const exploreArgs = {
   srsText: z.string().optional().describe('The SRS content inline, when the client holds the text rather than a file. Saved into the run folder as srs.md and treated like --srs, the same path a dashboard upload takes. Ignored when srs is given.'),
   urls: z.array(z.string()).optional().describe('Explicit page list for multi-page discovery, paths or absolute URLs (CLI: --urls /login,/cart).'),
   discover: z.boolean().default(false).describe('Multi-page discovery ladder: sitemap, then a polite crawl, then entry-only (CLI: --discover). Also activated by urls or srs.'),
+  rebuildSrsMap: z.boolean().default(false).describe('Build the requirements map again instead of reusing the one cached for these SRS bytes under output/<project>/srs/<hash>/ (CLI: --rebuild-srs-map).'),
   pom: z.boolean().default(true).describe('true: emit the Page Object Model framework + zip (default). false: a single inline spec file (CLI: --no-pom / --inline).'),
   name: z.string().optional().describe('Output basename override (CLI: --name).'),
   replay: z.boolean().default(true).describe('Run the reality-check replay pass (CLI: --no-replay to disable).'),
@@ -123,6 +124,7 @@ export function exploreRequestFromToolArgs(a: ExploreToolArgs, srsPathFromText?:
   if (a.srs) req.srs = a.srs;
   else if (srsPathFromText) req.srs = srsPathFromText;
   req.discover = a.discover ?? false;
+  req.rebuildSrsMap = a.rebuildSrsMap ?? false;
   req.urls = (a.urls ?? []).map((u) => u.trim()).filter(Boolean);
   if (a.name) req.name = a.name;
   req.replay = a.replay ?? true;
