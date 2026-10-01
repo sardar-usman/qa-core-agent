@@ -149,8 +149,11 @@ rework for a missing URL timeout (the gate floored six at end_scenario), and
 the emitted-spec check green for every shipped test, which cannot fail by
 construction; the honest measure is 13 of 14, one emitter divergence (an
 unwaited count capture) caught and dropped before the zip. 12 shipped, 10 of
-14 rules, $6.09, and the zip ran 13 of 13 on a clean install. Defects D1 to
-D9 are in the diagnosis; D1 to D7 are in the backlog below.
+14 rules, $6.09, and the zip ran 13 of 13 on a clean install (owner-run).
+Two shipped tests carry names that claim more than the recording proves:
+the rental-titled test runs on a hand-tools product (D2), and the
+wrong-password login test submits a generated non-existent account (D7).
+Defects D1 to D9 are in the diagnosis; D1 to D7 are in the backlog below.
 
 Run 6 bar, set before the run: rework rate under 50 percent (run 5: 69),
 explorer cost per explored scenario under $0.35 (run 5: $0.40), zero
@@ -209,10 +212,12 @@ using the qa-core-heal evaluation report as the template.
   both sites. docs/audit/run-44cb3d-diagnosis.md.
 - D6 (run 6): the findings key is omitted when empty (top level absent,
   reconciliation.findings []). docs/audit/run-44cb3d-diagnosis.md.
-- D7 (run 6): fake-credential substitution rewrote the saucedemo
-  wrong-password username on the first fill and not the second, and makes
-  Toolshop R11 (duplicate email) unautomatable; belongs to the own-account
-  design. docs/audit/run-44cb3d-diagnosis.md.
+- D7 (run 6): fake-credential substitution on both sites: saucedemo's
+  wrong-password username was rewritten on the first fill and not the
+  second; Toolshop's wrong-password test submits a generated non-existent
+  account under a name that claims a wrong password for a known one, and
+  Toolshop R11 (duplicate email) cannot be automated; belongs to the
+  own-account design. docs/audit/run-44cb3d-diagnosis.md.
 - Own account (run 5 finding 8): the happy registration scenario's generated
   account becomes the run's login and the duplicate-email seed, so no run
   depends on the shared demo account. Run 5's happy login failed with no
