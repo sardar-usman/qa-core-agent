@@ -12,6 +12,7 @@ import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, gener
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
+import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import {
   chooseStateAssertion,
@@ -104,6 +105,16 @@ export interface ToolContext {
    * plan silently.
    */
   plannedNames: string[];
+  /**
+   * Per planned scenario (keyed by its name as it appears in plannedNames),
+   * the page it was planned on and whether that page is volatile. Set by the
+   * runtime beside plannedNames, so the repair pass inherits it. end_scenario
+   * refuses a trace whose navigate steps leave the planned page (invariant
+   * 65); an entry with no pageUrl, or none at all, exempts the scenario.
+   */
+  plannedPages: Map<string, PlannedPageEntry>;
+  /** Planned-page violations per planned scenario; the second records the scenario as gate-broken. */
+  _plannedPageAttempts: Map<string, number>;
   /** Planned scenarios explicitly skipped via skip_scenario, each with a reason. */
   skipped: Array<{ scenario: string; reason: string }>;
   cascadeStats: Record<CascadeLevel, number>;
@@ -239,6 +250,8 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     scenarios: [],
     current: null,
     plannedNames: [],
+    plannedPages: new Map(),
+    _plannedPageAttempts: new Map(),
     skipped: [],
     cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
     steps: 0,
@@ -735,6 +748,20 @@ function unexploredPlanned(ctx: ToolContext): string[] {
   const claimed = claimPlanned(ctx.plannedNames, begun);
   return ctx.plannedNames.filter((planned) => scenarioNameKey(planned).length > 0 && !claimed.has(planned));
 }
+
+/**
+ * The planned scenario a recorded name fulfils, through the tolerant matcher
+ * (exact key first, containment second), never by the model's exact text.
+ * Null when the name matches no planned scenario.
+ */
+export function plannedNameFor(ctx: ToolContext, name: string): string | null {
+  const claimed = claimPlanned(ctx.plannedNames, [name]);
+  for (const p of claimed) return p;
+  return null;
+}
+
+/** Planned-page violations allowed before the scenario is recorded as gate-broken. */
+export const PLANNED_PAGE_CAP = 2;
 
 function pushStep(ctx: ToolContext, step: TraceStep): void {
   if (!ctx.current) throw new Error('No scenario in progress — call begin_scenario first.');
@@ -1788,6 +1815,32 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
       }
       case 'end_scenario': {
         if (!ctx.current) return { ok: false, error: 'No scenario to end.' };
+        // Planned-page integrity (invariant 65), before the gate: a scenario
+        // is recorded on its planned page. Run 44cb3d recorded the rental
+        // scenario on /category/hand-tools after finding /rentals empty and
+        // shipped it under the rental name with no finding. A violation
+        // abandons the trace like a gate rejection; the second violation of
+        // the same planned scenario records it as gate-broken with both paths,
+        // so it reaches reconciliation.dropped with an honest reason. The
+        // scenario is never renamed and never shipped under its name.
+        {
+          const plannedName = plannedNameFor(ctx, ctx.current.name);
+          const entry = plannedName ? ctx.plannedPages.get(plannedName) : undefined;
+          const violation = plannedPageViolation(ctx.current.steps, entry);
+          if (violation && plannedName) {
+            const attempts = (ctx._plannedPageAttempts.get(plannedName) ?? 0) + 1;
+            ctx._plannedPageAttempts.set(plannedName, attempts);
+            ctx.current = null; // abandon, exactly like a gate rejection
+            if (attempts >= PLANNED_PAGE_CAP) {
+              ctx.brokenByGate.push({ scenario: plannedName, reason: plannedPageBrokenReason(violation), attempts });
+              return {
+                ok: false,
+                error: `Planned-page violation BROKEN after ${attempts} attempts: "${plannedName}" was ${violation.message}. This scenario is permanently dropped and recorded with both paths; move on to the next planned scenario.`,
+              };
+            }
+            return { ok: false, error: plannedPageRefusal(plannedName, violation, attempts, PLANNED_PAGE_CAP) };
+          }
+        }
         if (!ctx.current.steps.some((s) => s.kind === 'assert' || s.kind === 'assert_compare')) {
           return { ok: false, error: 'Scenario has no assertions. Add at least one assert, assert_compare, or assert_freeze before end_scenario.' };
         }

@@ -375,6 +375,17 @@ export function salvageOnCostCeiling(opts: {
  * and returns the re-recorded traces. Respects the remaining cost budget:
  * runAgentLoop's ceiling break applies, so completed repairs are salvaged.
  */
+/**
+ * The plan entry a recorded scenario fulfils, by the tolerant matcher (exact
+ * key first, containment second, each entry claimable once), never by exact
+ * model text.
+ */
+export function plannedEntryFor(plan: PlannedScenario[], name: string): PlannedScenario | null {
+  const claimed = claimPlanned(plan.map((p) => p.name), [name]);
+  for (const p of plan) if (claimed.has(p.name)) return p;
+  return null;
+}
+
 async function repairPass(args: {
   client: Anthropic;
   model: string;
@@ -383,6 +394,13 @@ async function repairPass(args: {
   url: string;
   rework: Scenario[];
   verdicts: ScenarioVerdict[];
+  /**
+   * The run's plan. A rework scenario's plan entry (tolerant name match)
+   * lends its pageUrl and volatilePage to the repair plan, so the repair
+   * re-records on the planned page under the same planned-page check
+   * (invariant 65). Before this the repair plan carried no page at all.
+   */
+  plan?: PlannedScenario[];
   onEvent?: ExploreOptions['onEvent'];
   /** The Explorer's credential context (known real accounts, lockout-exempt scenarios), applied to the repair context too. */
   credentials?: { knownAccounts: Set<string>; lockoutScenarioKeys: Set<string> };
@@ -398,11 +416,14 @@ async function repairPass(args: {
 }> {
   const plan: PlannedScenario[] = args.rework.map((s) => {
     const v = verdictFor(args.verdicts, s.name);
+    const planned = plannedEntryFor(args.plan ?? [], s.name);
     return {
       name: s.name,
       category: s.category ?? 'happy',
       rationale: `REWORK: ${(v?.reasons ?? []).join('; ') || 'assertion too weak'}`,
       ...(s.feature ? { feature: s.feature } : {}),
+      ...(planned?.pageUrl ? { pageUrl: planned.pageUrl } : {}),
+      ...(planned?.volatilePage ? { volatilePage: true } : {}),
     };
   });
   const repairNote = [
@@ -1377,6 +1398,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             url: opts.url,
             rework: decision.rework,
             verdicts: review.verdicts,
+            plan: planResult.scenarios,
             onEvent: opts.onEvent,
             ...(explorerCredentialContext ? { credentials: explorerCredentialContext } : {}),
           });
@@ -1844,6 +1866,11 @@ export async function runAgentLoop(args: {
   // Plan enforcement: finish() consults this list and is rejected while any
   // planned scenario is neither explored nor skipped via skip_scenario.
   ctx.plannedNames = args.plan.map((p) => p.name);
+  // Planned-page integrity (invariant 65): each planned scenario's page and
+  // whether it is volatile, keyed by the same name, so end_scenario can
+  // refuse a trace recorded somewhere else. The repair pass runs this loop
+  // too, so its plan carries the page as well (see repairPass).
+  ctx.plannedPages = new Map(args.plan.map((p) => [p.name, { ...(p.pageUrl ? { pageUrl: p.pageUrl } : {}), ...(p.volatilePage ? { volatilePage: true } : {}) }]));
 
   const cost: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, calls: [] };
 
@@ -1863,7 +1890,7 @@ export async function runAgentLoop(args: {
     ? 'Planned scenarios (cover all of these unless a scenario is impossible from this page). ' +
       'When you call begin_scenario, set `feature` to the value in the first bracket — verbatim, kebab-case.\n' +
       (multiPage
-        ? 'Scenarios marked "page:" run on that page. Begin each such scenario by navigating to its page URL (scenarios stay self-contained).\n'
+        ? 'Scenarios marked "page:" run on that page. Begin each such scenario by navigating to its page URL (scenarios stay self-contained). A scenario is recorded on its planned page; it may reach other pages by clicking, never by navigating away to record somewhere else.\n'
         : '') +
       args.plan
         .map((p, i) => {
