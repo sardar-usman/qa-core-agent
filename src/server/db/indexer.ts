@@ -5,6 +5,8 @@ import type Database from 'better-sqlite3';
 import type { RunReport } from '../../agent/trace.js';
 import type { RequirementsMap } from '../../agent/requirements.js';
 import { brandSlug } from '../../agent/scaffold.js';
+import { totalCost } from '../../agent/cost-total.js';
+import { findingsOf } from '../../agent/reconcile.js';
 import { listRunDirs, projectSlug, readRunMeta, runIdTime, compactTimestamp, shortHash, type RunDirEntry } from '../../agent/output-layout.js';
 
 /**
@@ -126,14 +128,16 @@ export function runRowFromReport(opts: {
     generated: rec ? len(rec.generated) : scenarios.length,
     dropped: rec ? len(rec.dropped) : 0,
     incomplete: rec ? len(rec.incomplete) : len(r.incomplete),
-    findings: rec ? len(rec.findings) : len(r.findings),
+    findings: rec ? len(rec.findings) : findingsOf(r).length,
     skipped: rec ? len(rec.skipped) : len(r.skipped),
     stable: rec ? len(rec.stable) : (r.stability && !r.stability.skipped ? r.stability.passed : 0),
     flaky: rec ? len(rec.flaky) : (r.stability?.flaky ?? 0),
     broken: rec ? len(rec.broken) : (r.stability?.broken ?? 0),
     shipped: scenarios.length,
-    // Every cost line the dashboard shows: explorer (incl. repair) + planner + critic + stabilizer.
-    cost_total: (cost.usd ?? 0) + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0) + (r.stability?.stabilizerCostUsd ?? 0),
+    // Every cost line the dashboard shows, summed in the one place
+    // (cost-total.ts): explorer (incl. repair) + planner + critic +
+    // stabilizer + requirements map (0 on a report without the key).
+    cost_total: totalCost(r),
     cost_planner: cost.plannerUsd ?? 0,
     cost_explorer: (cost.usd ?? 0) - repair,
     cost_critic: cost.criticUsd ?? 0,
@@ -236,7 +240,7 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
       for (const c of rc.covered ?? []) ins.run(row.id, c.ruleId, ruleInfo.get(c.ruleId)?.text ?? null, ruleInfo.get(c.ruleId)?.feature ?? null, 'covered', JSON.stringify(c.scenarios ?? []));
       for (const u of rc.uncovered ?? []) ins.run(row.id, u.ruleId, u.text ?? ruleInfo.get(u.ruleId)?.text ?? null, ruleInfo.get(u.ruleId)?.feature ?? null, UNCOVERED_STATUS[u.reason] ?? 'not_planned', '[]');
     }
-    for (const f of report.findings ?? []) {
+    for (const f of findingsOf(report)) {
       const id = findingKey(projectId, f.scenario, f.expected);
       // Report data only, no inference: the page's messages verbatim, or the URL at the time when it said nothing.
       const observed = f.messages && f.messages.length ? f.messages.join(' | ') : `no message recorded; URL at the time: ${f.url}`;

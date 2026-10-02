@@ -8,6 +8,7 @@ import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import {
@@ -163,6 +164,8 @@ export interface PreparedRun {
   url: string;
   outDir: string;
   requirements?: RequirementsMap;
+  /** What the map cost this run (built, 0 when reused or no SRS); undefined on a resume from an older checkpoint. */
+  requirementsUsd?: number;
   resume?: Checkpoint;
   /** Absolute path of the uploaded SRS saved in the run directory, when one was attached. */
   srsFile?: string;
@@ -241,8 +244,12 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
   }
 
   let requirements: RequirementsMap | undefined;
+  // The same rule as the CLI: build cost, 0 when reused or no SRS, the
+  // checkpoint's value on a resume (undefined on an older checkpoint).
+  let requirementsUsd: number | undefined = 0;
   if (resumeCp?.requirementsMap) {
     requirements = resumeCp.requirementsMap;
+    requirementsUsd = resumeCp.spentUsd.requirements;
     notes.push(`  SRS: requirements map restored from the checkpoint (${requirements.features.length} feature(s))`);
   }
   if (req.srs) {
@@ -252,6 +259,7 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     // One map per SRS content hash, cached under output/<slug>/srs/<hash>/ (invariant 26).
     const built = await requirementsMapForSrs({ srsPath, outputRoot: base, slug: projectSlug(url), rebuild: req.rebuildSrsMap, apiKey });
     requirements = built.map;
+    requirementsUsd = built.costUsd;
     notes.push(`  ${built.line}`);
     if (requirements.features.length === 0) {
       throw new Error(`The SRS at ${req.srs} yielded no features. Nothing to plan from; check the document.`);
@@ -262,7 +270,7 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     if (req.features.length > 0) notes.push('  (--features wins for feature selection; the SRS rules still steer the Planner)');
   }
 
-  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes };
+  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(requirementsUsd !== undefined ? { requirementsUsd } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes };
 }
 
 /** Prepare, run, emit. */
@@ -286,6 +294,7 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       ...buildExploreOptions(req, {
         url, outDir,
         ...(prepared.requirements ? { requirements: prepared.requirements } : {}),
+        ...(prepared.requirementsUsd !== undefined ? { requirementsUsd: prepared.requirementsUsd } : {}),
         ...(prepared.resume ? { resume: prepared.resume } : {}),
         ...(input.model ? { model: input.model } : {}),
       }),
@@ -399,14 +408,11 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
   });
 }
 
-export function totalCost(report: RunReport): number {
-  return report.cost.usd + (report.cost.plannerUsd ?? 0) + (report.cost.criticUsd ?? 0);
-}
-
 /** The CLI's post-run summary lines, minus the file listing. */
 export function summarize(report: RunReport): string[] {
   const out: string[] = [];
-  out.push(`Cost: $${totalCost(report).toFixed(4)} total (planner $${(report.cost.plannerUsd ?? 0).toFixed(4)}, explorer $${report.cost.usd.toFixed(4)}, critic $${(report.cost.criticUsd ?? 0).toFixed(4)})`);
+  // The one cost total (src/agent/cost-total.ts), the same line the CLI prints.
+  out.push(costLine(report));
   if (report.review?.summary) out.push(`Critic: ${report.review.summary}`);
   if (report.replay && !report.replay.skipped) {
     const total = report.replay.passed + report.replay.failed;

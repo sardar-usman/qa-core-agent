@@ -6,6 +6,8 @@ import { readRunEvents, type StoredEvent } from './events.js';
 import { hostOf } from './db/indexer.js';
 import { assignVerdicts, verdictMatchesScenario, type ScenarioVerdict } from '../agent/critic.js';
 import { EVENTS_FILE } from './events.js';
+import { findingsOf } from '../agent/reconcile.js';
+import { hasRequirementsCost } from '../agent/cost-total.js';
 
 /**
  * One run, truthfully, from its stored artifacts (dashboard v2 plan, PR B).
@@ -150,7 +152,8 @@ export interface RunDetailStages {
     funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; emitted_failed: number; balanced: boolean; added: number } | null;
     /** report.emittedRun: the written framework run once with Playwright before the zip. null on a report from before the stage existed. */
     emitted_check: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
-    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; total: number };
+    /** requirements: the map cost read off the report (cost.requirementsUsd); null on a report written before the field existed. */
+    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; requirements: number | null; total: number };
     rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
     zip: RunDetailArtifact | null;
     stopped: { kind: string; reason: string } | null;
@@ -299,7 +302,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   // list, replay, stability, reconciliation drops, incomplete, skipped),
   // findings excluded. Critic verdicts never create rows: they are attached
   // to these names by the tolerant matcher below.
-  const findings = report.findings ?? [];
+  const findings = findingsOf(report);
   const findingNames = new Set(findings.map((f) => f.scenario));
   const rows = new Map<string, RunDetailScenario>();
   const rowFor = (name: string): RunDetailScenario => {
@@ -401,7 +404,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   // (run f3b41e: "1 recorded" for 15 recorded).
   const recAll = report.reconciliation;
   const recordedCount = recAll
-    ? (recAll.generated ?? 0) + (recAll.dropped ?? []).filter((d) => d.stage === 'critic' || d.stage === 'replay' || d.stage === 'stability').length
+    ? (recAll.generated ?? 0) + (recAll.dropped ?? []).filter((d) => d.stage === 'critic' || d.stage === 'repair' || d.stage === 'replay' || d.stage === 'stability').length
     : shipped.length;
   const explore: RunDetailStages['explore'] = {
     status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
@@ -455,7 +458,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const rec = report.reconciliation;
   const droppedByStage: Record<string, number> = {};
   for (const d of rec?.dropped ?? []) droppedByStage[d.stage] = (droppedByStage[d.stage] ?? 0) + 1;
-  const findingsCount = (report.findings ?? []).length;
+  const findingsCount = findingsOf(report).length;
   const rc = report.ruleCoverage;
   const uncoveredCount = rc ? (rc.uncovered ?? []).length : 0;
   const stabilizer = usd(report.stability?.stabilizerCostUsd);
@@ -473,7 +476,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
         tests: report.emittedRun.tests.map((t) => ({ name: t.name, status: t.status, error: t.error ?? null })),
       }
       : null,
-    cost_split: { planner: usd(cost.plannerUsd), explorer: usd(cost.usd) - usd(cost.repairUsd), critic: usd(cost.criticUsd), repair: usd(cost.repairUsd), stabilizer, total: totalUsd },
+    cost_split: { planner: usd(cost.plannerUsd), explorer: usd(cost.usd) - usd(cost.repairUsd), critic: usd(cost.criticUsd), repair: usd(cost.repairUsd), stabilizer, requirements: hasRequirementsCost(report) ? usd(cost.requirementsUsd) : null, total: totalUsd },
     rule_coverage: rc ? { covered: (rc.covered ?? []).map((c) => ({ rule_id: c.ruleId, scenarios: c.scenarios ?? [] })), uncovered: (rc.uncovered ?? []).map((u) => ({ rule_id: u.ruleId, text: u.text, reason: u.reason })) } : null,
     zip: artifacts.find((a) => a.kind === 'zip') ?? null,
     stopped,

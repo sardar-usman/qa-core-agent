@@ -18,12 +18,18 @@
  *     judgement after the retry keeps the scenario unjudged with a note, a
  *     partial omission drops it naming the fix; replay membership reads the
  *     merged final verdicts (repairOutcome), never the second review's vote
+ *   - D4 (run 44cb3d): a rework the repair pass never re-recorded (budget
+ *     ran out, stopped mid-repair, pass failed, unfunded) drops at the REPAIR
+ *     stage with the repair pass's own reason; the Critic's first-pass
+ *     reasons stay on the verdict; a rework the second review judged and
+ *     dropped keeps the critic stage; an older report with no recorded cause
+ *     says so instead of borrowing the first-pass reasons
  *
  * Fixture verdicts only. No live calls. No browser.
  */
 import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repairScenarioEvents, verdictMatchesScenario, verdictFor, parseVerdicts, judgeRequiredFixes, critique, repairOutcome, REPAIR_REVIEW_PROMPT, UNJUDGED_REPAIR_NOTE, type ScenarioVerdict, type CriticClient } from '../src/agent/critic.js';
 import type { Scenario } from '../src/agent/trace.js';
-import { reconcile } from '../src/agent/reconcile.js';
+import { reconcile, diagnoseEmptyRun, REPAIR_REASON_NOT_RECORDED } from '../src/agent/reconcile.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -191,10 +197,12 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   check('I4. the decision line names every funded and every unfunded scenario with the cause',
     (d?.line ?? '').startsWith('repair pass: 5 of 14 rework scenario(s), budget $0.90 (ceiling minus spend $0.90 remaining, reserve $0.90 the floor); explorer cost this run $0.3200 per recorded scenario, a repair estimated at $0.1600 (half, scaled by step count), so the budget funds 5 of 14 cheapest first; repairing: "viewed hand-tools", "sorted hand-tools"') && /; not repaired \(budget funds 5 of 14\): /.test(d?.line ?? '') && d!.unfunded.every((s) => d!.line.includes(`"${s.name}"`)), d?.line);
   console.log('   ' + d?.line);
-  // The unfunded twelve drop with the cause on the history and in the funnel.
-  const merged = mergeRepairVerdicts(verdicts, [{ scenario: 'viewed hand-tools', verdict: 'pass', reasons: [], required_fixes: [] }], { names: d!.unfunded.map((s) => s.name), reason: d!.fundsLabel });
-  check('I5. the funded and re-recorded scenario is kept; the funded one the pass never re-recorded drops with no cause; every unfunded one carries notRepaired',
-    merged.history.find((h) => h.scenario === 'viewed hand-tools')?.outcome === 'kept' && merged.history.find((h) => h.scenario === 'sorted hand-tools')?.notRepaired === undefined && merged.history.filter((h) => h.notRepaired === 'budget funds 5 of 14').length === 9, JSON.stringify(merged.history));
+  // The unfunded nine drop with the cause on the history and in the funnel;
+  // the funded one the pass never re-recorded carries the pass's own reason.
+  const MID_REPAIR = 'mid-repair when the cost ceiling hit; the in-progress work is discarded';
+  const merged = mergeRepairVerdicts(verdicts, [{ scenario: 'viewed hand-tools', verdict: 'pass', reasons: [], required_fixes: [] }], { names: d!.unfunded.map((s) => s.name), reason: d!.fundsLabel }, { 'sorted hand-tools': MID_REPAIR });
+  check('I5. the funded and re-recorded scenario is kept; the funded one the pass never re-recorded carries the repair reason as notRepaired; every unfunded one carries the budget cause',
+    merged.history.find((h) => h.scenario === 'viewed hand-tools')?.outcome === 'kept' && merged.history.find((h) => h.scenario === 'sorted hand-tools')?.notRepaired === MID_REPAIR && merged.history.filter((h) => h.notRepaired === 'budget funds 5 of 14').length === 9, JSON.stringify(merged.history));
   const report = {
     scenarios: [{ name: 'rejected an empty message', ruleIds: ['R13'] }, { name: 'viewed hand-tools', ruleIds: ['R1', 'R5'] }],
     plan: names.map((n) => ({ name: n, category: 'happy', rationale: 'r', ruleIds: rules[n] })),
@@ -202,14 +210,71 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   } as unknown as RunReport;
   const rec = reconcile(report);
   const unfundedDrop = rec.dropped.find((x) => x.name === d!.unfunded[0]!.name);
-  check('I6. reconciliation names the cause on every unfunded drop: "rework, not repaired: budget funds 5 of 14"', rec.dropped.filter((x) => x.reason.startsWith('rework, not repaired: budget funds 5 of 14')).length === 9 && unfundedDrop?.reason.startsWith('rework, not repaired: budget funds 5 of 14: weak') === true, JSON.stringify(unfundedDrop));
+  check('I6. reconciliation drops every unfunded rework at the repair stage with the cause alone: "rework, not repaired: budget funds 5 of 14", the first-pass reason not on the drop', rec.dropped.filter((x) => x.stage === 'repair' && x.reason === 'rework, not repaired: budget funds 5 of 14').length === 9 && unfundedDrop?.stage === 'repair' && unfundedDrop.reason === 'rework, not repaired: budget funds 5 of 14' && !unfundedDrop.reason.includes('weak'), JSON.stringify(unfundedDrop));
   check('I7. the funnel balances: planned 15 = generated 2 + dropped 13', rec.balanced && rec.planned === 15 && rec.generated === 2 && rec.dropped.length === 13, JSON.stringify({ planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length }));
   const coverage = computeRuleCoverage({
     map: { features: [{ name: 'catalogue', description: '', rules: [{ id: 'R1', text: 'lists', type: 'behavior' }, { id: 'R4', text: 'sorts', type: 'behavior' }, { id: 'R3', text: 'filters', type: 'behavior' }] }], roles: [], truncated: false },
     planned: report.plan as never, scenarios: report.scenarios as never,
     dropReasons: new Map(rec.dropped.map((x) => [x.name, x.reason])),
   });
-  check('I8. rule coverage names the cause on a planned-but-dropped rule whose citing scenarios were not repaired, and R1 (kept by the repaired scenario) is covered', /not repaired: budget funds 5 of 14|critic rework/.test(coverage.uncovered.find((u) => u.ruleId === 'R3')?.detail ?? '') && /critic rework/.test(coverage.uncovered.find((u) => u.ruleId === 'R4')?.detail ?? '') && coverage.covered.some((c) => c.ruleId === 'R1'), JSON.stringify(coverage));
+  check('I8. rule coverage names the cause on a planned-but-dropped rule whose citing scenarios were not repaired (the budget cause, or the mid-repair stop for R4), and R1 (kept by the repaired scenario) is covered', /not repaired: budget funds 5 of 14/.test(coverage.uncovered.find((u) => u.ruleId === 'R3')?.detail ?? '') && (coverage.uncovered.find((u) => u.ruleId === 'R4')?.detail ?? '').startsWith(`rework, not repaired: ${MID_REPAIR}`) && /budget funds 5 of 14/.test(coverage.uncovered.find((u) => u.ruleId === 'R4')?.detail ?? '') && coverage.covered.some((c) => c.ruleId === 'R1'), JSON.stringify(coverage));
+}
+
+/* ─── K. D4: a repair never re-recorded drops at the REPAIR stage ─────────── */
+// Run 44cb3d: the empty-email registration rework was mid-repair when the
+// cost ceiling hit; reconciliation filed it as stage "critic" with the
+// first-pass reasons verbatim (review.repair[2] had first, outcome and no
+// second). Now the repair pass's own reason travels onto the history entry
+// (notRepaired) and the drop reads stage "repair" with that reason alone.
+{
+  const first: ScenarioVerdict[] = [
+    v('kept', 'pass'),
+    v('stopped mid-repair', 'rework', ['The email field is hardcoded; the error text assertion has no timeout']),
+    v('never started', 'rework', ['missing outcome assertion']),
+    v('judged again', 'rework', ['vacuous']),
+    v('not funded', 'rework', ['weak']),
+    v('failed pass', 'rework', ['weak too']),
+  ];
+  const reasons = {
+    'stopped mid-repair': 'mid-repair when the cost ceiling hit; the in-progress work is discarded',
+    'never started': 'never re-explored: the repair budget ran out first',
+  };
+  const second: ScenarioVerdict[] = [{ scenario: 'judged again', verdict: 'rework', reasons: ['still vacuous after the repair'], required_fixes: [] }];
+  const out = repairOutcome({ first, repaired: [{ name: 'judged again' }], second, unfunded: { names: ['not funded'], reason: 'budget funds 3 of 4' }, reasons });
+  const hist = (name: string) => out.history.find((h) => h.scenario === name);
+  check('K1. repairOutcome carries the repair reason onto the history entry of every rework with no second verdict', hist('stopped mid-repair')?.notRepaired === reasons['stopped mid-repair'] && hist('never started')?.notRepaired === reasons['never started'] && hist('not funded')?.notRepaired === 'budget funds 3 of 4' && hist('stopped mid-repair')?.second === undefined && hist('stopped mid-repair')?.outcome === 'dropped', JSON.stringify(out.history));
+  check('K2. a rework the second review judged carries its second verdict and no notRepaired', hist('judged again')?.second === 'rework' && hist('judged again')?.notRepaired === undefined && hist('judged again')?.outcome === 'dropped', JSON.stringify(hist('judged again')));
+  check('K3. the final verdicts keep the first-pass reasons on the verdict itself (they are not lost, only kept off the drop)', verdictFor(out.final, 'stopped mid-repair')?.reasons[0] === 'The email field is hardcoded; the error text assertion has no timeout', JSON.stringify(out.final));
+  const report = {
+    scenarios: [{ name: 'kept' }],
+    plan: first.map((x) => ({ name: x.scenario, category: 'happy', rationale: 'r' })),
+    review: { verdicts: out.final, summary: '', repair: out.history },
+  } as unknown as RunReport;
+  const rec = reconcile(report);
+  const drop = (name: string) => rec.dropped.find((d) => d.name === name);
+  check('K4. the budget-stopped repair drops with stage "repair" and the repair reason alone, never the first-pass reasons', drop('stopped mid-repair')?.stage === 'repair' && drop('stopped mid-repair')?.reason === 'rework, not repaired: mid-repair when the cost ceiling hit; the in-progress work is discarded' && !drop('stopped mid-repair')!.reason.includes('hardcoded'), JSON.stringify(drop('stopped mid-repair')));
+  check('K5. a rework the budget ran out before reaching drops with stage "repair" and that reason', drop('never started')?.stage === 'repair' && drop('never started')?.reason === 'rework, not repaired: never re-explored: the repair budget ran out first', JSON.stringify(drop('never started')));
+  check('K6. an unfunded rework drops with stage "repair" and the budget cause', drop('not funded')?.stage === 'repair' && drop('not funded')?.reason === 'rework, not repaired: budget funds 3 of 4', JSON.stringify(drop('not funded')));
+  check('K7. a rework the second review judged and dropped keeps stage "critic" and the second review\'s reasons', drop('judged again')?.stage === 'critic' && drop('judged again')?.reason === 'critic rework: still vacuous after the repair', JSON.stringify(drop('judged again')));
+  check('K8. the funnel balances: planned 6 = generated 1 + dropped 5', rec.balanced && rec.planned === 6 && rec.generated === 1 && rec.dropped.length === 5 && rec.dropped.filter((d) => d.stage === 'repair').length === 4, JSON.stringify({ planned: rec.planned, dropped: rec.dropped.map((d) => [d.name, d.stage]) }));
+  // The run 44cb3d artefact: history entry with first and outcome only.
+  const older = {
+    scenarios: [{ name: 'kept' }],
+    plan: [{ name: 'kept', category: 'happy', rationale: 'r' }, { name: 'stopped mid-repair', category: 'negative', rationale: 'r' }],
+    review: { verdicts: [first[0]!, first[1]!], summary: '', repair: [{ scenario: 'stopped mid-repair', first: 'rework', outcome: 'dropped' }] },
+  } as unknown as RunReport;
+  const recOld = reconcile(older);
+  check('K9. an older report whose history entry carries no cause drops at stage "repair" saying the reason is not recorded, never with the first-pass reasons', recOld.dropped[0]?.stage === 'repair' && recOld.dropped[0]?.reason === `rework, not repaired: ${REPAIR_REASON_NOT_RECORDED}` && !recOld.dropped[0]!.reason.includes('hardcoded') && recOld.balanced, JSON.stringify(recOld.dropped));
+  // The repair pass failed outright (exception): the runtime hands every
+  // rework "repair pass failed: <message>" and nothing was re-recorded.
+  const failed = repairOutcome({ first: [first[0]!, first[1]!], repaired: [], second: null, reasons: { 'stopped mid-repair': 'repair pass failed: 500 overloaded' } });
+  const recFailed = reconcile({ ...older, review: { verdicts: failed.final, summary: '', repair: failed.history } } as unknown as RunReport);
+  check('K10. a failed repair pass drops its reworks at stage "repair" with "repair pass failed: <message>"', recFailed.dropped[0]?.stage === 'repair' && recFailed.dropped[0]?.reason === 'rework, not repaired: repair pass failed: 500 overloaded', JSON.stringify(recFailed.dropped));
+  // A run where every recorded scenario was a rework the pass never brought
+  // back is still a critic wipe-out for the empty-run diagnosis.
+  const empty = { ...older, scenarios: [], plan: [older.plan![1]], review: { verdicts: [first[1]], summary: '', repair: [{ scenario: 'stopped mid-repair', first: 'rework', outcome: 'dropped', notRepaired: reasons['stopped mid-repair'] }] } } as unknown as RunReport;
+  const diag = diagnoseEmptyRun(empty);
+  check('K11. an empty run whose only recorded scenario dropped at the repair stage diagnoses critic-gated-all, not explorer-none', diag?.cause === 'critic-gated-all', JSON.stringify(diag));
 }
 
 /* ─── J. the repair review judges the first verdict's required fixes ──────── */

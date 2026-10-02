@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RunReport } from '../agent/trace.js';
-import type { Reconciliation } from '../agent/reconcile.js';
+import { findingsOf, type Reconciliation } from '../agent/reconcile.js';
+import { totalCost } from '../agent/cost-total.js';
 import { listRunDirs } from '../agent/output-layout.js';
 
 /**
@@ -82,8 +83,9 @@ function walk(root: string, dir: string, out: DiskRun[], depth: number): void {
 export function parseRunReport(root: string, dir: string, reportPath: string): DiskRun | null {
   try {
     const r = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Partial<RunReport> & Record<string, unknown>;
-    const cost = (r.cost ?? {}) as Partial<RunReport['cost']>;
-    const usd = (cost.usd ?? 0) + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0);
+    // The one cost total (cost-total.ts): explorer + planner + critic +
+    // stabilizer + requirements map, the same number the index stores.
+    const usd = totalCost(r);
     const url = String(r.url ?? '');
     const startedAt = String(r.startedAt ?? '');
     const ts = startedAt ? Date.parse(startedAt) : Date.now();
@@ -135,7 +137,7 @@ export function parseRunReport(root: string, dir: string, reportPath: string): D
       language: r.language === 'js' ? 'js' : 'ts',
       reconciliation: r.reconciliation ?? null,
       ruleCoverage: rc ? { covered: rc.covered.length, total: rc.covered.length + rc.uncovered.length } : null,
-      findings: Array.isArray(r.findings) ? r.findings.length : 0,
+      findings: findingsOf(r).length,
       discovery: r.discovery ? { method: r.discovery.method, pages: r.discovery.pages.length } : null,
       repair: r.review?.repair ?? null,
     };

@@ -116,7 +116,8 @@ export interface RunDetailStages {
     status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; uncovered_count: number; attention: number;
     funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; emitted_failed?: number; balanced: boolean; added: number } | null;
     emitted_check?: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
-    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; total: number };
+    /** requirements: the map cost from the report; null on a report written before the field existed. */
+    cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; requirements: number | null; total: number };
     rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
     zip: RunDetailArtifact | null; stopped: { kind: string; reason: string } | null;
   };

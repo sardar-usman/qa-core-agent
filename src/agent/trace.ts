@@ -346,6 +346,14 @@ export interface RunReport {
     /** Cost of the Critic post-step, if it ran. */
     criticUsd?: number;
     /**
+     * Cost of the requirements map (--srs): the Haiku build when the map was
+     * built this run, 0 when it was reused from the cache or no SRS was
+     * given. Absent on a report written before the field existed (run
+     * 44cb3d and earlier): totalCost() then counts 0 and costLine() says the
+     * map cost is not recorded, never that it was included.
+     */
+    requirementsUsd?: number;
+    /**
      * Cost of the repair pass (the re-exploration of rework scenarios), if it
      * ran. Already included in `usd`; recorded separately so the dashboard's
      * cost split reads it from the report instead of deriving it.

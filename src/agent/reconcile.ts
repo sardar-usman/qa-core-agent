@@ -41,7 +41,14 @@ import { scenarioNameKey } from './rule-coverage.js';
 
 export interface DroppedScenario {
   name: string;
-  stage: 'gate' | 'critic' | 'replay' | 'stability';
+  /**
+   * 'repair' is a rework verdict the repair pass never re-recorded (the
+   * budget did not fund it, the run stopped mid-repair, the pass failed);
+   * its reason is the repair pass's own, never the Critic's first-pass
+   * reasons, which stay on the verdict (run 44cb3d filed one as a critic
+   * drop with the first-pass reasons).
+   */
+  stage: 'gate' | 'critic' | 'repair' | 'replay' | 'stability';
   reason: string;
 }
 
@@ -121,6 +128,25 @@ export interface ReconcileOptions {
   onDuplicate?: (message: string) => void;
 }
 
+/**
+ * The drop reason for a rework whose history entry carries no cause: a
+ * report written before the runtime recorded one (run 44cb3d). Said out
+ * loud rather than filled in from the Critic's first-pass reasons.
+ */
+export const REPAIR_REASON_NOT_RECORDED = 'the repair pass did not re-record this scenario (reason not recorded on this report)';
+
+/**
+ * The report's findings, [] when the key is absent. The runtime always
+ * writes `findings` ([] when empty) since D6; the runtime before it
+ * (src/agent/runtime.ts line 1704 at main 4244450, `findings:
+ * findings.length > 0 ? findings : undefined`) omitted the key only when
+ * there were none, so a missing key on an older report means no findings,
+ * never "not recorded". Every reader of report.findings goes through here.
+ */
+export function findingsOf(report: Pick<RunReport, 'findings'>): NonNullable<RunReport['findings']> {
+  return Array.isArray(report.findings) ? report.findings : [];
+}
+
 /** Build the reconciliation purely from a finished RunReport. */
 export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Reconciliation {
   const generated = report.scenarios.length;
@@ -136,15 +162,30 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   }
 
   // 2. Critic: rework/reject verdicts are not sent to Reality-Check. A
-  // rework the reserve did not fund names that cause first, so the funnel
-  // and the coverage report say why the scenario was never repaired.
+  // rework the repair pass never re-recorded (no second verdict on its
+  // history entry: the budget did not fund it, the run stopped mid-repair,
+  // the pass failed) drops at the REPAIR stage with the repair pass's own
+  // reason, so the funnel and the coverage report say why the scenario was
+  // never repaired. The Critic's first-pass reasons stay on the verdict and
+  // never become the drop reason (run 44cb3d filed a budget-stopped repair
+  // as "critic rework: <first-pass reasons>"). A rework the second review
+  // judged and dropped keeps the critic stage and the second review's
+  // reasons, exactly as before. An entry with no recorded cause (a report
+  // written before the runtime recorded one) says so rather than borrowing
+  // the verdict's reasons.
   const notRepaired = new Map<string, string>();
-  for (const h of report.review?.repair ?? []) if (h.notRepaired) notRepaired.set(scenarioNameKey(h.scenario), h.notRepaired);
+  for (const h of report.review?.repair ?? []) {
+    if (h.outcome === 'dropped' && h.second === undefined) notRepaired.set(scenarioNameKey(h.scenario), h.notRepaired || REPAIR_REASON_NOT_RECORDED);
+  }
   for (const v of report.review?.verdicts ?? []) {
     if (v.verdict === 'pass') continue;
-    const why = v.reasons.length > 0 ? `: ${v.reasons.join('; ')}` : '';
     const cause = v.verdict === 'rework' ? notRepaired.get(scenarioNameKey(v.scenario)) : undefined;
-    dropped.push({ name: v.scenario, stage: 'critic', reason: cause ? `rework, not repaired: ${cause}${why}` : `critic ${v.verdict}${why}` });
+    if (cause !== undefined) {
+      dropped.push({ name: v.scenario, stage: 'repair', reason: `rework, not repaired: ${cause}` });
+      continue;
+    }
+    const why = v.reasons.length > 0 ? `: ${v.reasons.join('; ')}` : '';
+    dropped.push({ name: v.scenario, stage: 'critic', reason: `critic ${v.verdict}${why}` });
   }
 
   // 3. Replay — failed the single fresh-context re-run.
@@ -200,7 +241,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   }));
 
   // 6. Findings: expected outcome never occurred (retry cap tripped).
-  const findings: FindingScenario[] = (report.findings ?? []).map((f) => ({
+  const findings: FindingScenario[] = findingsOf(report).map((f) => ({
     name: f.scenario,
     expected: f.expected,
     url: f.url,
@@ -294,7 +335,9 @@ export function diagnoseEmptyRun(report: RunReport): { cause: EmptyRunCause; lin
   const rec = report.reconciliation ?? reconcile(report);
   const planned = report.plan?.length ?? 0;
   const gateDrops = rec.dropped.filter((d) => d.stage === 'gate');
-  const criticDrops = rec.dropped.filter((d) => d.stage === 'critic');
+  // A repair-stage drop is a Critic rework the repair pass never brought
+  // back: the Critic saw it, so it counts with the critic drops here.
+  const criticDrops = rec.dropped.filter((d) => d.stage === 'critic' || d.stage === 'repair');
   const replayDrops = rec.dropped.filter((d) => d.stage === 'replay');
   const stabilityDrops = rec.dropped.filter((d) => d.stage === 'stability');
   // Scenarios that made it OUT of the Explorer (the critic saw them).

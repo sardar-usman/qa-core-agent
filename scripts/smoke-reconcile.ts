@@ -7,8 +7,14 @@
  *   - every dropped or broken scenario is named with a stage and a reason
  *   - "stable" excludes any scenario kept passing by a relaxed rule (recovered)
  *   - the broken count includes scenarios the Stabilizer gave up on
+ *   - D4 (run 44cb3d): a rework the repair pass never re-recorded drops at
+ *     the repair stage with the repair's own cause, the first-pass reasons
+ *     staying on the verdict
+ *   - D6 (run 44cb3d): the runtime always writes findings ([] when empty) and
+ *     every reader treats a missing key on an older report as []
  */
-import { reconcile, renderReconciliation } from '../src/agent/reconcile.js';
+import fs from 'node:fs';
+import { reconcile, renderReconciliation, findingsOf } from '../src/agent/reconcile.js';
 import type { RunReport } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -285,8 +291,36 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
     },
   };
   const rn = reconcile(notRepaired);
-  check('AD. a rework the reserve did not fund drops as "rework, not repaired: reserve funds N of M" followed by the critic reasons', rn.dropped.find((d) => d.name === 'B')?.reason === 'rework, not repaired: reserve funds 1 of 2: name-changed proves a shuffle', JSON.stringify(rn.dropped));
-  check('AE. a rework the pass re-recorded and the critic reworked again keeps the plain critic drop', rn.dropped.find((d) => d.name === 'D')?.reason === 'critic rework: weak', JSON.stringify(rn.dropped));
+  // Before D4 this read stage "critic" with the first-pass reasons appended
+  // ("...: name-changed proves a shuffle"); the repair pass never saw the
+  // scenario, so the drop names the repair stage and the repair's cause only.
+  const bDrop = rn.dropped.find((d) => d.name === 'B');
+  check('AD. a rework the reserve did not fund drops at the repair stage as "rework, not repaired: reserve funds N of M", the critic reasons staying on the verdict', bDrop?.stage === 'repair' && bDrop?.reason === 'rework, not repaired: reserve funds 1 of 2' && !bDrop.reason.includes('shuffle') && notRepaired.review!.verdicts[1]!.reasons[0] === 'name-changed proves a shuffle', JSON.stringify(rn.dropped));
+  check('AE. a rework the pass re-recorded and the critic reworked again keeps the plain critic drop', rn.dropped.find((d) => d.name === 'D')?.stage === 'critic' && rn.dropped.find((d) => d.name === 'D')?.reason === 'critic rework: weak', JSON.stringify(rn.dropped));
+  check('AE2. the funnel balances with the repair-stage drop: planned 3 = generated 1 + dropped 2', rn.balanced && rn.planned === 3 && rn.dropped.length === 2, JSON.stringify({ planned: rn.planned, dropped: rn.dropped.length }));
+}
+
+/* ─── 6b. D6: findings is always written; a missing key reads as [] ────────── */
+// Run 44cb3d's run-report.json had no top-level findings key while
+// reconciliation.findings was []; a reader could not tell "none" from "not
+// recorded" and report.findings.length threw on a clean run. The runtime
+// now writes the key always ([] when empty); readers go through findingsOf.
+{
+  const noKey = { ...clean };
+  delete (noKey as Partial<RunReport>).findings;
+  check('AF. findingsOf on a report with no findings key returns [] (an older report, never "not recorded")', Array.isArray(findingsOf(noKey)) && findingsOf(noKey).length === 0 && !('findings' in noKey), JSON.stringify(findingsOf(noKey)));
+  const withKey: RunReport = { ...clean, findings: [{ scenario: 'X', expected: 'a message', url: 'https://example.com/x', messages: ['nope'] }] };
+  check('AG. findingsOf on a report with the key returns that array unchanged', findingsOf(withKey) === withKey.findings && findingsOf(withKey).length === 1);
+  const emptyKey: RunReport = { ...clean, findings: [] };
+  check('AH. findingsOf on a report whose key is [] returns [] and reconcile counts 0 findings', findingsOf(emptyKey).length === 0 && reconcile(emptyKey).findings.length === 0 && reconcile(noKey).findings.length === 0);
+  check('AI0. a reader given a non-array findings value (a corrupt report) returns [] rather than throwing', findingsOf({ findings: 'oops' as unknown as RunReport['findings'] }).length === 0);
+  // The runtime's report literal: `findings,` unconditionally. The one place
+  // the key is written; locked at the source because no offline smoke runs
+  // the whole explore() pipeline. Before D6 the line read
+  // `findings: findings.length > 0 ? findings : undefined,`.
+  const runtime = fs.readFileSync(new URL('../src/agent/runtime.ts', import.meta.url), 'utf8');
+  const reportLiteral = runtime.slice(runtime.indexOf('const report: RunReport = {'), runtime.indexOf('report.reconciliation = reconcile('));
+  check('AI1. the runtime writes findings unconditionally on the report ([] when empty), never only when non-empty', /\n\s+findings,\n/.test(reportLiteral) && !/findings: findings\.length > 0/.test(reportLiteral), reportLiteral.split('\n').filter((l) => /findings/.test(l)).join(' | '));
 }
 
 /* ─── 7. emitted_failed: the written framework failed the test twice ──────── */
