@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-01. Update this file at the end of every working day.
+Updated: 2026-10-02. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -196,12 +196,15 @@ using the qa-core-heal evaluation report as the template.
 
 ## Audit backlog (open)
 
-- D1 (run 6): the emitted count capture reads once with no wait, unlike
-  replay; a too-early 0 passes a greater compare for the wrong reason.
-  docs/audit/run-44cb3d-diagnosis.md.
-- D2 (run 6): a planned page abandoned by the Explorer (empty /rentals)
-  shipped a hand-tools test under the rental name with no finding recorded.
-  docs/audit/run-44cb3d-diagnosis.md.
+- D1 (run 6): FIXED (this PR, Oct 2): the emitted count capture reads once
+  with no wait, unlike replay; a too-early 0 passes a greater compare for
+  the wrong reason. docs/audit/run-44cb3d-diagnosis.md. Locked by
+  smoke-emitted-run and smoke-capture-compare.
+- D2 (run 6): FIXED (PR #34, Oct 2): a planned page abandoned by the
+  Explorer (empty /rentals) shipped a hand-tools test under the rental name
+  with no finding recorded. docs/audit/run-44cb3d-diagnosis.md. Locked by
+  smoke-planned-page; whether the Explorer records the empty page as a
+  finding is untested live.
 - D3 (run 6): two unjustified Critic reworks (a success message the site
   never shows; a timeout already at the gate floor) and cart verdicts that
   took a badge element count for the badge's value.

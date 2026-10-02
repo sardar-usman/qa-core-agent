@@ -6,7 +6,8 @@ import { inlineParseNumberFn } from './parse-number.js';
 // How long the emitted assert_compare poll waits for an async state change (a
 // sort, a re-render) to settle before failing: the replay engine's own value,
 // so the spec and the in-process check agree.
-import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
+import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
+import { captureWaitNeeded, inlineAwaitCaptureReadyFn } from './capture-ready.js';
 import type { Assertion, CaptureSource, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 
 /**
@@ -63,6 +64,16 @@ export function transcribe(opts: TranscribeOptions): TranscribeResult {
     lines.push(inlineParseNumberFn());
     lines.push('');
   }
+  // Inline the capture readiness grace when a count capture a compare reads
+  // exists, so the single-file spec waits the way replay does (invariant 39).
+  const usesCaptureWait = report.scenarios.some((s) => {
+    const rel = relationsByVarName(s.steps);
+    return s.steps.some((st) => st.kind === 'capture' && captureWaitNeeded(st, rel));
+  });
+  if (usesCaptureWait) {
+    lines.push(inlineAwaitCaptureReadyFn());
+    lines.push('');
+  }
   lines.push(`test.describe(${q(titleFromUrl(report.url))}, () => {`);
   // Per-test isolation: fresh cookies + storage per scenario. The agent runs
   // exploration with the same isolation, so this matches recorded behavior.
@@ -85,14 +96,15 @@ export function transcribe(opts: TranscribeOptions): TranscribeResult {
 function emitScenario(lines: string[], scenario: Scenario, ext: 'ts' | 'js'): void {
   const params = ext === 'ts' ? '({ page })' : '({ page })';
   lines.push(`  test(${q(`${tag(scenario.category)} ${scenario.name}`)}, async ${params} => {`);
+  const relations = relationsByVarName(scenario.steps);
   for (const step of scenario.steps) {
-    lines.push(...emitStep(step).map(l => `    ${l}`));
+    lines.push(...emitStep(step, relations).map(l => `    ${l}`));
   }
   lines.push('  });');
   lines.push('');
 }
 
-function emitStep(step: TraceStep): string[] {
+function emitStep(step: TraceStep, relations: Map<string, string> = new Map()): string[] {
   switch (step.kind) {
     case 'navigate':
       return [`await page.goto(${q(step.url)});`];
@@ -121,7 +133,13 @@ function emitStep(step: TraceStep): string[] {
       // reads back. Count uses the multi-match locator; attribute/text use
       // .first() so a multi-match selector never trips strict mode.
       const rhs = captureReadExpr(step.source, locFirst(step.target), locCount(step.target), step.attribute);
-      return [`const ${step.varName} = ${rhs}; // captured ${step.source} for compare`];
+      const read = `const ${step.varName} = ${rhs}; // captured ${step.source} for compare`;
+      // A count read does not auto-wait: wait for the target the way replay
+      // does, with replay's timeout, skipped exactly where replay skips it.
+      if (captureWaitNeeded(step, relations)) {
+        return [`await awaitCaptureReady(${locCount(step.target)}, ${COMPARE_POLL_TIMEOUT_MS}); // wait for the target to render before the count read, as replay does`, read];
+      }
+      return [read];
     }
     case 'assert_compare': {
       if (step.relation === 'absent') {
