@@ -209,12 +209,17 @@ using the qa-core-heal evaluation report as the template.
   never shows; a timeout already at the gate floor) and cart verdicts that
   took a badge element count for the badge's value.
   docs/audit/run-44cb3d-diagnosis.md.
-- D4 (run 6): a repair stopped by its budget is filed as a critic drop with
-  the first-pass reasons. docs/audit/run-44cb3d-diagnosis.md.
-- D5 (run 6): the printed cost total excludes the requirements map cost on
-  both sites. docs/audit/run-44cb3d-diagnosis.md.
-- D6 (run 6): the findings key is omitted when empty (top level absent,
-  reconciliation.findings []). docs/audit/run-44cb3d-diagnosis.md.
+- D4 (run 6): FIXED (this PR, Oct 2): a repair stopped by its budget is
+  filed as a critic drop with the first-pass reasons.
+  docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-repair-pass and
+  smoke-reconcile.
+- D5 (run 6): FIXED (this PR, Oct 2): the printed cost total excludes the
+  requirements map cost on both sites. docs/audit/run-44cb3d-diagnosis.md.
+  Locked by smoke-srs-parse and smoke-index. Runs 1 to 6 predate the field;
+  their totals exclude the map build cost.
+- D6 (run 6): FIXED (this PR, Oct 2): the findings key is omitted when empty
+  (top level absent, reconciliation.findings []).
+  docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-reconcile.
 - D7 (run 6): fake-credential substitution on both sites: saucedemo's
   wrong-password username was rewritten on the first fill and not the
   second; Toolshop's wrong-password test submits a generated non-existent

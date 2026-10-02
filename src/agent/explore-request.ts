@@ -322,6 +322,14 @@ export interface BuildExploreContext {
   url: string;
   outDir: string;
   requirements?: RequirementsMap;
+  /**
+   * What the requirements map cost this run: the build cost when the surface
+   * built it, 0 when it was reused from the cache or no SRS was given, and
+   * on a resume the checkpoint's recorded value (absent on an older
+   * checkpoint, so the resumed report leaves the key off). Every surface
+   * passes it the same way; the runtime records it as cost.requirementsUsd.
+   */
+  requirementsUsd?: number;
   resume?: Checkpoint;
   fromPlan?: PlannedScenario[];
   /** Explorer model override from the dashboard's model chip. */
@@ -350,6 +358,7 @@ export function buildExploreOptions(req: ExploreRequest, ctx: BuildExploreContex
     maxStabilizeAttempts: req.stabilizeAttempts,
     features: req.features,
     ...(ctx.requirements ? { requirements: ctx.requirements } : {}),
+    ...(ctx.requirementsUsd !== undefined ? { requirementsUsd: ctx.requirementsUsd } : {}),
     discover: cp?.flags.discover ?? req.discover,
     urls: cp ? cp.flags.urls : req.urls,
     ...(cp ? { resume: cp } : {}),

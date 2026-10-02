@@ -883,7 +883,14 @@ export interface RepairHistoryEntry {
   /** The verdict after the repair pass. Absent when the repair never re-recorded it. */
   second?: Verdict;
   outcome: 'kept' | 'dropped';
-  /** Set when the reserve did not fund this scenario's repair: "reserve funds N of M". The funnel names it as the drop cause. */
+  /**
+   * Set when the repair pass never re-recorded this scenario, with the
+   * pass's own cause: the budget did not fund it ("budget funds N of M"),
+   * the run stopped mid-repair, it was never re-explored before the budget
+   * ran out, the pass failed, or no trace came back. The funnel drops the
+   * scenario at the repair stage with this reason (reconcile.ts); the
+   * Critic's first-pass reasons stay on the verdict.
+   */
   notRepaired?: string;
   /** The first verdict's required fixes as the second review judged them (repair review shape). */
   fixes?: FixJudgement[];
@@ -971,6 +978,14 @@ export function mergeRepairVerdicts(
   repaired: ScenarioVerdict[] | null,
   /** The rework scenarios the reserve did not fund, with the cause ("reserve funds N of M"). */
   unfunded?: { names: string[]; reason: string },
+  /**
+   * Why the repair pass did not re-record a funded rework, by scenario name
+   * (repairPass's `reasons`: mid-repair stop, never re-explored, finding,
+   * gate, skip, no trace, or "repair pass failed"). Recorded as
+   * `notRepaired` on the history entry of every rework with no second
+   * verdict, so the funnel can drop it at the repair stage with that reason.
+   */
+  reasons?: Record<string, string>,
 ): { final: ScenarioVerdict[]; history: RepairHistoryEntry[] } {
   const final: ScenarioVerdict[] = [];
   const history: RepairHistoryEntry[] = [];
@@ -980,6 +995,7 @@ export function mergeRepairVerdicts(
   const reworkNames = original.filter((v) => v.verdict === 'rework').map((v) => v.scenario);
   const secondByOriginal = assignVerdicts(reworkNames, repaired ?? []);
   const unfundedByOriginal = assignVerdicts(reworkNames, (unfunded?.names ?? []).map((scenario) => ({ scenario, verdict: 'rework' as const, reasons: [], required_fixes: [] })));
+  const reasonByOriginal = assignVerdicts(reworkNames, Object.entries(reasons ?? {}).map(([scenario, reason]) => ({ scenario, verdict: 'rework' as const, reasons: [reason], required_fixes: [] })));
   for (const v of original) {
     if (v.verdict !== 'rework') {
       final.push(v);
@@ -988,7 +1004,8 @@ export function mergeRepairVerdicts(
     const second = secondByOriginal.get(v.scenario);
     if (!second) {
       final.push(v);
-      history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped', ...(unfunded && unfundedByOriginal.has(v.scenario) ? { notRepaired: unfunded.reason } : {}) });
+      const cause = unfunded && unfundedByOriginal.has(v.scenario) ? unfunded.reason : reasonByOriginal.get(v.scenario)?.reasons[0];
+      history.push({ scenario: v.scenario, first: 'rework', outcome: 'dropped', ...(cause ? { notRepaired: cause } : {}) });
       continue;
     }
     if (v.required_fixes.length > 0 && (!second.fixes || second.fixes.length === 0)) {
@@ -1038,8 +1055,10 @@ export function repairOutcome<S extends { name: string }>(opts: {
   repaired: S[];
   second: ScenarioVerdict[] | null;
   unfunded?: { names: string[]; reason: string };
+  /** Why a funded rework was not re-recorded, by name (see mergeRepairVerdicts). */
+  reasons?: Record<string, string>;
 }): { final: ScenarioVerdict[]; history: RepairHistoryEntry[]; replay: S[] } {
-  const merged = mergeRepairVerdicts(opts.first, opts.second, opts.unfunded);
+  const merged = mergeRepairVerdicts(opts.first, opts.second, opts.unfunded, opts.reasons);
   const replay = opts.repaired.filter((s) => verdictFor(merged.final, s.name)?.verdict === 'pass');
   return { final: merged.final, history: merged.history, replay };
 }

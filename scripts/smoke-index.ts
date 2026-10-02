@@ -10,6 +10,9 @@
  *   - verdicts carry their repair journey; rule coverage carries statuses
  *   - delete the database, re-index: identical rows; re-index again: identical;
  *     remove a run directory: its rows vanish
+ *   - D5 (run 44cb3d): cost_total includes cost.requirementsUsd (the map
+ *     cost) when the report carries it and keeps the old four-term total
+ *     when it does not; D6: a report with no findings key indexes 0 findings
  * No browser, no model.
  */
 import fs from 'node:fs';
@@ -85,12 +88,15 @@ const shop1 = newRunId(new Date('2026-09-11T10:00:00Z'), 'p1');
 const bad1 = newRunId(new Date('2026-09-09T10:00:00Z'), 'b1');
 const finding = { scenario: 'Footer social links open', expected: 'a new tab with twitter.com', page: 'https://www.saucedemo.com/inventory.html' };
 writeRun('saucedemo-com', sauce1, mkReport('https://www.saucedemo.com/', '2026-09-10T10:00:00.000Z', { shipped: 3, planned: 5, dropped: ['sort by price'], findings: [finding] }), { 'saucedemo-automation-framework.zip': 'PK' });
-writeRun('saucedemo-com', sauce2, mkReport('https://www.saucedemo.com/', '2026-09-12T10:00:00.000Z', { shipped: 4, planned: 6, dropped: ['remove from cart'], findings: [{ ...finding, scenario: 'footer social links open.' }], flake: 0.25, rules: true }),
+writeRun('saucedemo-com', sauce2, mkReport('https://www.saucedemo.com/', '2026-09-12T10:00:00.000Z', { shipped: 4, planned: 6, dropped: ['remove from cart'], findings: [{ ...finding, scenario: 'footer social links open.' }], flake: 0.25, rules: true, cost: { requirementsUsd: 0.0048 } }),
   { 'requirements-map.json': JSON.stringify({ features: [{ name: 'login', rules: [{ id: 'R1', text: 'Valid login lands on inventory', type: 'behavior' }, { id: 'R2', text: 'Lockout after 5 tries', type: 'validation' }] }], roles: [] }), 'run-meta.json': JSON.stringify({ source: 'dashboard', flags: { lang: 'ts' }, writtenAt: 'x' }) });
 writeRun('saucedemo-com', sauce3, mkReport('https://www.saucedemo.com/', '2026-09-13T10:00:00.000Z', { shipped: 2, planned: 8, incomplete: 1, stopped: true }), { 'checkpoint.json': '{"version":1}' });
 setLatest(path.join(output, 'saucedemo-com'), sauce2);
 writeRun('shop-example', shop1, mkReport('https://shop.example/', '2026-09-11T10:00:00.000Z', { shipped: 0, planned: 3, skipped: 1 }));
-writeRun('unassigned', bad1, mkReport('', '2026-09-09T10:00:00.000Z', { shipped: 1, planned: 1 }));
+// A report written before D6: no findings key at all (run 44cb3d's shape).
+const bad1Report = mkReport('', '2026-09-09T10:00:00.000Z', { shipped: 1, planned: 1 });
+delete (bad1Report as Partial<RunReport>).findings;
+writeRun('unassigned', bad1, bad1Report);
 // A legacy folder still in place (indexed where it is).
 fs.mkdirSync(path.join(output, 'legacy-automation-framework'), { recursive: true });
 fs.writeFileSync(path.join(output, 'legacy-automation-framework', 'run-report.json'), JSON.stringify(mkReport('https://legacy.example/app', '2026-08-01T10:00:00.000Z', { shipped: 2, planned: 2 })));
@@ -142,7 +148,7 @@ for (const row of runs) {
   const expected = {
     planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length, incomplete: rec.incomplete.length, findings: rec.findings.length, skipped: rec.skipped.length,
     stable: rec.stable, flaky: rec.flaky, broken: rec.broken, shipped: rep.scenarios.length,
-    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0) + (rep.stability?.stabilizerCostUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
+    cost_total: rep.cost.usd + (rep.cost.plannerUsd ?? 0) + (rep.cost.criticUsd ?? 0) + (rep.stability?.stabilizerCostUsd ?? 0) + (rep.cost.requirementsUsd ?? 0), cost_planner: rep.cost.plannerUsd ?? 0,
     cost_explorer: rep.cost.usd - (rep.cost.repairUsd ?? 0), cost_critic: rep.cost.criticUsd ?? 0, cost_repair: rep.cost.repairUsd ?? 0,
     flake_rate: rep.stability ? rep.stability.flakeRate : null, started_at: rep.startedAt, stopped_reason: rep.stopped?.reason ?? null,
     status: fs.existsSync(path.join(root, path.dirname(String(row.report_path)), 'checkpoint.json')) ? 'stopped' : rep.scenarios.length === 0 ? 'empty' : 'completed',
@@ -150,6 +156,8 @@ for (const row of runs) {
   const actual = Object.fromEntries(Object.keys(expected).map((k) => [k, row[k]]));
   check(`G. runs row ${String(row.id).slice(0, 16)} equals its run-report`, JSON.stringify(actual) === JSON.stringify(expected), JSON.stringify({ actual, expected }));
 }
+check('G2. D5: the SRS run with cost.requirementsUsd 0.0048 stores a cost_total that includes it; the run without the key keeps the old four-term total', Math.abs(Number(runs.find((r) => r.id === sauce2)?.cost_total) - (1.2 + 0.01 + 0.02 + 0.0048)) < 1e-9 && Math.abs(Number(runs.find((r) => r.id === sauce1)?.cost_total) - 1.23) < 1e-9, JSON.stringify({ s2: runs.find((r) => r.id === sauce2)?.cost_total, s1: runs.find((r) => r.id === sauce1)?.cost_total }));
+check('G3. D6: a report with no findings key indexes 0 findings, never a throw or a null', runs.find((r) => r.id === bad1)?.findings === 0 && !('findings' in JSON.parse(fs.readFileSync(path.join(output, 'unassigned', bad1, 'run-report.json'), 'utf8'))), JSON.stringify(runs.find((r) => r.id === bad1)?.findings));
 check('H. runRowFromReport is the same mapping the smoke re-derived (spot check)', (() => {
   const rep = JSON.parse(fs.readFileSync(path.join(output, 'saucedemo-com', sauce1, 'run-report.json'), 'utf8')) as RunReport;
   const row = runRowFromReport({ runId: sauce1, projectId: 'saucedemo-com', report: rep, reportPath: 'x', zipPath: null, checkpointPath: null });

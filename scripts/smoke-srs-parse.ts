@@ -20,6 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { loadSrsText, parseRequirementsResponse, requirementsMapForSrs, cachedMapPath, srsContentHash, SRS_MAP_HASH_PREFIX, SRS_TEXT_CAP, type RequirementsMap } from '../src/agent/requirements.js';
+import { totalCost, costLine, hasRequirementsCost, REQUIREMENTS_COST_NOT_RECORDED } from '../src/agent/cost-total.js';
+import { summarize } from '../src/server/run-explore.js';
+import type { RunReport } from '../src/agent/trace.js';
 
 let pass = 0;
 let fail = 0;
@@ -140,6 +143,26 @@ check('G4. an object with zero usable features throws', throws('{"features":[{"r
   const corrupt = await requirementsMapForSrs({ ...common, srsPath: srsFile });
   check('H6. an unreadable cache entry is rebuilt, never trusted', builds === 4 && corrupt.reused === false && JSON.parse(fs.readFileSync(first.cachePath, 'utf8')).features.length === 5);
   check('H7. the hash prefix names the directory with 12 hex characters', /^[0-9a-f]{12}$/.test(hash) && SRS_MAP_HASH_PREFIX === 12);
+
+  /* ─── I. D5: the map cost reaches every total through the one totalCost ─── */
+  // Run 44cb3d printed "Cost: $6.0912 total (planner, explorer, critic)" with
+  // nothing for the $0.0048 map build: the CLI, the gateway and the index
+  // each summed their own terms. cost.requirementsUsd is the build cost when
+  // the map was built this run (first.costUsd), 0 when reused (second.costUsd),
+  // and totalCost/costLine (src/agent/cost-total.ts) are the one place the
+  // total is summed and printed.
+  const base: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 5.9386, plannerUsd: 0.0336, criticUsd: 0.1189 };
+  const oldTotal = 5.9386 + 0.0336 + 0.1189;
+  const builtRun = { cost: { ...base, requirementsUsd: first.costUsd } };
+  check('I1. a built map adds its build cost to the total', Math.abs(totalCost(builtRun) - (oldTotal + 0.0123)) < 1e-9 && first.costUsd === 0.0123, String(totalCost(builtRun)));
+  check('I2. the cost line names the map term with the build cost and no "not recorded" note', costLine(builtRun) === `Cost: $${(oldTotal + 0.0123).toFixed(4)} total (planner $0.0336, explorer $5.9386, critic $0.1189, map $0.0123)`, costLine(builtRun));
+  const reusedRun = { cost: { ...base, requirementsUsd: second.costUsd } };
+  check('I3. a reused map adds 0 to the total and the line shows map $0.0000', second.costUsd === 0 && Math.abs(totalCost(reusedRun) - oldTotal) < 1e-9 && costLine(reusedRun) === `Cost: $${oldTotal.toFixed(4)} total (planner $0.0336, explorer $5.9386, critic $0.1189, map $0.0000)`, costLine(reusedRun));
+  const olderRun = { cost: base };
+  check('I4. a report with no requirementsUsd key keeps its old total and the line says the map cost is not recorded', !hasRequirementsCost(olderRun) && Math.abs(totalCost(olderRun) - oldTotal) < 1e-9 && costLine(olderRun) === `Cost: $6.0911 total (planner $0.0336, explorer $5.9386, critic $0.1189) ${REQUIREMENTS_COST_NOT_RECORDED}` && REQUIREMENTS_COST_NOT_RECORDED === '(requirements map cost not recorded on this report)', costLine(olderRun));
+  const stabilizerRun = { cost: { ...base, requirementsUsd: 0.0048 }, stability: { stabilizerCostUsd: 0.25 } };
+  check('I5. the stabilizer term counts in the total (as the index always did) and is named on the line only when it spent something', Math.abs(totalCost(stabilizerRun) - (oldTotal + 0.0048 + 0.25)) < 1e-9 && costLine(stabilizerRun).includes(', stabilizer $0.2500, map $0.0048)') && !costLine({ cost: base, stability: { stabilizerCostUsd: 0 } }).includes('stabilizer'), costLine(stabilizerRun));
+  check('I6. the gateway summary prints the same line as the CLI (one costLine)', summarize({ ...olderRun, scenarios: [], url: 'https://x.example/', language: 'ts', cascadeStats: {} as never, steps: 0, startedAt: '', finishedAt: '' } as RunReport)[0] === costLine(olderRun));
 }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });
