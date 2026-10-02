@@ -4,7 +4,8 @@ import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
 import { regexLiteral } from './transcriber.js';
-import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
+import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
+import { captureWaitNeeded } from './capture-ready.js';
 import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
 import { envForCredentialValue, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
 import type { RequirementsMap } from './requirements.js';
@@ -932,17 +933,25 @@ function renderSpec(
   // A numeric compare (greater / less) reads "$1,299.00" through the shipped
   // helpers/parse-number, the same parser the agent verified with.
   const usesNumeric = pc.scenarios.some((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'greater' || st.relation === 'less')));
+  // A count capture a compare reads waits for its target through the shipped
+  // helpers/assertions, the same grace replay applies (invariant 39).
+  const usesCaptureWait = pc.scenarios.some((sc) => {
+    const rel = relationsByVarName(sc.steps);
+    return sc.steps.some((st) => st.kind === 'capture' && captureWaitNeeded(st, rel));
+  });
   if (ext === 'ts') {
     out.push(`import { test, expect } from '@playwright/test';`);
     out.push(`import { ${pc.className} } from '${importPath}';`);
     if (genFns.length > 0) out.push(`import { ${genFns.join(', ')} } from '../../helpers/unique-data';`);
     if (usesNumeric) out.push(`import { parseNumber } from '../../helpers/parse-number';`);
+    if (usesCaptureWait) out.push(`import { awaitCaptureReady } from '../../helpers/assertions';`);
     if (param) out.push(`import rawCases from '../../data/${pc.feature}.json';`);
   } else {
     out.push(`const { test, expect } = require('@playwright/test');`);
     out.push(`const { ${pc.className} } = require('${importPath}');`);
     if (genFns.length > 0) out.push(`const { ${genFns.join(', ')} } = require('../../helpers/unique-data');`);
     if (usesNumeric) out.push(`const { parseNumber } = require('../../helpers/parse-number');`);
+    if (usesCaptureWait) out.push(`const { awaitCaptureReady } = require('../../helpers/assertions');`);
     if (param) out.push(`const rawCases = require('../../data/${pc.feature}.json');`);
   }
   out.push(``);
@@ -1037,6 +1046,7 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   const actions: string[] = [];
   const closing: string[] = [];
   let pastActions = false;
+  const repRelations = relationsByVarName(rep.steps);
   for (const step of rep.steps) {
     if (step.kind === 'navigate') {
       if (!initialNavSkipped) { initialNavSkipped = true; continue; }
@@ -1054,13 +1064,13 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
       continue;
     }
     if (step.kind === 'click' || step.kind === 'press' || step.kind === 'select_option' || step.kind === 'set_checked' || step.kind === 'set_input_files') {
-      actions.push(...emitStepCall(step, pc, handle));
+      actions.push(...emitStepCall(step, pc, handle, null, repRelations));
       continue;
     }
     // Everything after the last action is the success-path closing sequence
     // (assertions, captures, compares).
     pastActions = true;
-    closing.push(...emitStepCall(step, pc, handle));
+    closing.push(...emitStepCall(step, pc, handle, null, repRelations));
   }
 
   for (const line of actions) out.push(`    ${line}`);
@@ -1135,6 +1145,9 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
   if (!pc.sharedGoto && !scenario.steps.some((s) => s.kind === 'navigate')) {
     out.push(`  await page.goto(${q(fallbackUrl)});`);
   }
+  // varName -> relation, from replay's own map, drives the capture readiness
+  // grace exactly where replay applies it (invariant 39).
+  const relations = relationsByVarName(scenario.steps);
   for (const step of scenario.steps) {
     if (consumed.has(step)) continue;
     if (step.kind === 'navigate') {
@@ -1142,7 +1155,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
       out.push(`  await page.goto(${q(step.url)});`);
       continue;
     }
-    for (const line of emitStepCall(step, pc, handle, creds)) {
+    for (const line of emitStepCall(step, pc, handle, creds, relations)) {
       out.push('  ' + line);
     }
   }
@@ -1150,7 +1163,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
   return out;
 }
 
-function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds: AuthCredentials | null = null): string[] {
+function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds: AuthCredentials | null = null, relations: Map<string, string> = new Map()): string[] {
   switch (step.kind) {
     case 'click': {
       const field = fieldFor(pc, step.target);
@@ -1201,7 +1214,15 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
       // Capture-and-compare emits inline locators (no page-object field): the
       // read needs .first() for attribute/text and the full multi-match locator
       // for count, neither of which the field handle exposes cleanly.
-      return [`const ${step.varName} = ${captureRhs(step.source, step.target, step.attribute)}; // captured ${step.source} for compare`];
+      const read = `const ${step.varName} = ${captureRhs(step.source, step.target, step.attribute)}; // captured ${step.source} for compare`;
+      // A count read does not auto-wait, so a capture that races the render
+      // reads 0 (run 44cb3d). Wait for the target the way replay does, with
+      // replay's own timeout, skipped exactly where replay skips it (absent
+      // relation, or no compare reads the var).
+      if (step.kind === 'capture' && captureWaitNeeded(step, relations)) {
+        return [`await awaitCaptureReady(${emitLocatorCall(step.target.level, step.target.arg, false, step.target.frameChain, step.target.filterText)}, ${COMPARE_POLL_TIMEOUT_MS}); // wait for the target to render before the count read, as replay does`, read];
+      }
+      return [read];
     }
     case 'assert_compare': {
       if (step.relation === 'absent') {

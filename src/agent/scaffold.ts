@@ -5,6 +5,7 @@ import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
 import { renderUniqueDataHelper } from './unique-data.js';
 import { renderParseNumberHelper } from './parse-number.js';
+import { renderAwaitCaptureReadyTs, renderAwaitCaptureReadyJs } from './capture-ready.js';
 import { redactCredentialValues } from './datasets.js';
 import {
   AUTH_ENV_PASS,
@@ -590,7 +591,9 @@ async function expectAnyText(locator, candidates) {
   expect(match, \`expected text to contain one of [\${candidates.join(', ')}], got: \${actual}\`).toBe(true);
 }
 
-module.exports = { expectUrlChanged, expectAnyText };
+${renderAwaitCaptureReadyJs()}
+
+module.exports = { expectUrlChanged, expectAnyText, awaitCaptureReady };
 `;
   }
   // TypeScript path.
@@ -614,6 +617,8 @@ export async function expectAnyText(locator: Locator, candidates: string[]): Pro
   const match = candidates.some(c => actual.includes(c));
   expect(match, \`expected text to contain one of [\${candidates.join(', ')}], got: \${actual}\`).toBe(true);
 }
+
+${renderAwaitCaptureReadyTs()}
 `;
 }
 

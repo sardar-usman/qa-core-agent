@@ -21,7 +21,7 @@ import { chromium } from 'playwright';
 import { createContext, runTool } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { transcribe } from '../src/agent/transcriber.js';
-import { awaitCaptureReady, replayScenarioOnce } from '../src/agent/replay.js';
+import { COMPARE_POLL_TIMEOUT_MS, awaitCaptureReady, replayScenarioOnce } from '../src/agent/replay.js';
 import type { RunReport, Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -309,6 +309,62 @@ check('F8. numeric compares in the spec go through parseNumber, and the parser i
   /await expect\.poll\(async \(\) => parseNumber\(.+\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(parseNumber\(cap_firstPrice\)\)/.test(spec) && /^function parseNumber\(text\)/m.test(spec) && !/\bNumber\(cap_firstPrice\)/.test(spec),
   spec.split('\n').filter((l) => /parseNumber/.test(l)).slice(0, 3).join(' | '));
 check('F9. the inlined parser throws on text with no number (loud in the shipped spec too)', /throw new Error\('no number found in '/.test(spec));
+
+/* ─── G. a count capture waits for its target like replay (invariant 39) ──── */
+// Run 44cb3d's emitted eco-filter test read the card count before the list
+// rendered (0) and the less compare failed ("Expected: < 0 Received: 2"); a
+// greater compare passed for the wrong reason. The emitted spec now waits
+// through awaitCaptureReady with replay's own timeout, exactly where replay
+// waits: never for an absent relation, never for a var no compare reads.
+{
+  const gItems = { level: 'css', arg: '.item', intent: 'cards' } as const;
+  const gGo = { level: 'role', arg: { role: 'button', name: 'Go' }, intent: 'go button' } as const;
+  const gBadge = { level: 'css', arg: '#badge', intent: 'badge' } as const;
+  const countScenario = (name: string, varName: string, relation?: string, source: 'count' | 'text' = 'count') => ({
+    name, category: 'happy', feature: 'list', steps: [
+      { kind: 'navigate', url: 'https://g.example/' },
+      { kind: 'capture', varName, source, target: gItems, intent: 'cards' },
+      { kind: 'click', target: gGo },
+      ...(relation ? [{ kind: 'assert_compare', varName, relation, source, target: gItems, intent: 'cards', readVar: `${varName}_now` }] : []),
+    ],
+  });
+  const gReport = {
+    url: 'https://g.example/', language: 'ts', cascadeStats: {}, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, steps: 0, startedAt: '', finishedAt: '',
+    scenarios: [
+      countScenario('less waits', 'cap_less', 'less'),
+      countScenario('greater waits', 'cap_greater', 'greater'),
+      countScenario('changed waits', 'cap_changed', 'changed'),
+      countScenario('equal waits', 'cap_equal', 'equal'),
+      countScenario('absent does not wait', 'cap_absent', 'absent'),
+      countScenario('an unread capture does not wait', 'cap_unread'),
+      countScenario('a text capture does not wait', 'cap_text', 'changed', 'text'),
+      { name: 'the badge baseline', category: 'happy', feature: 'list', steps: [
+        { kind: 'navigate', url: 'https://g.example/' },
+        { kind: 'capture', varName: 'cap_badge', source: 'count', target: gBadge, intent: 'badge' },
+        { kind: 'click', target: gGo },
+        { kind: 'assert_compare', varName: 'cap_badge', relation: 'greater', source: 'count', target: gBadge, intent: 'badge', readVar: 'cap_badge_now' },
+      ] },
+    ],
+  } as unknown as RunReport;
+  const gOut = transcribe({ report: gReport, outDir, name: 'capture-wait' });
+  const gSpec = fs.readFileSync(gOut.specPath, 'utf8');
+  const gLines = gSpec.split('\n').map((l) => l.trim());
+  const lineBefore = (varName: string): string => {
+    const i = gLines.findIndex((l) => l.startsWith(`const ${varName} = `));
+    return i > 0 ? gLines[i - 1]! : '(capture line not found)';
+  };
+  const waitLine = (sel: string): string => `await awaitCaptureReady(page.locator("${sel}"), ${COMPARE_POLL_TIMEOUT_MS}); // wait for the target to render before the count read, as replay does`;
+  check('G1. the wait is emitted before a count capture a less compare reads', lineBefore('cap_less') === waitLine('.item'), lineBefore('cap_less'));
+  check('G2. the wait is emitted for greater', lineBefore('cap_greater') === waitLine('.item'), lineBefore('cap_greater'));
+  check('G3. the wait is emitted for changed', lineBefore('cap_changed') === waitLine('.item'), lineBefore('cap_changed'));
+  check('G4. the wait is emitted for equal', lineBefore('cap_equal') === waitLine('.item'), lineBefore('cap_equal'));
+  check('G5. the wait is NOT emitted for an absent relation', !/awaitCaptureReady/.test(lineBefore('cap_absent')), lineBefore('cap_absent'));
+  check('G6. the wait is NOT emitted for a var no compare reads', !/awaitCaptureReady/.test(lineBefore('cap_unread')), lineBefore('cap_unread'));
+  check('G7. a text capture is unchanged (textContent auto-waits; no wait line)', !/awaitCaptureReady/.test(lineBefore('cap_text')) && /^const cap_text = \(await page\.locator\("\.item"\)\.first\(\)\.textContent\(\)\)\?\.trim\(\) \?\? '';/.test(gLines.find((l) => l.startsWith('const cap_text = ')) ?? ''), lineBefore('cap_text'));
+  check('G8. the count read itself is unchanged: the bare multi-match count() line follows the wait', gLines.includes(`const cap_less = await page.locator(".item").count(); // captured count for compare`), gLines.filter((l) => /cap_less/.test(l)).join(' | '));
+  check('G9. the wait uses the capture locator, including for an empty baseline (#badge), with the one imported timeout', lineBefore('cap_badge') === waitLine('#badge') && !/awaitCaptureReady\(.*, (?!10000\))\d+\)/.test(gSpec), lineBefore('cap_badge'));
+  check('G10. the helper is inlined once in the single-file spec and never throws (bounded loop, no expect.poll)', (gSpec.match(/^async function awaitCaptureReady\(locator, timeoutMs\)/gm) ?? []).length === 1 && /if \(Date\.now\(\) >= deadline\) return;/.test(gSpec) && !/expect\.poll\([^\n]*\)\.catch/.test(gSpec), gSpec.split('\n').filter((l) => /awaitCaptureReady|deadline/.test(l)).slice(0, 6).join(' | '));
+}
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

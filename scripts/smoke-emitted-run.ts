@@ -109,6 +109,40 @@ const registerHtml = `<!doctype html>
 </script>
 </body></html>`;
 
+// A list that renders 800 ms after load, a filter that hides some of its cards,
+// and a badge that does not exist until the first add. Run 44cb3d's emitted
+// eco-filter test read the card count before the list rendered (0), so the
+// less compare could not hold ("Expected: < 0 Received: 2"); the emitted count
+// capture must wait the way replay does (invariant 39).
+const delayedHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Delayed list</title></head>
+<body><main>
+  <h1>Rentals</h1>
+  <button type="button" id="filter">Light tools only</button>
+  <button type="button" id="add">Add to cart</button>
+  <div id="list"></div>
+</main>
+<script>
+  var filtered = false;
+  var ready = false;
+  function render() {
+    var list = document.getElementById('list');
+    list.innerHTML = '';
+    [{ n: 'Hammer', heavy: true }, { n: 'Pliers', heavy: false }, { n: 'Saw', heavy: true }, { n: 'Wrench', heavy: false }].forEach(function (it) {
+      if (filtered && it.heavy) return;
+      var d = document.createElement('div'); d.className = 'item'; d.textContent = it.n; list.appendChild(d);
+    });
+  }
+  setTimeout(function () { ready = true; render(); }, 800);
+  document.getElementById('filter').addEventListener('click', function () { filtered = true; if (ready) render(); });
+  document.getElementById('add').addEventListener('click', function () {
+    var b = document.getElementById('badge');
+    if (!b) { b = document.createElement('span'); b.id = 'badge'; b.textContent = '1'; document.querySelector('main').appendChild(b); }
+    else { b.textContent = String(Number(b.textContent) + 1); }
+  });
+</script>
+</body></html>`;
+
 const sanderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#888"/></svg>`;
 
 const routes: Record<string, { body: string; type: string }> = {
@@ -117,6 +151,7 @@ const routes: Record<string, { body: string; type: string }> = {
   '/detail.html': { body: detailHtml, type: 'text/html; charset=utf-8' },
   '/frame.html': { body: frameHtml, type: 'text/html; charset=utf-8' },
   '/register.html': { body: registerHtml, type: 'text/html; charset=utf-8' },
+  '/delayed.html': { body: delayedHtml, type: 'text/html; charset=utf-8' },
   '/assets/products/sander.svg': { body: sanderSvg, type: 'image/svg+xml' },
 };
 
@@ -158,6 +193,10 @@ const createAccountLink: SelectorRecord = { level: 'role', arg: { role: 'link', 
 // used to default the intent to "element" (run 51d535), and a field keyed by
 // intent merged them into one locator. Each must land in its own field.
 const headingNoIntent: SelectorRecord = { level: 'css', arg: 'h1', intent: 'element' };
+const delayedItems: SelectorRecord = { level: 'css', arg: '.item', intent: 'product cards' };
+const filterButton: SelectorRecord = { level: 'role', arg: { role: 'button', name: 'Light tools only' }, intent: 'filter button' };
+const addButton: SelectorRecord = { level: 'role', arg: { role: 'button', name: 'Add to cart' }, intent: 'add to cart button' };
+const cartBadge: SelectorRecord = { level: 'css', arg: '#badge', intent: 'cart badge' };
 const sendNoIntent: SelectorRecord = { level: 'css', arg: '#send', intent: 'element' };
 
 function scenarios(): Scenario[] {
@@ -217,6 +256,23 @@ function scenarios(): Scenario[] {
     // the landing page), so the feature has no shared beforeEach goto and
     // each test opens its own recorded first URL (run 51d535: account spanned
     // /auth/register and /auth/login under one class url).
+    // Capture readiness in the emitted spec (invariant 39): the list renders
+    // 800 ms after load, so an immediate count() reads 0 and a less compare
+    // against the filtered list can never hold. The emitted capture waits.
+    { name: 'filtering the late-rendered list lowers the card count', category: 'happy', feature: 'delayed', steps: [
+      { kind: 'navigate', url: `${base}/delayed.html` },
+      { kind: 'capture', varName: 'cap_cardCount', source: 'count', target: delayedItems, intent: 'product cards' },
+      { kind: 'click', target: filterButton },
+      { kind: 'assert_compare', varName: 'cap_cardCount', relation: 'less', source: 'count', target: delayedItems, intent: 'product cards', readVar: 'cap_cardCount_now' },
+    ] },
+    // A legitimately empty baseline: the badge does not exist until the first
+    // add. The grace waits, then reads 0, and greater still holds after the click.
+    { name: 'adding to the cart creates the badge', category: 'happy', feature: 'delayed', steps: [
+      { kind: 'navigate', url: `${base}/delayed.html` },
+      { kind: 'capture', varName: 'cap_badgeCount', source: 'count', target: cartBadge, intent: 'cart badge' },
+      { kind: 'click', target: addButton },
+      { kind: 'assert_compare', varName: 'cap_badgeCount', relation: 'greater', source: 'count', target: cartBadge, intent: 'cart badge', readVar: 'cap_badgeCount_now' },
+    ] },
     { name: 'the create account link on the landing page opens the registration form', category: 'happy', feature: 'registration', steps: [
       { kind: 'navigate', url: `${base}/` },
       { kind: 'click', target: createAccountLink },
@@ -298,6 +354,18 @@ for (const language of ['ts', 'js'] as const) {
     const beforeEach = registrationSpec.slice(registrationSpec.indexOf('test.beforeEach'), registrationSpec.indexOf('test("'));
     const gotos = (registrationSpec.match(/await page\.goto\(/g) ?? []).length;
     check(`${language}: a feature whose scenarios start on two URLs emits no beforeEach goto and a page.goto per test`, !/\.goto\(\)/.test(beforeEach) && /start on different pages/.test(beforeEach) && gotos === 2, `beforeEach=${beforeEach.trim()} gotos=${gotos}`);
+    // Capture readiness (invariant 39): the count capture a compare reads is
+    // preceded by the shipped awaitCaptureReady with replay's timeout, in
+    // both the less case and the empty-baseline greater case.
+    const delayedSpec = fs.readFileSync(path.join(outDir, `tests/delayed/delayed.spec.${language}`), 'utf8');
+    const delayedLines = delayedSpec.split('\n').map((l) => l.trim());
+    const waitBefore = (varName: string): boolean => {
+      const i = delayedLines.findIndex((l) => l.startsWith(`const ${varName} = await `) && l.includes('.count();'));
+      return i > 0 && /^await awaitCaptureReady\(page\.locator\(".+"\), 10000\);/.test(delayedLines[i - 1] ?? '');
+    };
+    check(`${language}: the emitted count captures wait for their target before the read (less and the empty-baseline greater)`, waitBefore('cap_cardCount') && waitBefore('cap_badgeCount'), delayedLines.filter((l) => /cap_cardCount|cap_badgeCount|awaitCaptureReady/.test(l)).join(' | '));
+    const helperImport = language === 'ts' ? `import { awaitCaptureReady } from '../../helpers/assertions';` : `const { awaitCaptureReady } = require('../../helpers/assertions');`;
+    check(`${language}: the delayed spec imports awaitCaptureReady from helpers/assertions and the helper is shipped`, delayedSpec.includes(helperImport) && fs.readFileSync(path.join(outDir, `helpers/assertions.${language}`), 'utf8').includes('async function awaitCaptureReady(locator'), delayedSpec.split('\n').slice(0, 6).join(' | '));
     const contactBeforeEach = contactSpec.slice(contactSpec.indexOf('test.beforeEach'), contactSpec.indexOf('test("'));
     check(`${language}: a feature whose scenarios share one first URL keeps the beforeEach goto`, /contactPage\.goto\(\)/.test(contactBeforeEach), contactBeforeEach);
     check(`${language}: scaffold wrote the config, a spec per feature and the a11y spec`,
