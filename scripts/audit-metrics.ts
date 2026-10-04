@@ -31,10 +31,17 @@
  *
  * The second block compares pages, planned, explored, shipped and cost
  * with the Toolshop runs table in STATE.md, one line per mismatch. The
- * third block prints the saucedemo proof runs in the same shape.
+ * third block prints the saucedemo proof runs in the same shape. The
+ * fourth block prints, per Toolshop run, the surface (run-meta.json
+ * `source`; a run with no run-meta prints n/r and shows its checkpoint
+ * flags), the explore flags as recorded, and the sha256 of the SRS the run
+ * used (the run folder's copy, else the file the flags name; n/r when
+ * neither exists), then says which flags differ and whether every hash
+ * matches.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { RunReport } from '../src/agent/trace.js';
 import { totalCost, hasRequirementsCost } from '../src/agent/cost-total.js';
 import { findingsOf } from '../src/agent/reconcile.js';
@@ -272,4 +279,79 @@ function main(): void {
   if (unmatched.length > 0) console.log(`  other saucedemo folders not in STATE.md's proof list: ${unmatched.map((r) => `${r.folder} (${r.report.startedAt.slice(0, 10)}, $${totalCost(r.report).toFixed(4)}, ${r.report.scenarios.length} shipped)`).join('; ')}`);
 }
 
+/** Flags as recorded on run-meta.json (or checkpoint.json when run-meta is missing). */
+type RecordedFlags = Record<string, unknown>;
+
+interface RunSetup {
+  run: string;
+  surface: string;
+  flagsFrom: string;
+  flags: RecordedFlags | undefined;
+  srsPath: string;
+  srsHash: string;
+}
+
+const FLAG_KEYS = ['lang', 'pom', 'features', 'discover', 'urls', 'replay', 'stability', 'stabilityIterations', 'stabilize', 'stabilizeAttempts', 'emittedCheck', 'env'];
+
+function flagCell(flags: RecordedFlags | undefined, key: string): string {
+  if (!flags || !(key in flags)) return '(absent)';
+  return JSON.stringify(flags[key]);
+}
+
+function setupFor(label: string, dir: string): RunSetup {
+  const metaPath = path.join(ROOT, dir, 'run-meta.json');
+  const checkpointPath = path.join(ROOT, dir, 'checkpoint.json');
+  let surface = NR; let flagsFrom = 'none'; let flags: RecordedFlags | undefined;
+  if (fs.existsSync(metaPath)) {
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as { source?: string; flags?: RecordedFlags };
+    surface = meta.source ?? NR; flags = meta.flags; flagsFrom = 'run-meta.json';
+  } else if (fs.existsSync(checkpointPath)) {
+    const cp = JSON.parse(fs.readFileSync(checkpointPath, 'utf8')) as { flags?: RecordedFlags };
+    flags = cp.flags; flagsFrom = 'checkpoint.json (no run-meta.json; the checkpoint records no source)';
+  }
+  // The SRS the run used: the run folder's own copy first, else the file the flags name.
+  const ownCopy = fs.readdirSync(path.join(ROOT, dir)).find((f) => /srs/i.test(f) && f.endsWith('.md'));
+  const named = typeof flags?.srs === 'string' ? (flags.srs as string) : undefined;
+  let srsPath = NR; let srsHash = NR;
+  const candidate = ownCopy ? path.join(dir, ownCopy) : named;
+  if (candidate && fs.existsSync(path.join(ROOT, candidate))) {
+    srsPath = candidate;
+    srsHash = createHash('sha256').update(fs.readFileSync(path.join(ROOT, candidate))).digest('hex');
+  } else if (named) {
+    srsPath = `${named} (file missing)`;
+  }
+  return { run: label, surface, flagsFrom, flags, srsPath, srsHash };
+}
+
+function printSetups(setups: RunSetup[]): void {
+  console.log('\nE. Surface, flags and SRS per Toolshop run (run-meta.json, else checkpoint.json; SRS sha256 of the file the run used)');
+  console.log(table(
+    ['run', 'surface', 'flags read from', 'SRS file', 'SRS sha256'],
+    setups.map((s) => [s.run, s.surface, s.flagsFrom, s.srsPath, s.srsHash]),
+  ));
+  console.log('\nFlags as recorded (a key the record does not carry prints "(absent)")');
+  console.log(table(['flag', ...setups.map((s) => s.run)], FLAG_KEYS.map((k) => [k, ...setups.map((s) => flagCell(s.flags, k))])));
+  // Two kinds of difference: a key some record does not carry (an older flag shape), and a key present everywhere with different values.
+  const absentSomewhere = FLAG_KEYS.filter((k) => setups.some((s) => flagCell(s.flags, k) === '(absent)') && !setups.every((s) => flagCell(s.flags, k) === '(absent)'));
+  const valueDiffers = FLAG_KEYS.filter((k) => new Set(setups.filter((s) => flagCell(s.flags, k) !== '(absent)').map((s) => flagCell(s.flags, k))).size > 1);
+  console.log(`  flags absent on some runs: ${absentSomewhere.length === 0 ? 'none' : absentSomewhere.map((k) => `${k} (absent on ${setups.filter((s) => flagCell(s.flags, k) === '(absent)').map((s) => s.run).join(', ')})`).join('; ')}`);
+  console.log(`  flags whose recorded values differ: ${valueDiffers.length === 0 ? 'none' : valueDiffers.map((k) => `${k} (${setups.map((s) => `${s.run}: ${flagCell(s.flags, k)}`).join(', ')})`).join('; ')}`);
+  const hashes = setups.filter((s) => s.srsHash !== NR).map((s) => s.srsHash);
+  const distinct = new Set(hashes);
+  const missing = setups.filter((s) => s.srsHash === NR).map((s) => s.run);
+  console.log(`  SRS hashes: ${hashes.length} of ${setups.length} runs have a readable SRS file, ${distinct.size} distinct hash(es)${missing.length ? `; no readable SRS for: ${missing.join(', ')}` : ''}`);
+  // The project-level SRS the dashboard copies into a run folder (output/<project>/srs/, srs.json beside it).
+  const projectSrsDir = path.join(ROOT, 'output/practicesoftwaretesting-com/srs');
+  const srsJson = path.join(projectSrsDir, 'srs.json');
+  if (fs.existsSync(srsJson)) {
+    const meta = JSON.parse(fs.readFileSync(srsJson, 'utf8')) as { current?: { path?: string; uploaded_at?: string } };
+    const cur = meta.current?.path;
+    if (cur && fs.existsSync(path.join(ROOT, cur))) {
+      const h = createHash('sha256').update(fs.readFileSync(path.join(ROOT, cur))).digest('hex');
+      console.log(`  project SRS: ${cur} uploaded ${meta.current?.uploaded_at ?? NR}, sha256 ${h}${distinct.size === 1 && distinct.has(h) ? ' (same as every readable run copy)' : ''}`);
+    }
+  }
+}
+
 main();
+printSetups(TOOLSHOP_RUNS.map(({ n, dir }) => setupFor(`${n} ${dir.slice(-6)}`, dir)));

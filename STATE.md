@@ -20,7 +20,9 @@ served at http://127.0.0.1:18789/, MCP server. All three build runs through
 src/agent/explore-request.ts.
 
 Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
-from scripts/, 86 smokes; QA_CORE_LIVE_SMOKES=1 adds the two live ones).
+from scripts/, 87 smokes, 2 of them live and skipped unless
+QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "87 smokes, 85 passed, 0
+failed, 2 skipped (live)").
 Before any live run: npx tsx scripts/preflight-site.ts <url> --login.
 
 ## Maturity pass: complete (Phases 1 to 5 merged, Sept 3 to 14)
@@ -196,7 +198,7 @@ using the qa-core-heal evaluation report as the template.
 
 ## Audit backlog (open)
 
-- D1 (run 6): FIXED (this PR, Oct 2): the emitted count capture reads once
+- D1 (run 6): FIXED (PR #35, Oct 2): the emitted count capture reads once
   with no wait, unlike replay; a too-early 0 passes a greater compare for
   the wrong reason. docs/audit/run-44cb3d-diagnosis.md. Locked by
   smoke-emitted-run and smoke-capture-compare.
@@ -209,15 +211,15 @@ using the qa-core-heal evaluation report as the template.
   never shows; a timeout already at the gate floor) and cart verdicts that
   took a badge element count for the badge's value.
   docs/audit/run-44cb3d-diagnosis.md.
-- D4 (run 6): FIXED (this PR, Oct 2): a repair stopped by its budget is
+- D4 (run 6): FIXED (PR #36, Oct 2): a repair stopped by its budget is
   filed as a critic drop with the first-pass reasons.
   docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-repair-pass and
   smoke-reconcile.
-- D5 (run 6): FIXED (this PR, Oct 2): the printed cost total excludes the
+- D5 (run 6): FIXED (PR #36, Oct 2): the printed cost total excludes the
   requirements map cost on both sites. docs/audit/run-44cb3d-diagnosis.md.
   Locked by smoke-srs-parse and smoke-index. Runs 1 to 6 predate the field;
   their totals exclude the map build cost.
-- D6 (run 6): FIXED (this PR, Oct 2): the findings key is omitted when empty
+- D6 (run 6): FIXED (PR #36, Oct 2): the findings key is omitted when empty
   (top level absent, reconciliation.findings []).
   docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-reconcile.
 - D7 (run 6): fake-credential substitution on both sites: saucedemo's
