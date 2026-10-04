@@ -74,3 +74,5 @@ Artifact: the two `tool_call` events before the first `begin_scenario` (`navigat
 6. Planner asserts the snapshot's shape, events keep a useful get_dom preview (finding 6). `planner.ts`, `src/server/events.ts`. Lock: `smoke-planner-parse`, `smoke-terminal`.
 7. data-test recorded and emitted as a testid (finding 7). `selectors.ts`, `scaffold.ts`. Lock: `smoke-data-test-attribute`.
 8. No orientation load when the plan carries page URLs (finding 8). `runtime.ts`. Lock: `smoke-step-budget`.
+
+Correction, 2026-10-04: the first-pass Critic split was 4 pass, 7 rework, 2 reject (the first `critic_done` event in `events.jsonl` carries 13 verdicts: 4 pass, 7 rework, 2 reject; `review.repair` on the report holds 7 entries, 1 kept). 5 / 6 / 2 in section 1 is the final count after repair.
