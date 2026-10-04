@@ -4,11 +4,12 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-m font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-m font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-0 disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
-        default: 'bg-accent text-bg-0 hover:brightness-110',
+        // Primary actions take the brand colour (mint on dark, teal on light).
+        default: 'bg-brand text-brand-fg hover:brightness-110',
         outline: 'border border-line-strong bg-bg-2 text-fg hover:bg-bg-3',
         ghost: 'text-fg-2 hover:bg-bg-3 hover:text-fg',
         link: 'text-accent underline-offset-4 hover:underline',

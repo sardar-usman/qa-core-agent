@@ -17,6 +17,30 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { newRunId, setLatest } from '../src/agent/output-layout.js';
+import { GLOSSARY } from '../dashboard/src/lib/glossary.js';
+
+/** The exact figure the card's money tooltip carries (dashboard/src/lib/utils.ts exactMoney): the API number with float noise beyond 12 significant digits removed. */
+const exactMoney = (v: unknown): string => `$${String(Number(Number(v).toPrecision(12)))}`;
+/** What a glossary tooltip renders: "<Term>. <text>" (dashboard/src/components/Term.tsx TermBody). */
+const tipText = (key: keyof typeof GLOSSARY): string => `${GLOSSARY[key].term}. ${GLOSSARY[key].text}`;
+/** Contrast helper, injected as plain script (tsx would inject __name into a named inner function). Same method as smoke-run-detail. */
+const CONTRAST_SCRIPT = `
+window.__contrast = function (selectors) {
+  function lum(rgb) { var m = (rgb.match(/[\\d.]+/g) || ['0','0','0']).slice(0, 3).map(function (v) { var c = Number(v) / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }); return 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; }
+  function parse(c) { var m = (c.match(/[\\d.]+/g) || ['0','0','0','1']).map(Number); return { r: m[0], g: m[1], b: m[2], a: m.length > 3 ? m[3] : 1 }; }
+  function bgOf(el) {
+    var layers = [];
+    for (var e = el; e; e = e.parentElement) { var p = parse(getComputedStyle(e).backgroundColor); if (p.a > 0) layers.push(p); if (p.a >= 1) break; }
+    var r = 0, g = 0, b = 0;
+    for (var i = layers.length - 1; i >= 0; i--) { var l = layers[i]; r = l.r * l.a + r * (1 - l.a); g = l.g * l.a + g * (1 - l.a); b = l.b * l.a + b * (1 - l.a); }
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+  var out = {};
+  selectors.forEach(function (s) { var el = document.querySelector(s); if (!el) { out[s] = -1; return; } var a = lum(getComputedStyle(el).color), bb = lum(bgOf(el)); out[s] = Math.round(((Math.max(a, bb) + 0.05) / (Math.min(a, bb) + 0.05)) * 10) / 10; });
+  return out;
+};`;
+const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-glossary="testsShipped"]', '[data-glossary="latestShipped"]', '[data-testid="shipped-sub"]', '[data-testid="runs-count"]', '[data-glossary="srsRuns"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-status="legacy"]'];
+const RUNS_CONTRAST = ['[data-testid="cost"]', '[data-testid="flake-rate"]', '[data-testid="duration"]', '[data-testid="run-source"]', '[data-testid="shipped-planned"]', '[data-status="completed"]', '[data-status="stopped"]', '[data-status="empty"]', '[data-status="legacy"]', '[data-testid="toggle-legacy"]', '[data-testid="runs-count"]', 'th [data-glossary="cost"]'];
 
 let pass = 0;
 let fail = 0;
@@ -118,6 +142,9 @@ for (const theme of ['dark', 'light'] as const) {
     shipped: el.querySelector('[data-testid="shipped"]')?.textContent,
     findings: el.querySelector('[data-testid="unresolved-findings"]')?.textContent,
     spend: el.querySelector('[data-testid="spend-month"]')?.textContent,
+    spendTip: el.querySelector('[data-testid="spend-month"] [data-tip]')?.getAttribute('data-tip') ?? null,
+    latest: el.querySelector('[data-testid="latest-shipped"]')?.textContent ?? null,
+    naTerms: Array.from(el.querySelectorAll('[data-glossary="notAvailable"]')).length,
     legacySub: el.querySelector('[data-testid="shipped-sub"]')?.textContent ?? null,
     envBadge: el.querySelector('[data-testid="env-badge"]')?.textContent ?? null,
     status: el.querySelector('[data-status]')?.getAttribute('data-status'),
@@ -127,9 +154,35 @@ for (const theme of ['dark', 'light'] as const) {
   for (const p of projects) {
     const c = cards.find((x) => x.id === p.id);
     const show = (v: unknown) => (v === null ? 'n/a' : String(v));
-    const ok = !!c && c.shipped === show(p.shipped) && c.findings === show(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(4)}` && c.status === (p.last_run as Record<string, unknown> | null)?.status;
-    check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (4 decimals), last run status`, ok, JSON.stringify({ c, p: { shipped: p.shipped, f: p.unresolved_findings, s: p.spend_month, st: (p.last_run as Record<string, unknown> | null)?.status } }));
+    const last = p.last_run as Record<string, unknown> | null;
+    // Money on a card is 2 decimals; the exact stored value travels in the tooltip (PR F part 1).
+    const ok = !!c && c.shipped === show(p.shipped) && c.findings === show(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === last?.status;
+    check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (2 decimals, exact value in the tooltip), last run status`, ok, JSON.stringify({ c, p: { shipped: p.shipped, f: p.unresolved_findings, s: p.spend_month, st: last?.status } }));
+    // The headline is the latest run's shipped count, straight from last_run.shipped (no arithmetic); null reads n/a.
+    const expectLatest = last && last.shipped !== null && last.shipped !== undefined ? String(last.shipped) : 'n/a';
+    check(`${theme}: card ${p.id} headlines "tests in the latest run" with last_run.shipped (${expectLatest})`, c?.latest === expectLatest, JSON.stringify({ latest: c?.latest, last }));
   }
+  const earlierBefore = await page.evaluate(() => { const d = document.querySelector('[data-testid="earlier-experiments"]') as HTMLDetailsElement | null; return d ? { open: d.open, count: d.querySelector('[data-testid="earlier-count"]')?.textContent, ids: Array.from(d.querySelectorAll('[data-testid="project-card"]')).map((e) => (e as HTMLElement).dataset.projectId), active: Array.from(document.querySelectorAll('[data-testid="project-grid"] [data-testid="project-card"]')).map((e) => (e as HTMLElement).dataset.projectId) } : null; });
+  check(`${theme}: projects with no v2 run sit in a closed "Earlier experiments (pre-v2)" section with its count; projects with a reported run come first`, !!earlierBefore && earlierBefore.open === false && earlierBefore.count === String(earlierBefore.ids.length) && JSON.stringify(earlierBefore.ids) === JSON.stringify(['demoqa-com']) && earlierBefore.active.includes('saucedemo-com') && !earlierBefore.active.includes('demoqa-com'), JSON.stringify(earlierBefore));
+  await page.click('[data-testid="earlier-experiments"] > summary');
+  await page.waitForFunction(() => (document.querySelector('[data-testid="earlier-experiments"]') as HTMLDetailsElement).open);
+  check(`${theme}: clicking the section opens it and the pre-v2 cards become visible`, await page.isVisible('[data-testid="project-card"][data-project-id="demoqa-com"]'));
+  // Tooltips render the glossary entry, word for word (hover, then read role=tooltip).
+  await page.hover('[data-project-id="saucedemo-com"] [data-glossary="testsShipped"]');
+  await page.waitForSelector('[role="tooltip"]', { timeout: 5000 });
+  check(`${theme}: hovering "shipped" on a card shows the glossary entry for tests shipped`, (await page.textContent('[role="tooltip"]')) === tipText('testsShipped'), (await page.textContent('[role="tooltip"]')) ?? '');
+  await page.mouse.move(0, 0);
+  await page.waitForSelector('[role="tooltip"]', { state: 'detached', timeout: 5000 }).catch(() => null);
+  // The keyboard path: a focused trigger opens its tooltip and is described by it (aria-describedby).
+  await page.focus('[data-testid="gateway-status"]');
+  await page.waitForFunction((t) => document.querySelector('[role="tooltip"]')?.textContent === t, tipText('gateway'), { timeout: 5000 }).catch(() => null);
+  const gatewayTip = await page.evaluate(() => { const tip = document.querySelector('[role="tooltip"]'); const trigger = document.querySelector('[data-testid="gateway-status"]'); return { text: tip?.textContent ?? null, described: !!tip && trigger?.getAttribute('aria-describedby') === tip.id }; });
+  check(`${theme}: focusing the gateway chip (keyboard) opens its glossary entry and the chip is described by it`, gatewayTip.text === tipText('gateway') && gatewayTip.described, JSON.stringify(gatewayTip));
+  await page.keyboard.press('Escape');
+  await page.mouse.move(0, 0);
+  await page.addScriptTag({ content: CONTRAST_SCRIPT });
+  const pc = await page.evaluate((sel) => (window as unknown as { __contrast: (s: string[]) => Record<string, number> }).__contrast(sel), PROJECTS_CONTRAST) as Record<string, number>;
+  check(`${theme}: every sampled Projects text keeps at least 4.5:1 contrast against its background`, Object.values(pc).every((v) => v >= 4.5), JSON.stringify(pc));
   const sauce = cards.find((c) => c.id === 'saucedemo-com')!;
   check(`${theme}: coverage sparkline shows the latest coverage percent for the SRS project`, /coverage/.test(sauce.text) && /100%/.test(sauce.text), sauce.text.slice(-80));
   check(`${theme}: a project without SRS runs says so`, /no SRS runs/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? ''));
@@ -148,6 +201,13 @@ for (const theme of ['dark', 'light'] as const) {
   // Runs table.
   await page.click('a[href="/runs"]');
   await page.waitForSelector('[data-testid="run-row"]');
+  // Pre-v2 summaries are hidden behind a visible toggle, off by default; the total count stays on screen.
+  const legacyTotal = apiRuns.filter((r) => r.status === 'legacy').length;
+  const hidden = await page.evaluate(() => ({ rows: document.querySelectorAll('[data-testid="run-row"]').length, toggle: document.querySelector('[data-testid="toggle-legacy"]')?.textContent ?? '', checked: document.querySelector('[data-testid="toggle-legacy"]')?.getAttribute('aria-checked'), count: document.querySelector('[data-testid="runs-count"]')?.textContent ?? '' }));
+  check(`${theme}: runs table hides the ${legacyTotal} pre-v2 row(s) by default behind "Show pre-v2 summaries (N)" and still states the total`, hidden.rows === apiRuns.length - legacyTotal && hidden.checked === 'false' && new RegExp(`Show pre-v2 summaries\\s*\\(${legacyTotal}\\)`).test(hidden.toggle) && hidden.count.startsWith(`${apiRuns.length} runs`) && new RegExp(`${legacyTotal} pre-v2 hidden`).test(hidden.count), JSON.stringify(hidden));
+  await page.click('[data-testid="toggle-legacy"]');
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid="run-row"]').length === n, apiRuns.length);
+  check(`${theme}: the toggle shows the pre-v2 rows and reads on`, (await page.getAttribute('[data-testid="toggle-legacy"]', 'aria-checked')) === 'true');
   const rows = await page.$$eval('[data-testid="run-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.runId, sp: el.querySelector('[data-testid="shipped-planned"]')?.textContent, cost: el.querySelector('[data-testid="cost"]')?.textContent, status: el.querySelector('[data-status]')?.getAttribute('data-status'), text: el.textContent ?? '' })));
   check(`${theme}: runs table lists every run newest first`, rows.length === apiRuns.length && rows[0]?.id === apiRuns[0]?.id, JSON.stringify(rows.map((r) => r.id)));
   for (const r of apiRuns) {
@@ -162,6 +222,11 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: the legacy-only demoqa card shows n/a for tests shipped and unresolved findings (unknown, never 0) with the pre-v2 sub-line`, demoqa?.status === 'legacy' && demoqa?.shipped === 'n/a' && demoqa?.findings === 'n/a' && demoqa?.legacySub === '1 pre-v2 run, 1 scenario explored', JSON.stringify(demoqa));
   check(`${theme}: cards with real runs carry no legacy line`, cards.filter((c) => c.id !== 'demoqa-com').every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
   check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
+  check(`${theme}: a status badge carries its glossary entry (hover "stopped")`, await (async () => { await page.hover('[data-status="stopped"]'); await page.waitForFunction((t) => document.querySelector('[role="tooltip"]')?.textContent === t, tipText('statusStopped'), { timeout: 5000 }).catch(() => null); return (await page.textContent('[role="tooltip"]')) === tipText('statusStopped'); })(), (await page.textContent('[role="tooltip"]').catch(() => null)) ?? '');
+  await page.mouse.move(0, 0);
+  await page.addScriptTag({ content: CONTRAST_SCRIPT });
+  const rc = await page.evaluate((sel) => (window as unknown as { __contrast: (s: string[]) => Record<string, number> }).__contrast(sel), RUNS_CONTRAST) as Record<string, number>;
+  check(`${theme}: every sampled Runs text keeps at least 4.5:1 contrast against its background`, Object.values(rc).every((v) => v >= 4.5), JSON.stringify(rc));
   await page.selectOption('[data-testid="filter-project"]', 'saucedemo-com');
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="run-row"]').length === 3);
   check(`${theme}: project filter narrows to that project's runs and updates the URL`, (await page.$$('[data-testid="run-row"]')).length === 3 && /project_id=saucedemo-com/.test(page.url()));
@@ -222,4 +287,4 @@ fs.rmSync(root, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the gateway serves the dashboard at /; Projects and Runs render the index numbers, which equal the run-reports.');
+console.log('OK: the gateway serves the dashboard at /; Projects and Runs render the index numbers, which equal the run-reports, with glossary tooltips, the pre-v2 toggle and 4.5:1 contrast in both themes.');

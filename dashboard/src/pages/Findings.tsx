@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, FINDING_STATUSES, type FindingRow, type ProjectCard } from '@/lib/api';
 import { EmptyState } from '@/components/EmptyState';
+import { PageHeader } from '@/components/PageHeader';
 import { FindingsHeading, FindingsTable } from '@/components/FindingsTable';
 
 /** Every deduped finding across projects, filterable by project and status. */
@@ -28,7 +29,8 @@ export function FindingsPage({ refreshKey }: { refreshKey: number }) {
   };
 
   return (
-    <div className="flex flex-col gap-4" data-testid="findings-page">
+    <div className="flex flex-col gap-6" data-testid="findings-page">
+      <PageHeader title="Findings" description="Every deduped finding across projects, with the runs that saw it. Status and notes are yours to set and survive every re-index." />
       <FindingsHeading count={findings?.length ?? 0} />
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 text-s text-fg-2">Project

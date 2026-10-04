@@ -3,6 +3,7 @@ import { api, ApiError, type GatewaySettings } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/EmptyState';
+import { PageHeader } from '@/components/PageHeader';
 import { clearOverrides, setOverride, useSessionOverrides } from '@/lib/session-overrides';
 
 /**
@@ -25,10 +26,7 @@ export function SettingsPage() {
   const overrideCount = Object.keys(overrides).length;
   return (
     <div className="flex flex-col gap-6" data-testid="settings-page">
-      <header>
-        <h1 className="text-m font-semibold">Settings</h1>
-        <p className="text-s text-fg-2">The gateway's effective defaults, read from its process when this page loaded. Overrides below live in this browser tab only and apply to every run the Terminal starts from it.</p>
-      </header>
+      <PageHeader title="Settings" description="The gateway's effective defaults, read from its process when this page loaded. Overrides below live in this browser tab only and apply to every run the Terminal starts from it." />
 
       <section className="rounded-lg border border-line bg-bg-1 p-4" data-testid="gateway-defaults">
         <h2 className="text-m font-semibold">Gateway</h2>

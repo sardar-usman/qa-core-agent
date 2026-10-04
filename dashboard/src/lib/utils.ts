@@ -14,6 +14,16 @@ export function usd(v: number | null | undefined): string {
   return money(v, 4);
 }
 
+/**
+ * The stored value behind a rounded figure, for a tooltip: the number as the
+ * API sent it, with floating-point noise beyond 12 significant digits removed
+ * (6.091172000000001 reads as $6.091172). Not a rounding of the stored decimals.
+ */
+export function exactMoney(v: number | null | undefined): string {
+  const n = Number(v ?? 0);
+  return `$${Number.isFinite(n) ? String(Number(n.toPrecision(12))) : '0'}`;
+}
+
 export function pct(v: number | null | undefined): string {
   return v == null ? '–' : `${(v * 100).toFixed(1)}%`;
 }

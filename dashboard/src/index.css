@@ -2,50 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens (plan section 8). HSL triples so Tailwind can add alpha.
-   Dark is the default; .light flips the surfaces. Every text/background pair
-   used by the app keeps at least 4.5:1 in both themes. */
+/* Design tokens (PR F, part 1). HSL triples so Tailwind can add alpha.
+   Dark is the default; .light flips the surfaces (lib/theme.ts toggles the
+   class and stores the choice under localStorage['qa-core.theme']).
+
+   Semantic colours are fixed by the design skill: pass green, rework amber,
+   reject red, findings violet (findings only), neutral grey, one cost accent
+   (blue, so money never reads as a status). The brand pair is SprintSynergy
+   teal #076887 and mint #59DFCF: mint is the accent on dark, teal on light,
+   used for primary actions, focus rings and the active nav item.
+
+   Every text and status colour below keeps at least 4.5:1 against bg-0,
+   bg-1, bg-2 and its own soft tint in both themes (the pairs and ratios are
+   listed in the PR summary; smoke-dashboard measures a sample live). */
 :root {
-  --bg-0: 240 8% 3%;
-  --bg-1: 240 8% 6%;
-  --bg-2: 240 10% 9%;
-  --bg-3: 240 10% 13%;
-  --line: 0 0% 100% / 0.07;
-  --line-strong: 0 0% 100% / 0.12;
-  --text: 240 10% 96%;
-  --text-2: 240 6% 66%;
-  --text-3: 240 6% 48%;
-  --accent: 252 100% 82%;
-  --pass: 156 58% 60%;
-  --rework: 40 87% 67%;
-  --reject: 352 78% 71%;
-  --finding: 254 100% 85%;
-  --neutral: 240 6% 66%;
-  --cost: 191 71% 70%;
+  --bg-0: 222 22% 5%;
+  --bg-1: 222 18% 8%;
+  --bg-2: 222 16% 11%;
+  --bg-3: 222 14% 16%;
+  --line: 0 0% 100% / 0.08;
+  --line-strong: 0 0% 100% / 0.14;
+  --text: 220 20% 96%;
+  --text-2: 220 10% 72%;
+  --text-3: 220 8% 60%;
+  --accent: 173 68% 61%;
+  --brand: 173 68% 61%;
+  --brand-fg: 222 22% 5%;
+  --pass: 152 55% 58%;
+  --rework: 40 90% 62%;
+  --reject: 354 85% 72%;
+  --finding: 258 95% 82%;
+  --neutral: 220 10% 72%;
+  --cost: 212 92% 76%;
+  --shadow-lift: 0 8px 24px -10px hsl(0 0% 0% / 0.7), 0 1px 0 hsl(0 0% 100% / 0.04) inset;
   color-scheme: dark;
 }
 .light {
-  --bg-0: 240 14% 96%;
+  --bg-0: 220 20% 97%;
   --bg-1: 0 0% 100%;
-  --bg-2: 240 14% 97%;
-  --bg-3: 240 14% 93%;
-  --line: 240 30% 10% / 0.08;
-  --line-strong: 240 30% 10% / 0.14;
-  --text: 240 10% 9%;
-  --text-2: 240 6% 34%;
-  --text-3: 240 6% 45%;
-  --accent: 252 62% 55%;
-  --pass: 156 75% 30%;
-  --rework: 40 100% 30%;
-  --reject: 350 66% 46%;
-  --finding: 254 55% 50%;
-  --neutral: 240 6% 38%;
-  --cost: 191 78% 26%;
+  --bg-2: 220 20% 97.5%;
+  --bg-3: 220 16% 93%;
+  --line: 222 30% 10% / 0.09;
+  --line-strong: 222 30% 10% / 0.16;
+  --text: 222 25% 10%;
+  --text-2: 222 10% 36%;
+  --text-3: 222 8% 42%;
+  --accent: 194 90% 28%;
+  --brand: 194 90% 28%;
+  --brand-fg: 0 0% 100%;
+  --pass: 152 70% 27%;
+  --rework: 36 100% 27%;
+  --reject: 352 70% 40%;
+  --finding: 258 60% 46%;
+  --neutral: 222 10% 36%;
+  --cost: 212 80% 34%;
+  --shadow-lift: 0 8px 24px -12px hsl(222 30% 10% / 0.22);
   color-scheme: light;
 }
 
 @layer base {
   html, body, #root { height: 100%; }
+  /* Every number on the dashboard lines up: tabular figures everywhere, in both families. */
+  html { font-variant-numeric: tabular-nums; }
   body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
   .money, .mono { @apply font-mono; }
+  /* A visible focus ring on anything focusable that does not draw its own. */
+  :focus-visible { outline: 2px solid hsl(var(--accent)); outline-offset: 2px; }
+}
+
+@layer utilities {
+  /* Page content fades in on route change (App.tsx keys the wrapper by path). */
+  .page-enter { animation: page-fade 150ms ease-out both; }
+  /* Cards lift slightly on hover. */
+  .card-lift { transition: transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out; }
+  .card-lift:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); border-color: hsl(var(--line-strong)); }
+  /* Loading placeholders. */
+  .skeleton { animation: skeleton-pulse 1.4s ease-in-out infinite; background: hsl(var(--bg-3)); }
+  /* Tooltip entrance. */
+  .tip-enter { animation: tip-fade 120ms ease-out both; }
+}
+
+@keyframes page-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes skeleton-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes tip-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+/* Motion is functional only, and off entirely for people who asked for less of it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  .card-lift:hover { transform: none; }
 }
