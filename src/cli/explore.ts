@@ -9,6 +9,7 @@ import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agen
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
 import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import type { PlannedScenario } from '../agent/planner.js';
@@ -209,8 +210,13 @@ async function main(): Promise<void> {
   // document or an empty map fails fast and free. A resumed run restores the
   // map from the checkpoint instead of rebuilding it (no Haiku call).
   let requirements: RequirementsMap | undefined;
+  // What the map cost this run: the build cost, 0 when reused from the cache
+  // or when there is no SRS, and on a resume the checkpoint's recorded value
+  // (undefined on an older checkpoint: the report then leaves the key off).
+  let requirementsUsd: number | undefined = 0;
   if (resumeCp?.requirementsMap) {
     requirements = resumeCp.requirementsMap;
+    requirementsUsd = resumeCp.spentUsd.requirements;
     console.log(`  SRS: requirements map restored from the checkpoint (${requirements.features.length} feature(s))`);
   }
   if (args.srs) {
@@ -223,6 +229,7 @@ async function main(): Promise<void> {
     // the same bytes always plan from the same map (invariant 26).
     const built = await requirementsMapForSrs({ srsPath: args.srs, outputRoot: base, slug: projectSlug(url), rebuild: args.rebuildSrsMap, apiKey });
     requirements = built.map;
+    requirementsUsd = built.costUsd;
     console.log(`  ${built.line}`);
     if (requirements.features.length === 0) {
       console.error(`✗ The SRS at ${args.srs} yielded no features. Nothing to plan from — check the document.`);
@@ -247,6 +254,7 @@ async function main(): Promise<void> {
     ...buildExploreOptions(args, {
       url, outDir,
       ...(requirements ? { requirements } : {}),
+      ...(requirementsUsd !== undefined ? { requirementsUsd } : {}),
       ...(resumeCp ? { resume: resumeCp } : {}),
       ...(fromPlan ? { fromPlan } : {}),
     }),
@@ -350,7 +358,7 @@ async function main(): Promise<void> {
   // placeholder framework — that's how we ended up writing "0 scenarios, 11
   // files" to disk on a bad URL. Bail with a clear message.
   if (!result.scenarios || result.scenarios.length === 0) {
-    const totalUsd = result.cost.usd + (result.cost.plannerUsd ?? 0) + (result.cost.criticUsd ?? 0);
+    const totalUsd = totalCost(result);
     console.error('');
     console.error('✗ No framework was written — 0 scenarios survived the pipeline.');
     // Cause-specific diagnosis: the report knows exactly where the funnel
@@ -471,12 +479,8 @@ async function main(): Promise<void> {
     writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
     finalizeRunDir(outDir);
   }
-  const totalUsd = result.cost.usd + (result.cost.plannerUsd ?? 0) + (result.cost.criticUsd ?? 0);
-  console.log(`Cost: $${totalUsd.toFixed(4)} total ` +
-    `(planner $${(result.cost.plannerUsd ?? 0).toFixed(4)}, ` +
-    `explorer $${result.cost.usd.toFixed(4)}, ` +
-    `critic $${(result.cost.criticUsd ?? 0).toFixed(4)}) · ` +
-    `cache_read=${result.cost.cacheReadTokens}`);
+  // The one cost total (invariant 50): costLine names every term it sums.
+  console.log(`${costLine(result)} · cache_read=${result.cost.cacheReadTokens}`);
   console.log(`Cascade: ${JSON.stringify(result.cascadeStats)}`);
   if (result.review?.summary) {
     console.log(`\nCritic: ${result.review.summary}`);

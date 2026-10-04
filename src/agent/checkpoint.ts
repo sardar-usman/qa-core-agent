@@ -51,6 +51,14 @@ export interface CheckpointSpend {
   explorer: number;
   critic: number;
   repair: number;
+  /**
+   * What the requirements map cost the original run (built, or 0 when
+   * reused), carried so the resumed report records it as
+   * cost.requirementsUsd. Absent on a checkpoint written before the field
+   * existed; the resumed report then leaves the key off. Not part of
+   * priorSpend: the Explorer's ceiling accounting never counted the map.
+   */
+  requirements?: number;
 }
 
 export interface Checkpoint {
@@ -165,6 +173,7 @@ export function loadCheckpoint(file: string): Checkpoint {
       explorer: Number(spend.explorer) || 0,
       critic: Number(spend.critic) || 0,
       repair: Number(spend.repair) || 0,
+      ...(typeof spend.requirements === 'number' && Number.isFinite(spend.requirements) ? { requirements: spend.requirements } : {}),
     },
     phase: (cp.phase as CheckpointPhase) ?? 'exploring',
     nextScenarioIndex: typeof cp.nextScenarioIndex === 'number' ? cp.nextScenarioIndex : cp.completedScenarios.length,

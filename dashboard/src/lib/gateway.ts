@@ -68,10 +68,16 @@ function emit(patch: Partial<GatewayState>): void {
   for (const l of listeners) l(state);
 }
 
-function reportCost(report: Record<string, unknown> | undefined): number {
-  const c = (report?.cost ?? {}) as Record<string, number | undefined>;
-  const stab = (report?.stability ?? {}) as Record<string, number | undefined>;
-  return (c.usd ?? 0) + (c.plannerUsd ?? 0) + (c.criticUsd ?? 0) + (stab.stabilizerCostUsd ?? 0);
+/**
+ * The run's cost total as the gateway summed it (run_report.cost_total, from
+ * src/agent/cost-total.ts, the one place the total is summed). The dashboard
+ * never adds cost terms of its own; a message without the field adds
+ * nothing to the session chip and says so in the console.
+ */
+function reportCost(data: Record<string, unknown>): number {
+  if (typeof data.cost_total === 'number' && Number.isFinite(data.cost_total)) return data.cost_total;
+  console.warn('run_report carried no cost_total; the session chip leaves this run out');
+  return 0;
 }
 
 function patchLive(patch: Partial<LiveRun>): void {
@@ -154,7 +160,7 @@ function handleMessage(data: Record<string, unknown>): void {
         });
         return;
       }
-      emit({ sessionSpend: state.sessionSpend + reportCost(data.report as Record<string, unknown>), runsChanged: state.runsChanged + 1 });
+      emit({ sessionSpend: state.sessionSpend + reportCost(data), runsChanged: state.runsChanged + 1 });
       if (forLive()) patchLive({ status: 'finished', report: (data.report as Record<string, unknown>) ?? null, outcome: (data.outcome as Record<string, unknown>) ?? null });
       return;
     }

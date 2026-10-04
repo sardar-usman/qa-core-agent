@@ -373,6 +373,9 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
   const parts: Array<{ key: string; usd: number; opacity: string }> = [
     { key: 'planner', usd: cs.planner, opacity: 'opacity-100' }, { key: 'explorer', usd: cs.explorer, opacity: 'opacity-80' },
     { key: 'critic', usd: cs.critic, opacity: 'opacity-60' }, { key: 'repair', usd: cs.repair, opacity: 'opacity-45' }, { key: 'stabilizer', usd: cs.stabilizer, opacity: 'opacity-30' },
+    // The requirements map cost, read off the report; a report written before
+    // the field existed carries null and shows no map line.
+    ...(cs.requirements === null || cs.requirements === undefined ? [] : [{ key: 'map', usd: cs.requirements, opacity: 'opacity-20' }]),
   ];
   return (
     <>

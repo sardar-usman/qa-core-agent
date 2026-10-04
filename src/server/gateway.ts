@@ -13,6 +13,7 @@ import { parseFeatures } from '../agent/parse-features.js';
 import { readRunSettings, type ExploreRequest } from '../agent/explore-request.js';
 import { parseGatewayCommand } from './commands.js';
 import { listRunsFromDisk, loadReportForUi, reportForUi } from './runs.js';
+import { totalCost as runTotalCost } from '../agent/cost-total.js';
 import { runExploreRequest, runTranscribeRequest, type SrsUpload } from './run-explore.js';
 import { eventForUi, readRunEvents } from './events.js';
 import { listRunDirs } from '../agent/output-layout.js';
@@ -342,6 +343,9 @@ async function handleExplore(request: ExploreRequest, model: string | undefined,
     sendToRun(ws, runId, {
       type: 'run_report',
       report: reportForUi(outcome.report),
+      // The run's cost total, summed once (cost-total.ts): the dashboard's
+      // session chip reads this number instead of adding terms of its own.
+      cost_total: runTotalCost(outcome.report),
       outcome: {
         kind: outcome.kind,
         reportPath: outcome.reportPath,
@@ -378,7 +382,7 @@ function handleTranscribe(reportPath: string, outDir: string | undefined, ws: We
   const outcome = runTranscribeRequest({ reportPath, ...(outDir ? { outDir } : {}) }, ROOT, 'dashboard');
   for (const n of outcome.notes) send(ws, { text: n });
   // The regenerate result the run page confirms with: the dashboard downloads the zip from /api/runs/:id/artifacts.
-  send(ws, { type: 'run_report', report: reportForUi(outcome.report), outcome: { kind: 'framework', reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true, at: new Date().toISOString(), zip: { filename: outcome.zip.filename, fileCount: outcome.zip.fileCount, sizeBytes: outcome.zip.sizeBytes, scenarios: outcome.zip.scenarios } } });
+  send(ws, { type: 'run_report', report: reportForUi(outcome.report), cost_total: runTotalCost(outcome.report), outcome: { kind: 'framework', reportPath, checkpointPath: null, resumeHint: null, summary: [], diagnosis: null, regenerated: true, at: new Date().toISOString(), zip: { filename: outcome.zip.filename, fileCount: outcome.zip.fileCount, sizeBytes: outcome.zip.sizeBytes, scenarios: outcome.zip.scenarios } } });
 }
 
 /* ─────────────────── /generate ─────────────────── */
@@ -514,7 +518,7 @@ async function handleEval(ws: WebSocket, usePom: boolean): Promise<void> {
       }
 
       const pw = runPlaywrightInline(specPath, target.url);
-      const totalCost = result.cost.usd + (result.cost.plannerUsd ?? 0) + (result.cost.criticUsd ?? 0);
+      const totalUsd = runTotalCost(result);
       const durationSec = Math.round((Date.now() - startedAt) / 1000);
       const passRate = pw.total > 0 ? Math.round((pw.passed / pw.total) * 100) : null;
 
@@ -522,14 +526,14 @@ async function handleEval(ws: WebSocket, usePom: boolean): Promise<void> {
         site: target.name, url: target.url,
         scenarios: result.scenarios.length,
         tests: pw.total, passed: pw.passed, failed: pw.failed, flaky: pw.flaky,
-        passRate, costUsd: totalCost, durationSec, ok: true,
+        passRate, costUsd: totalUsd, durationSec, ok: true,
       };
       results.push(row);
 
       send(ws, {
         text:
           `  ${pw.passed}/${pw.total} passed (${passRate ?? 0}%) · ` +
-          `$${totalCost.toFixed(4)} · ${durationSec}s`,
+          `$${totalUsd.toFixed(4)} · ${durationSec}s`,
       });
     } catch (err) {
       const msg = (err as Error).message;

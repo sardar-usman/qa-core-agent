@@ -119,7 +119,7 @@ export function liveStagesFrom(run: LiveRun): RunDetailStages {
     stat: done ? `${Number(done.scenarios ?? 0)} shipped, writing the framework` : 'pending',
     shipped: Number(done?.scenarios ?? recorded), total_usd: total, findings_count: 0, uncovered_count: 0, attention: 0,
     funnel: null,
-    cost_split: { planner: plan.planner_usd, explorer: usage, critic: criticUsd, repair: 0, stabilizer: verify.stability?.stabilizer_cost_usd ?? 0, total },
+    cost_split: { planner: plan.planner_usd, explorer: usage, critic: criticUsd, repair: 0, stabilizer: verify.stability?.stabilizer_cost_usd ?? 0, requirements: null, total },
     rule_coverage: null, zip: null, stopped: null,
   };
 

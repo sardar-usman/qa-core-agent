@@ -12,6 +12,7 @@ import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
+import { totalCost } from './cost-total.js';
 import { discoverPages, writeDiscoveryJson } from './discovery.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
 import { featureTokenMap } from './requirements.js';
@@ -195,6 +196,15 @@ export interface ExploreOptions {
    * (report.ruleCoverage + rule-coverage.json in the output directory).
    */
   requirements?: RequirementsMap;
+  /**
+   * What the requirements map cost this run: the Haiku build cost when the
+   * surface built it, 0 when it was reused from the cache. Recorded as
+   * cost.requirementsUsd so every total includes it (invariant 50). Absent
+   * with a map present means the cost is unknown (a checkpoint written
+   * before the field existed) and the key is left off the report; absent
+   * with no map means 0.
+   */
+  requirementsUsd?: number;
   /**
    * Multi-page discovery (--discover). Discovery activates when this is set,
    * OR when `urls` is non-empty, OR when `requirements` is present. Without
@@ -484,6 +494,11 @@ async function repairPass(args: {
     for (const b of ctx.brokenByGate) { notes.push(`"${b.scenario}" rejected by the gate during repair: ${b.reason}.`); reasons[b.scenario] ??= `rejected by the gate: ${b.reason}`; }
     for (const s of ctx.skipped) { notes.push(`"${s.scenario}" skipped during repair: ${s.reason}.`); reasons[s.scenario] ??= `skipped: ${s.reason}`; }
     if (loop.endedReason === 'cost_ceiling') for (const p of plan) reasons[p.name] ??= 'never re-explored: the repair budget ran out first';
+    // A rework the loop ended without re-recording and without any recorded
+    // cause (the model finished early) still gets a reason, so its history
+    // entry never reads as "reason not recorded".
+    const reRecorded = new Set(ctx.scenarios.map((s) => scenarioNameKey(s.name)));
+    for (const p of plan) if (!reRecorded.has(scenarioNameKey(p.name))) reasons[p.name] ??= 'no trace came back from the repair pass';
     return { scenarios: ctx.scenarios, cost: loop.cost, steps: ctx.steps, heals: ctx.heals, notes, reasons };
   } finally {
     await context?.close();
@@ -676,6 +691,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       ? { ...opts.resume.spentUsd }
       : { planner: 0, explorer: 0, critic: 0, repair: 0 },
   };
+  // The map cost the surface reports (built this run, or 0 when reused). On
+  // a resume the surface reads it back from the checkpoint, so the resumed
+  // report carries what the original run paid.
+  const requirementsUsd: number | undefined = opts.requirementsUsd ?? (opts.requirements ? undefined : 0);
+  if (requirementsUsd !== undefined) cpState.spend.requirements = requirementsUsd;
   const runStartedAt = opts.resume?.startedAt ?? startedAt;
   const saveCheckpoint = (): string => writeCheckpoint(opts.outDir, {
     version: CHECKPOINT_VERSION,
@@ -1070,6 +1090,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   let cost: RunReport['cost'] = {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
     usd: 0, plannerUsd: planResult.usd,
+    ...(requirementsUsd !== undefined ? { requirementsUsd } : {}),
   };
   let brokenByGate: Array<{ scenario: string; reason: string; attempts: number }> = [];
   let gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }> = [];
@@ -1239,7 +1260,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     cascadeStats = ctx.cascadeStats;
     testIdAttribute = dominantTestIdAttribute(ctx);
     steps = ctx.steps;
-    cost = { ...explorerCost, plannerUsd: planResult.usd };
+    cost = { ...explorerCost, plannerUsd: planResult.usd, ...(requirementsUsd !== undefined ? { requirementsUsd } : {}) };
     if (opts.resume) {
       // Spend carries over: prior explorer + repair fold into the explorer
       // bucket; prior critic seeds criticUsd (the critic block accumulates).
@@ -1390,6 +1411,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
       let repairedScenarios: Scenario[] = [];
       let repairUsd = 0;
+      // Why a funded rework was not re-recorded, by name: the repair pass's
+      // own reasons, carried onto the history entry so the funnel drops the
+      // scenario at the repair stage with that reason (D4, run 44cb3d).
+      let repairReasons: Record<string, string> = {};
       if (decision.run) {
         opts.onEvent?.({ type: 'repair_started', count: decision.rework.length, budgetUsd: decision.budgetUsd });
         try {
@@ -1421,6 +1446,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           // would double-count the funnel. They surface as messages instead.
           heals.push(...repair.heals);
           repairUsd = repair.cost.usd;
+          repairReasons = repair.reasons;
           for (const note of repair.notes) {
             opts.onEvent?.({ type: 'message', text: `repair: ${note}` });
           }
@@ -1455,6 +1481,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             text: `Repair pass failed (${(err as Error).message}); rework scenario(s) dropped.`,
           });
           secondVerdicts = null;
+          repairReasons = Object.fromEntries(decision.rework.map((s) => [s.name, `repair pass failed: ${(err as Error).message}`]));
         }
       }
       // What goes on to replay is decided by the MERGED verdicts (the repair
@@ -1463,6 +1490,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       const merged = repairOutcome({
         first: review.verdicts, repaired: repairedScenarios, second: secondVerdicts,
         ...(decision.unfunded.length > 0 ? { unfunded: { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } } : {}),
+        reasons: repairReasons,
       });
       review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
       kept = [...kept, ...merged.replay];
@@ -1701,7 +1729,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     replay: replayInfo,
     stability: stabilityInfo,
     incomplete: incomplete.length > 0 ? incomplete : undefined,
-    findings: findings.length > 0 ? findings : undefined,
+    // Always written, [] when empty: a reader can tell "no findings" from a
+    // key that was never recorded (D6, run 44cb3d had no key at all).
+    findings,
     heals: heals.length > 0 ? heals : undefined,
     skipped: skipped.length > 0 ? skipped : undefined,
   };
@@ -1766,7 +1796,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   const summary: RunSummary = {
     url: opts.url,
     scenarios: scenarios.length,
-    cost: (cost.usd ?? 0) + (cost.plannerUsd ?? 0) + (cost.criticUsd ?? 0),
+    cost: totalCost({ cost, stability: stabilityInfo }),
     model,
     durationSec: Math.round((Date.now() - startMs) / 1000),
     cascadeStats,
