@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-02. Update this file at the end of every working day.
+Updated: 2026-10-04. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -179,8 +179,8 @@ using the qa-core-heal evaluation report as the template.
 
 - Oct 1 or 2: run 6 (up to $6), then the saucedemo proof run (about $0.50),
   then the run 6 diagnosis and this table via one $0 PR.
-- Oct 3: report writing starts, whatever run 6 says. No run 7 before the
-  report. A missed bar is reported as missed.
+- Oct 4: report drafting started (one day late); D8 moved to after the
+  report.
 - Oct 6: report drafted. Oct 8: reviewed and merged.
 - Report sections: scope and method (one site, one SRS, one ceiling, every
   number from a run-report); the runs table and trajectory; engine defects
@@ -226,6 +226,11 @@ using the qa-core-heal evaluation report as the template.
   account under a name that claims a wrong password for a known one, and
   Toolshop R11 (duplicate email) cannot be automated; belongs to the
   own-account design. docs/audit/run-44cb3d-diagnosis.md.
+- D8 (run 6): console contradictions (two rule-coverage totals, a stale
+  first-pass Critic paragraph, the repair budget printed as a ceiling stop,
+  a wrong no-discovered-page warning, the repair decision line cut by the
+  240-character cap); documented, not yet fixed, after the report.
+  docs/audit/run-44cb3d-diagnosis.md section 3, D8.
 - Own account (run 5 finding 8): the happy registration scenario's generated
   account becomes the run's login and the duplicate-email seed, so no run
   depends on the shared demo account. Run 5's happy login failed with no
