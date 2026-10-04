@@ -3,29 +3,31 @@ import animate from 'tailwindcss-animate';
 
 // Design tokens (PR F, part 1). Values live as CSS variables in
 // src/index.css so both themes share the same class names. Fonts come from
-// the bundled @fontsource packages (imported in src/main.tsx), never a CDN.
+// the bundled @fontsource-variable packages (imported in src/main.tsx), never
+// a CDN: Geist Sans for all UI text and all numbers (tabular figures on),
+// Geist Mono only for run ids, commands and code.
 //
-// Type scale: xs 11 (tiny labels), s 12.5 (labels), m 14 (body), section 15
-// (section titles), title 20 (page title), l 28 (headline metrics), xl 32.
-// The s / m / l names predate this pass and every page uses them, so the
-// other pages inherit the new sizes without a layout change.
+// Type scale: xs 11, s 12 (labels), m 13 (body and tables), section 15
+// semibold, title 22 semibold (page titles), l 24 semibold (key metrics),
+// xl 28. The s / m / l names predate this pass and every page uses them, so
+// the other pages inherit the scale without a layout change.
 export default {
   darkMode: ['class'],
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        sans: ['Geist Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
+        mono: ['Geist Mono Variable', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       fontSize: {
-        xs: ['11px', '1.4'],
-        s: ['12.5px', '1.45'],
-        m: ['14px', '1.55'],
-        section: ['15px', '1.4'],
-        title: ['20px', '1.25'],
-        l: ['28px', '1.1'],
-        xl: ['32px', '1.05'],
+        xs: ['11px', '1.35'],
+        s: ['12px', '1.4'],
+        m: ['13px', '1.45'],
+        section: ['15px', '1.3'],
+        title: ['22px', '1.2'],
+        l: ['24px', '1.1'],
+        xl: ['28px', '1.05'],
       },
       colors: {
         bg: { 0: 'hsl(var(--bg-0))', 1: 'hsl(var(--bg-1))', 2: 'hsl(var(--bg-2))', 3: 'hsl(var(--bg-3))' },

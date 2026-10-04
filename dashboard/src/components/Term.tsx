@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Info } from 'lucide-react';
 import { GLOSSARY, type GlossaryKey } from '@/lib/glossary';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,21 @@ export function Term({ term, children, className }: { term: GlossaryKey; childre
   );
 }
 
+/** A small info icon that opens a glossary entry (for a form label). */
+export function InfoTerm({ term, className }: { term: GlossaryKey; className?: string }) {
+  const g = GLOSSARY[term];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" data-glossary={term} aria-label={`About ${g.term}`} className={cn('inline-flex h-4 w-4 items-center justify-center rounded-full text-fg-3 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', className)}>
+          <Info className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent><TermBody term={term} /></TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** Wraps an existing element (a button, a badge) with a glossary tooltip; the child must be focusable. */
 export function TermTip({ term, children }: { term: GlossaryKey; children: ReactNode }) {
   return (
@@ -33,14 +49,22 @@ export function TermTip({ term, children }: { term: GlossaryKey; children: React
   );
 }
 
-/** A value tooltip (the exact figure behind a rounded one, a full timestamp). */
-export function Tip({ text, children, className }: { text: string; children: ReactNode; className?: string }) {
+/**
+ * A value tooltip (the exact figure behind a rounded one, a full timestamp,
+ * a full URL). With `asChild` the child itself is the trigger (a link, a
+ * button); otherwise a focusable span wraps the children.
+ */
+export function Tip({ text, children, className, asChild = false, mono = false }: { text: string; children: ReactNode; className?: string; asChild?: boolean; mono?: boolean }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <span tabIndex={0} data-tip={text} className={cn('cursor-help rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', className)}>{children}</span>
-      </TooltipTrigger>
-      <TooltipContent className="mono">{text}</TooltipContent>
+      {asChild ? (
+        <TooltipTrigger asChild data-tip={text}>{children}</TooltipTrigger>
+      ) : (
+        <TooltipTrigger asChild>
+          <span tabIndex={0} data-tip={text} className={cn('cursor-help rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', className)}>{children}</span>
+        </TooltipTrigger>
+      )}
+      <TooltipContent className={cn('break-words', mono && 'mono')}>{text}</TooltipContent>
     </Tooltip>
   );
 }

@@ -82,11 +82,54 @@ export const GLOSSARY = {
   // Source: src/server/api.ts projectCard (last_run: ORDER BY started_at DESC LIMIT 1).
   lastRun: { term: 'Last run', text: 'The project\'s most recent run by start time, with its status and when it started.' },
 
-  // Source: src/server/api.ts projectCard (shipped and unresolved_findings are null when reported_runs is 0); the design skill\'s invariant that a legacy-only project shows n/a, never 0.
-  notAvailable: { term: 'n/a', text: 'Not known, never 0. This project has no run with a report: only pre-v2 records, which never recorded a shipped count or findings, or no runs yet.' },
-
   // Source: dashboard/src/pages/Projects.tsx splitProjects (the grouping rule) over src/server/api.ts projectCard (reported_runs, legacy_runs, runs).
-  earlierExperiments: { term: 'Earlier experiments (pre-v2)', text: 'Projects whose runs are all pre-v2 records, projects with no runs yet, and the Unassigned record. Nothing is deleted; they sit here with their count.' },
+  earlierExperiments: { term: 'Earlier experiments (pre-v2)', text: 'Projects whose runs are all pre-v2 summaries, projects with no runs yet, and the Unassigned record. They have no shipped count to show, so they are listed in a table instead of cards; nothing is deleted.' },
+
+  // Source: src/server/api.ts projectCard (reported_runs: runs WHERE report_path IS NOT NULL); CLAUDE.md invariant 50 (a legacy row has report_path null).
+  reportedRuns: { term: 'With a report', text: 'Runs whose run-report.json is on disk. Pre-v2 summaries have no report, so they are counted in runs but not here.' },
+
+  /* ─── new project dialog ─── */
+
+  // Source: CLAUDE.md invariant 50 (the project id is the host slug, base_url is identity and read-only, a second project for the same host is a 409 naming the existing one); src/server/api.ts createProject and patchProject.
+  projectBaseUrl: { term: 'Base URL', text: 'The site\'s address. Its host becomes the project\'s identity: a later run against that host lands here, it cannot be changed afterwards, and a second project for the same host is refused with the existing one named.' },
+
+  // Source: src/server/api.ts createProject (name || brandSlug(baseUrl)); src/agent/scaffold.ts brandSlug (www and the TLD dropped).
+  projectName: { term: 'Name', text: 'What the project is called on the cards. Left empty, it defaults to the host name without www and the ending, so shop.example becomes shop.' },
+
+  // Source: CLAUDE.md invariant 50 (environment is NULL until a person sets it, never a default label); src/server/api.ts environmentFrom and PROJECT_ENVIRONMENTS.
+  projectEnvironment: { term: 'Environment', text: 'An optional label: staging, production or other. Nothing is assumed when it is left unset, and the badge only appears once a person sets it.' },
+
+  // Source: src/server/api.ts createProject (POST /api/projects: 201 with the project, 400 for a bad URL or environment, 409 when the host already has a project); CLAUDE.md invariant 50.
+  createProject: { term: 'Create', text: 'Saves the project in the index. The API checks the URL and the environment, and refuses a host that already has a project by naming it.' },
+
+  /* ─── findings table ─── */
+
+  // Source: src/server/db/indexer.ts indexRunDir (findings rows copy f.expected from the run report); CLAUDE.md invariant 13 (a finding records what the scenario expected and the real page state).
+  findingExpected: { term: 'Expected', text: 'What the scenario expected to see, as the run report recorded it. The finding exists because the page showed something else.' },
+
+  // Source: src/server/db/indexer.ts indexRunDir (page_url = f.url, the URL at the time); CLAUDE.md invariant 13 (captureActualState reads the real URL).
+  findingPage: { term: 'Page', text: 'Where the page was when the finding was recorded, shown as the path because the host is the project\'s. The full address is in the tooltip.' },
+
+  // Source: src/server/api.ts listFindings (times_seen = the finding_runs rows; first and last seen from the runs' start times); src/server/db/schema.sql finding_runs.
+  findingSeen: { term: 'Seen', text: 'How many runs recorded this same finding, with the date of the latest one. The first and last dates are in the tooltip.' },
+
+  // Source: src/server/api.ts patchFinding and FINDING_STATUSES (open, triaged, fixed, wont-fix); CLAUDE.md invariant 50 (set only by a person, kept across every re-index).
+  findingStatus: { term: 'Status', text: 'Your triage state for the finding: open, triaged, fixed or wont-fix. Only a person changes it, and it survives every rebuild of the index.' },
+
+  // Source: src/server/db/indexer.ts indexRunDir (a new finding is inserted with status open); src/server/api.ts projectCard (open counts as unresolved).
+  findingStatusOpen: { term: 'Open', text: 'Nobody has looked at it yet; this is the state a new finding gets when it is indexed. It counts as unresolved.' },
+
+  // Source: src/server/api.ts projectCard (status IN open, triaged counts as unresolved); CLAUDE.md invariant 50.
+  findingStatusTriaged: { term: 'Triaged', text: 'Someone has looked at it and it is still being dealt with. It still counts as unresolved.' },
+
+  // Source: src/server/api.ts projectCard (fixed is excluded from unresolved); CLAUDE.md invariant 50.
+  findingStatusFixed: { term: 'Fixed', text: 'The product behaviour was fixed. The finding stays on record but no longer counts as unresolved.' },
+
+  // Source: src/server/api.ts projectCard (wont-fix is excluded from unresolved); CLAUDE.md invariant 50.
+  findingStatusWontFix: { term: 'Wont-fix', text: 'A decision not to change the product. The finding stays on record but no longer counts as unresolved.' },
+
+  // Source: src/server/api.ts patchFinding (notes: a string up to 4000 characters or null, saved on PATCH); CLAUDE.md invariant 50 (kept across re-indexes).
+  findingNotes: { term: 'Notes', text: 'Free text for your own record, up to 4000 characters, saved when you leave the field. It survives every rebuild of the index.' },
 
   /* ─── run status values ─── */
 

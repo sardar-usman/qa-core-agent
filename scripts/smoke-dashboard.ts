@@ -39,7 +39,7 @@ window.__contrast = function (selectors) {
   selectors.forEach(function (s) { var el = document.querySelector(s); if (!el) { out[s] = -1; return; } var a = lum(getComputedStyle(el).color), bb = lum(bgOf(el)); out[s] = Math.round(((Math.max(a, bb) + 0.05) / (Math.min(a, bb) + 0.05)) * 10) / 10; });
   return out;
 };`;
-const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-glossary="testsShipped"]', '[data-glossary="latestShipped"]', '[data-testid="shipped-sub"]', '[data-testid="runs-count"]', '[data-glossary="srsRuns"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-status="legacy"]'];
+const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-glossary="testsShipped"]', '[data-glossary="latestShipped"]', '[data-testid="card-url"]', '[data-testid="runs-count"]', '[data-glossary="srsRuns"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-testid="earlier-note"]', '[data-testid="new-project-open"]', '[data-testid="earlier-row"] [data-glossary="legacy"]', '[data-testid="earlier-host"]'];
 const RUNS_CONTRAST = ['[data-testid="cost"]', '[data-testid="flake-rate"]', '[data-testid="duration"]', '[data-testid="run-source"]', '[data-testid="shipped-planned"]', '[data-status="completed"]', '[data-status="stopped"]', '[data-status="empty"]', '[data-status="legacy"]', '[data-testid="toggle-legacy"]', '[data-testid="runs-count"]', 'th [data-glossary="cost"]'];
 
 let pass = 0;
@@ -150,23 +150,28 @@ for (const theme of ['dark', 'light'] as const) {
     status: el.querySelector('[data-status]')?.getAttribute('data-status'),
     text: el.textContent ?? '',
   })));
-  check(`${theme}: one card per project (${projects.length})`, cards.length === projects.length, JSON.stringify(cards.map((c) => c.id)));
-  for (const p of projects) {
+  // Cards: only projects with at least one run that has a report (PR F part 1 refinement). A legacy-only project is never a card.
+  const reported = projects.filter((p) => p.id !== 'unassigned' && Number(p.reported_runs) > 0);
+  check(`${theme}: one card per project with a reported run (${reported.length}); a legacy-only project renders no card`, cards.length === reported.length && reported.every((p) => cards.some((c) => c.id === p.id)) && !cards.some((c) => c.id === 'demoqa-com'), JSON.stringify(cards.map((c) => c.id)));
+  for (const p of reported) {
     const c = cards.find((x) => x.id === p.id);
-    const show = (v: unknown) => (v === null ? 'n/a' : String(v));
     const last = p.last_run as Record<string, unknown> | null;
     // Money on a card is 2 decimals; the exact stored value travels in the tooltip (PR F part 1).
-    const ok = !!c && c.shipped === show(p.shipped) && c.findings === show(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === last?.status;
+    const ok = !!c && c.shipped === String(p.shipped) && c.findings === String(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === last?.status;
     check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (2 decimals, exact value in the tooltip), last run status`, ok, JSON.stringify({ c, p: { shipped: p.shipped, f: p.unresolved_findings, s: p.spend_month, st: last?.status } }));
-    // The headline is the latest run's shipped count, straight from last_run.shipped (no arithmetic); null reads n/a.
-    const expectLatest = last && last.shipped !== null && last.shipped !== undefined ? String(last.shipped) : 'n/a';
+    // The headline is the latest run's shipped count, straight from last_run.shipped (no arithmetic).
+    const expectLatest = last && last.shipped !== null && last.shipped !== undefined ? String(last.shipped) : null;
     check(`${theme}: card ${p.id} headlines "tests in the latest run" with last_run.shipped (${expectLatest})`, c?.latest === expectLatest, JSON.stringify({ latest: c?.latest, last }));
   }
-  const earlierBefore = await page.evaluate(() => { const d = document.querySelector('[data-testid="earlier-experiments"]') as HTMLDetailsElement | null; return d ? { open: d.open, count: d.querySelector('[data-testid="earlier-count"]')?.textContent, ids: Array.from(d.querySelectorAll('[data-testid="project-card"]')).map((e) => (e as HTMLElement).dataset.projectId), active: Array.from(document.querySelectorAll('[data-testid="project-grid"] [data-testid="project-card"]')).map((e) => (e as HTMLElement).dataset.projectId) } : null; });
-  check(`${theme}: projects with no v2 run sit in a closed "Earlier experiments (pre-v2)" section with its count; projects with a reported run come first`, !!earlierBefore && earlierBefore.open === false && earlierBefore.count === String(earlierBefore.ids.length) && JSON.stringify(earlierBefore.ids) === JSON.stringify(['demoqa-com']) && earlierBefore.active.includes('saucedemo-com') && !earlierBefore.active.includes('demoqa-com'), JSON.stringify(earlierBefore));
-  await page.click('[data-testid="earlier-experiments"] > summary');
-  await page.waitForFunction(() => (document.querySelector('[data-testid="earlier-experiments"]') as HTMLDetailsElement).open);
-  check(`${theme}: clicking the section opens it and the pre-v2 cards become visible`, await page.isVisible('[data-testid="project-card"][data-project-id="demoqa-com"]'));
+  // The text "n/a" appears nowhere: a value the index does not have is not rendered as a metric.
+  check(`${theme}: the Projects page renders no "n/a" text`, (await page.evaluate(() => (document.body.innerText.match(/\bn\/a\b/g) || []).length)) === 0);
+  // Earlier experiments: a muted line with the count and a Show link; the table lists the legacy-only project with its explored count and "summary only".
+  const noteBefore = await page.evaluate(() => ({ note: document.querySelector('[data-testid="earlier-note"]')?.textContent ?? '', toggle: document.querySelector('[data-testid="earlier-toggle"]')?.textContent ?? '', table: !!document.querySelector('[data-testid="earlier-table"]') }));
+  check(`${theme}: under the grid one muted line says "1 earlier experiment (pre-v2 summary) is not shown." with a Show link and no table yet`, /^1 earlier experiment \(pre-v2 summary\) is not shown\./.test(noteBefore.note.trim()) && noteBefore.toggle === 'Show' && !noteBefore.table, JSON.stringify(noteBefore));
+  await page.click('[data-testid="earlier-toggle"]');
+  await page.waitForSelector('[data-testid="earlier-table"]');
+  const earlierRows = await page.$$eval('[data-testid="earlier-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.projectId, name: el.querySelector('[data-testid="earlier-name"]')?.textContent, host: el.querySelector('[data-testid="earlier-host"]')?.textContent, runs: el.querySelector('[data-testid="earlier-runs"]')?.textContent, explored: el.querySelector('[data-testid="earlier-explored"]')?.textContent, label: el.lastElementChild?.textContent })));
+  check(`${theme}: Show reveals the compact table: the demoqa record with 1 run, 1 scenario explored and the "summary only" label in words, never a shipped count`, earlierRows.length === 1 && earlierRows[0]?.id === 'demoqa-com' && earlierRows[0]?.host === 'demoqa.com' && earlierRows[0]?.runs === '1' && earlierRows[0]?.explored === '1' && earlierRows[0]?.label === 'summary only', JSON.stringify(earlierRows));
   // Tooltips render the glossary entry, word for word (hover, then read role=tooltip).
   await page.hover('[data-project-id="saucedemo-com"] [data-glossary="testsShipped"]');
   await page.waitForSelector('[role="tooltip"]', { timeout: 5000 });
@@ -183,6 +188,29 @@ for (const theme of ['dark', 'light'] as const) {
   await page.addScriptTag({ content: CONTRAST_SCRIPT });
   const pc = await page.evaluate((sel) => (window as unknown as { __contrast: (s: string[]) => Record<string, number> }).__contrast(sel), PROJECTS_CONTRAST) as Record<string, number>;
   check(`${theme}: every sampled Projects text keeps at least 4.5:1 contrast against its background`, Object.values(pc).every((v) => v >= 4.5), JSON.stringify(pc));
+  await page.click('[data-testid="earlier-toggle"]');
+  await page.waitForSelector('[data-testid="earlier-table"]', { state: 'detached' });
+  check(`${theme}: Hide removes the table again`, !(await page.$('[data-testid="earlier-table"]')));
+  // The New project dialog: Escape and focus return, a blocked empty submit, and the API's own 409 for a host that already has a project (nothing is created).
+  const projectsBefore = ((await authGet('/api/projects')).projects as unknown[]).length;
+  await page.click('[data-testid="new-project-open"]');
+  await page.waitForSelector('[data-testid="new-project-dialog"]');
+  check(`${theme}: the New project button opens a dialog and focus moves to the Base URL field`, (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'new-project-url');
+  await page.click('[data-testid="new-project-submit"]');
+  check(`${theme}: an empty submit is blocked with a message`, (await page.textContent('[data-testid="new-project-error"]')) === 'Base URL is required.');
+  await page.fill('[data-testid="new-project-url"]', 'not a url');
+  await page.click('[data-testid="new-project-submit"]');
+  check(`${theme}: a value that is not an http or https address is blocked client side`, /full http or https address/.test((await page.textContent('[data-testid="new-project-error"]')) ?? ''));
+  await page.fill('[data-testid="new-project-url"]', 'https://www.saucedemo.com/');
+  await page.click('[data-testid="new-project-submit"]');
+  await page.waitForFunction(() => /already exists/.test(document.querySelector('[data-testid="new-project-error"]')?.textContent ?? ''), null, { timeout: 10_000 });
+  const dialog409 = await page.evaluate(() => ({ error: document.querySelector('[data-testid="new-project-error"]')?.textContent ?? '', existing: document.querySelector('[data-testid="new-project-existing"]')?.getAttribute('href') ?? null }));
+  check(`${theme}: a host that already has a project shows the API's 409 message naming the existing project, with a link to it`, /a project for www\.saucedemo\.com already exists: saucedemo/.test(dialog409.error) && dialog409.existing === '/projects/saucedemo-com', JSON.stringify(dialog409));
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[data-testid="new-project-dialog"]', { state: 'detached' });
+  // Radix restores focus to the trigger as its focus scope unmounts, a beat after the content detaches.
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'new-project-open', null, { timeout: 3000 }).catch(() => null);
+  check(`${theme}: Escape closes the dialog, focus returns to the button, and no project was created`, (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'new-project-open' && ((await authGet('/api/projects')).projects as unknown[]).length === projectsBefore);
   const sauce = cards.find((c) => c.id === 'saucedemo-com')!;
   check(`${theme}: coverage sparkline shows the latest coverage percent for the SRS project`, /coverage/.test(sauce.text) && /100%/.test(sauce.text), sauce.text.slice(-80));
   check(`${theme}: a project without SRS runs says so`, /no SRS runs/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? ''));
@@ -218,9 +246,7 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
   const legacyRow = rows.find((r) => r.status === 'legacy')!;
   check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, "N explored" instead of shipped/planned, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1 explored' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
-  const demoqa = cards.find((c) => c.id === 'demoqa-com');
-  check(`${theme}: the legacy-only demoqa card shows n/a for tests shipped and unresolved findings (unknown, never 0) with the pre-v2 sub-line`, demoqa?.status === 'legacy' && demoqa?.shipped === 'n/a' && demoqa?.findings === 'n/a' && demoqa?.legacySub === '1 pre-v2 run, 1 scenario explored', JSON.stringify(demoqa));
-  check(`${theme}: cards with real runs carry no legacy line`, cards.filter((c) => c.id !== 'demoqa-com').every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
+  check(`${theme}: cards with real runs and no pre-v2 record carry no legacy line`, cards.every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
   check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
   check(`${theme}: a status badge carries its glossary entry (hover "stopped")`, await (async () => { await page.hover('[data-status="stopped"]'); await page.waitForFunction((t) => document.querySelector('[role="tooltip"]')?.textContent === t, tipText('statusStopped'), { timeout: 5000 }).catch(() => null); return (await page.textContent('[role="tooltip"]')) === tipText('statusStopped'); })(), (await page.textContent('[role="tooltip"]').catch(() => null)) ?? '');
   await page.mouse.move(0, 0);
@@ -251,7 +277,9 @@ for (const theme of ['dark', 'light'] as const) {
   await page.waitForSelector('[data-testid="run-detail"][data-legacy="false"]', { timeout: 10_000 }).catch(() => null);
   const detailText = (await page.textContent('main')) ?? '';
   check(`${theme}: a row links to /runs/:id (the run detail page shows the run)`, /Scenarios/.test(detailText) && /Product behavior to review/.test(detailText) && (await page.textContent('[data-testid="detail-run-id"]')) === s1, detailText.slice(0, 200));
-  check(`${theme}: zero console errors`, errors.length === 0, errors.join(' | '));
+  // The browser logs the expected 409 of the duplicate-host attempt above as a failed resource; it is the API's answer, not a page error.
+  const pageErrors = errors.filter((e) => !/status of 409/.test(e));
+  check(`${theme}: zero console errors (the 409 answer to the duplicate-host attempt is the only resource log)`, pageErrors.length === 0 && errors.every((e) => /status of 409/.test(e)), errors.join(' | '));
   await context.close();
 }
 await browser.close();

@@ -72,7 +72,7 @@ export function Header({ onReindexed }: { onReindexed?: () => void }) {
               {models.map((m) => (
                 <TermTip key={m.name} term={MODEL_TERM[m.name] ?? 'modelPlan'}>
                   <Badge tabIndex={0} variant="outline" data-testid="model-chip" data-from-env={m.fromEnv ? 'true' : 'false'}>
-                    <span className="font-normal text-fg-3">{MODEL_LABEL[m.name]}</span> <span className="mono font-medium">{m.value.replace(/^claude-/, '')}</span>
+                    <span className="font-normal text-fg-3">{MODEL_LABEL[m.name]}</span> <span className="font-medium">{m.value.replace(/^claude-/, '')}</span>
                   </Badge>
                 </TermTip>
               ))}

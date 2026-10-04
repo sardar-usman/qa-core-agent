@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/inter": "^5.3.0",
-    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.2.16",
     "class-variance-authority": "^0.7.0",

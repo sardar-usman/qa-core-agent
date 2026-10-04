@@ -67,9 +67,10 @@ for (const [k, e] of Object.entries(GLOSSARY)) {
 }
 check('C. every entry is one or two sentences with no em dash, en dash or double hyphen', badCopy.length === 0, badCopy.join('; '));
 
-/* ─── D. no dead entries ─── */
+/* ─── D. no dead entries, and no "n/a" entry: a value the index does not have is not rendered as a metric ─── */
 const dead = keys.filter((k) => !used.has(k));
 check('D. every glossary entry is referenced by at least one page', dead.length === 0, dead.join(', '));
+check('D2. no entry defines or mentions "n/a" (the pages render a missing value in words, never as n/a)', !Object.values(GLOSSARY).some((e) => /\bn\/a\b/.test(`${e.term} ${e.text}`)) && !keys.includes('notAvailable'));
 
 /* ─── E. token contrast in both themes ─── */
 const css = fs.readFileSync(path.join(srcDir, 'index.css'), 'utf8');

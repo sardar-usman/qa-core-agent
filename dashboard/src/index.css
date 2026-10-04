@@ -65,7 +65,9 @@
   /* Every number on the dashboard lines up: tabular figures everywhere, in both families. */
   html { font-variant-numeric: tabular-nums; }
   body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
-  .money, .mono { @apply font-mono; }
+  /* Numbers, money included, are Geist Sans with tabular figures; .mono is for run ids, commands and code only. */
+  .money { @apply font-sans tabular-nums; }
+  .mono { @apply font-mono; }
   /* A visible focus ring on anything focusable that does not draw its own. */
   :focus-visible { outline: 2px solid hsl(var(--accent)); outline-offset: 2px; }
 }
@@ -80,11 +82,14 @@
   .skeleton { animation: skeleton-pulse 1.4s ease-in-out infinite; background: hsl(var(--bg-3)); }
   /* Tooltip entrance. */
   .tip-enter { animation: tip-fade 120ms ease-out both; }
+  /* Dialog entrance: opacity only, so the centering transform is never overridden. */
+  .dialog-enter { animation: dialog-fade 150ms ease-out both; }
 }
 
 @keyframes page-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 @keyframes skeleton-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
 @keyframes tip-fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes dialog-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* Motion is functional only, and off entirely for people who asked for less of it. */
 @media (prefers-reduced-motion: reduce) {

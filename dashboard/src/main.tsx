@@ -1,12 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-// Fonts are bundled by Vite from the @fontsource packages (no CDN, works offline):
-// Inter for the UI, JetBrains Mono for numbers, URLs, commands and model names.
-import '@fontsource/inter/400.css';
-import '@fontsource/inter/500.css';
-import '@fontsource/inter/600.css';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/500.css';
+// Fonts are bundled by Vite from the @fontsource-variable packages (no CDN,
+// works offline): Geist Sans for all UI text and numbers, Geist Mono only
+// for run ids, commands and code.
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import App from './App';
 import './index.css';
 import { applyTheme, readTheme } from './lib/theme';
