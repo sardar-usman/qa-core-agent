@@ -203,9 +203,10 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: a value that is not an http or https address is blocked client side`, /full http or https address/.test((await page.textContent('[data-testid="new-project-error"]')) ?? ''));
   await page.fill('[data-testid="new-project-url"]', 'https://www.saucedemo.com/');
   await page.click('[data-testid="new-project-submit"]');
-  await page.waitForFunction(() => /already exists/.test(document.querySelector('[data-testid="new-project-error"]')?.textContent ?? ''), null, { timeout: 10_000 });
-  const dialog409 = await page.evaluate(() => ({ error: document.querySelector('[data-testid="new-project-error"]')?.textContent ?? '', existing: document.querySelector('[data-testid="new-project-existing"]')?.getAttribute('href') ?? null }));
-  check(`${theme}: a host that already has a project shows the API's 409 message naming the existing project, with a link to it`, /a project for www\.saucedemo\.com already exists: saucedemo/.test(dialog409.error) && dialog409.existing === '/projects/saucedemo-com', JSON.stringify(dialog409));
+  await page.waitForSelector('[data-testid="new-project-conflict"]', { timeout: 10_000 });
+  // The 409 renders a neutral box built from the API body's `existing` (id and name), never from the message text, with an Open project link; no reject box.
+  const dialog409 = await page.evaluate(() => ({ conflict: document.querySelector('[data-testid="new-project-conflict"]')?.textContent ?? '', existing: document.querySelector('[data-testid="new-project-existing"]')?.getAttribute('href') ?? null, linkText: document.querySelector('[data-testid="new-project-existing"]')?.textContent ?? null, errorBox: !!document.querySelector('[data-testid="new-project-error"]'), nested: document.querySelectorAll('button button').length }));
+  check(`${theme}: a host that already has a project shows "This site already has a project: saucedemo." with an Open project link, in a neutral box, and no button nests inside a button`, dialog409.conflict.trim() === 'This site already has a project: saucedemo. Open project' && dialog409.existing === '/projects/saucedemo-com' && dialog409.linkText === 'Open project' && !dialog409.errorBox && dialog409.nested === 0, JSON.stringify(dialog409));
   await page.keyboard.press('Escape');
   await page.waitForSelector('[data-testid="new-project-dialog"]', { state: 'detached' });
   // Radix restores focus to the trigger as its focus scope unmounts, a beat after the content detaches.
@@ -236,12 +237,13 @@ for (const theme of ['dark', 'light'] as const) {
   await page.click('[data-testid="toggle-legacy"]');
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid="run-row"]').length === n, apiRuns.length);
   check(`${theme}: the toggle shows the pre-v2 rows and reads on`, (await page.getAttribute('[data-testid="toggle-legacy"]', 'aria-checked')) === 'true');
-  const rows = await page.$$eval('[data-testid="run-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.runId, sp: el.querySelector('[data-testid="shipped-planned"]')?.textContent, cost: el.querySelector('[data-testid="cost"]')?.textContent, status: el.querySelector('[data-status]')?.getAttribute('data-status'), text: el.textContent ?? '' })));
+  const rows = await page.$$eval('[data-testid="run-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.runId, sp: el.querySelector('[data-testid="shipped-planned"]')?.textContent, cost: el.querySelector('[data-testid="cost"]')?.textContent, costTip: el.querySelector('[data-testid="cost"]')?.closest('[data-tip]')?.getAttribute('data-tip') ?? null, status: el.querySelector('[data-status]')?.getAttribute('data-status'), text: el.textContent ?? '' })));
   check(`${theme}: runs table lists every run newest first`, rows.length === apiRuns.length && rows[0]?.id === apiRuns[0]?.id, JSON.stringify(rows.map((r) => r.id)));
   for (const r of apiRuns) {
     const row = rows.find((x) => x.id === r.id)!;
     const expectSp = r.status === 'legacy' ? `${r.generated} explored` : `${r.shipped}/${r.planned}`;
-    check(`${theme}: row ${String(r.id).slice(0, 16)} shows shipped/planned, cost, status from the index`, !!row && row.sp === expectSp && row.cost === `$${Number(r.cost_total).toFixed(4)}` && row.status === r.status, JSON.stringify(row));
+    // Cost is 2 decimals in the table with the exact report value in the tooltip, like the cards (PR F part 1, second refinement).
+    check(`${theme}: row ${String(r.id).slice(0, 16)} shows shipped/planned, cost (2 decimals, exact value in the tooltip), status from the index`, !!row && row.sp === expectSp && row.cost === `$${Number(r.cost_total).toFixed(2)}` && row.costTip === `exact: ${exactMoney(r.cost_total)}` && row.status === r.status, JSON.stringify(row));
   }
   check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
   const legacyRow = rows.find((r) => r.status === 'legacy')!;

@@ -3,13 +3,13 @@ import type { RunRow } from '@/lib/api';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Term, Tip } from '@/components/Term';
-import { duration, fmtDate, pct, usd } from '@/lib/utils';
+import { duration, exactMoney, fmtDate, money, pct } from '@/lib/utils';
 
 /**
  * The runs table, shared by the Runs page and the project page. Every cell
  * is an index row column; a legacy row shows "N explored" because a pre-v2
- * record never carried a shipped count. Cost keeps 4 decimals here: it is
- * compared with the audit report. Numbers are right aligned in tabular
+ * record never carried a shipped count. Cost shows 2 decimals with the exact
+ * report value in its tooltip, like the cards. Numbers are right aligned in tabular
  * figures. The whole row opens the run; the name is also a real link for
  * the keyboard. On the project page (hideProject) the row shows the last 6
  * characters of the run id in mono with the full id in a tooltip, and no
@@ -51,7 +51,7 @@ export function RunsTable({ runs, hideProject = false }: { runs: RunRow[]; hideP
               )}
             </TableCell>
             <TableCell className="py-2 text-right"><span className="tabular-nums text-fg" data-testid="shipped-planned">{r.status === 'legacy' ? <Term term="explored">{r.generated} explored</Term> : `${r.shipped ?? 0}/${r.planned}`}</span></TableCell>
-            <TableCell className="py-2 text-right"><span className="money text-cost" data-testid="cost">{usd(r.cost_total)}</span></TableCell>
+            <TableCell className="py-2 text-right"><Tip text={`exact: ${exactMoney(r.cost_total)}`}><span className="money text-cost" data-testid="cost">{money(r.cost_total)}</span></Tip></TableCell>
             <TableCell className="py-2 text-right"><span className={`tabular-nums ${r.flake_rate ? 'text-rework' : 'text-fg-2'}`} data-testid="flake-rate">{pct(r.flake_rate)}</span></TableCell>
             <TableCell className="py-2 text-right"><span className="tabular-nums text-fg-2" data-testid="duration">{duration(r.started_at, r.ended_at)}</span></TableCell>
             <TableCell className="py-2"><span className="text-fg-2" data-testid="run-source">{r.source ?? 'unknown'}</span></TableCell>

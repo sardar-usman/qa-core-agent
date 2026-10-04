@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react';
 import { api, ApiWriteError, PROJECT_ENVIRONMENTS } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { InfoTerm } from '@/components/Term';
+import { InfoTerm, TermTip } from '@/components/Term';
 
 /**
  * Create a project by host. The base URL is the identity (invariant 50): a
@@ -19,27 +19,31 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
   const [baseUrl, setBaseUrl] = useState('');
   const [name, setName] = useState('');
   const [environment, setEnvironment] = useState('');
-  const [error, setError] = useState<{ message: string; existing?: { id: string; name: string } } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  /** The 409 case, built only from the API body's `existing` (id and name), never from the message text. */
+  const [conflict, setConflict] = useState<{ id: string; name: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const urlRef = useRef<HTMLInputElement>(null);
 
-  const reset = () => { setBaseUrl(''); setName(''); setEnvironment(''); setError(null); setSaving(false); };
+  const reset = () => { setBaseUrl(''); setName(''); setEnvironment(''); setError(null); setConflict(null); setSaving(false); };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const url = baseUrl.trim();
-    if (!url) { setError({ message: 'Base URL is required.' }); return; }
+    setConflict(null);
+    if (!url) { setError('Base URL is required.'); return; }
     let parsed: URL | null = null;
     try { parsed = new URL(url); } catch { parsed = null; }
-    if (!parsed || !/^https?:$/.test(parsed.protocol) || !parsed.hostname) { setError({ message: 'Base URL must be a full http or https address, like https://shop.example/.' }); return; }
+    if (!parsed || !/^https?:$/.test(parsed.protocol) || !parsed.hostname) { setError('Base URL must be a full http or https address, like https://shop.example/.'); return; }
     setSaving(true); setError(null);
     try {
       await api.createProject({ name: name.trim(), base_url: url, environment: environment || null });
       setOpen(false); reset(); onCreated();
     } catch (err) {
       const w = err instanceof ApiWriteError ? err : null;
-      const existing = w?.body.existing as { id: string; name: string } | undefined;
-      setError({ message: (err as Error).message, ...(existing ? { existing } : {}) });
+      const existing = w?.body.existing as { id?: unknown; name?: unknown } | undefined;
+      if (w?.status === 409 && existing && typeof existing.id === 'string' && typeof existing.name === 'string') setConflict({ id: existing.id, name: existing.name });
+      else setError((err as Error).message);
       setSaving(false);
     }
   };
@@ -52,7 +56,7 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
       <DialogContent data-testid="new-project-dialog" onOpenAutoFocus={(e) => { e.preventDefault(); urlRef.current?.focus(); }}>
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
-          <DialogDescription>A project is a host. Every run against that host lands in it.</DialogDescription>
+          <DialogDescription>One project per website. Every run against that site is grouped here.</DialogDescription>
         </DialogHeader>
         <form className="mt-4 flex flex-col gap-4" onSubmit={(e) => { void submit(e); }} noValidate>
           <Field id="np-url" label="Base URL" term="projectBaseUrl" required help="The site's address, like https://shop.example/. It becomes the project's identity and cannot be changed later.">
@@ -63,29 +67,24 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
           </Field>
           <Field id="np-env" label="Environment" term="projectEnvironment" help="An optional label for the cards and the project page: staging, production or other.">
             <select id="np-env" className={inputCls} data-testid="new-project-env" value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-              <option value="">unset</option>
+              <option value="">Not set</option>
               {PROJECT_ENVIRONMENTS.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </Field>
-          {error ? (
-            <div role="alert" className="rounded-md border border-reject/30 bg-reject-soft px-3 py-2 text-s text-reject" data-testid="new-project-error">
-              {error.message}
-              {error.existing ? <> <Link to={`/projects/${encodeURIComponent(error.existing.id)}`} className="font-semibold underline" data-testid="new-project-existing" onClick={() => setOpen(false)}>Open {error.existing.name}</Link></> : null}
+          {conflict ? (
+            <div role="status" className="rounded-md border border-line-strong bg-bg-2 px-3 py-2 text-s text-fg" data-testid="new-project-conflict">
+              This site already has a project: <span className="font-semibold">{conflict.name}</span>. <Link to={`/projects/${encodeURIComponent(conflict.id)}`} className="font-semibold text-accent underline-offset-2 hover:underline" data-testid="new-project-existing" onClick={() => setOpen(false)}>Open project</Link>
             </div>
           ) : null}
+          {error ? <div role="alert" className="rounded-md border border-reject/30 bg-reject-soft px-3 py-2 text-s text-reject" data-testid="new-project-error">{error}</div> : null}
           <DialogFooter>
             <DialogClose asChild><Button type="button" variant="outline" size="sm" data-testid="new-project-cancel">Cancel</Button></DialogClose>
-            <Button type="submit" size="sm" disabled={saving} data-testid="new-project-submit"><span className="inline-flex items-center gap-1">{saving ? 'Creating…' : 'Create'}<InfoTermInline /></span></Button>
+            <TermTip term="createProject"><Button type="submit" size="sm" disabled={saving} data-testid="new-project-submit">{saving ? 'Creating…' : 'Create'}</Button></TermTip>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
-}
-
-/** The Create button's own glossary entry, rendered beside the label so the tooltip sits on the button text. */
-function InfoTermInline() {
-  return <InfoTerm term="createProject" className="text-brand-fg/70 hover:text-brand-fg" />;
 }
 
 function Field({ id, label, term, help, required, children }: { id: string; label: string; term: 'projectBaseUrl' | 'projectName' | 'projectEnvironment'; help: string; required?: boolean; children: ReactNode }) {

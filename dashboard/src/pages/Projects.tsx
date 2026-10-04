@@ -51,7 +51,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   }, [refreshKey, reload]);
 
   const header = (
-    <PageHeader title="Projects" description="One card per host the agent has explored. Every number is read from the run index; this page computes nothing.">
+    <PageHeader title={<Term term="projectsPage" className="decoration-line-strong">Projects</Term>} description="Each card is one website the agent has tested. Hover any underlined label to see what it means.">
       <NewProjectDialog onCreated={() => setReload((n) => n + 1)} />
     </PageHeader>
   );
@@ -99,7 +99,7 @@ function ProjectCardView({ p }: { p: ProjectCard }) {
   const runsWord = p.reported_runs === p.runs ? 'run' : 'reported run';
   return (
     <Link to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id}>
-      <Card className="card-lift h-full">
+      <Card className="card-lift flex h-full flex-col">
         <CardHeader className="gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle className="min-w-0 truncate" title={p.name}>{p.name}</CardTitle>
@@ -112,7 +112,7 @@ function ProjectCardView({ p }: { p: ProjectCard }) {
             ? <Tip text={p.base_url} className="block min-w-0"><p className="truncate text-s text-fg-3" data-testid="card-url">{p.base_url}</p></Tip>
             : <p className="text-s text-fg-3">no base URL</p>}
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent className="flex flex-1 flex-col gap-4">
           <dl className="grid grid-cols-[1.3fr_1fr_1fr] grid-rows-[auto_auto_auto] gap-x-4 gap-y-0">
             <Metric col={1} label={<Term term="latestShipped">tests in the latest run</Term>} testid="latest-shipped" value={latest === null ? null : String(latest)} missing="latest run is a pre-v2 summary">
               {p.shipped === null ? null : (
@@ -123,7 +123,7 @@ function ProjectCardView({ p }: { p: ProjectCard }) {
             <Metric col={2} label={<Term term="unresolvedFindings">unresolved findings</Term>} testid="unresolved-findings" value={p.unresolved_findings === null ? null : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} missing="no reported run" />
             <Metric col={3} label={<Term term="spendMonth">spend this month</Term>} testid="spend-month" tone="cost" value={<Tip text={`exact: ${exactMoney(p.spend_month)}`}>{money(p.spend_month)}</Tip>} />
           </dl>
-          <div className="flex items-center justify-between gap-3 border-t border-line pt-3 text-s text-fg-3">
+          <div className="mt-auto flex h-10 items-center justify-between gap-3 border-t border-line pt-3 text-s text-fg-3" data-testid="card-footer">
             <span><span className="tabular-nums text-fg-2" data-testid="runs-count">{p.runs}</span> <Term term="runs">run{p.runs === 1 ? '' : 's'}</Term></span>
             {p.coverage_series.length
               ? (<span className="flex items-center gap-2"><Term term="coverage">coverage</Term><Sparkline values={p.coverage_series.map((c) => c.percent)} /><span className="tabular-nums text-fg-2" data-testid="coverage-latest">{p.coverage_series[p.coverage_series.length - 1]!.percent}%</span></span>)
@@ -166,7 +166,7 @@ function EarlierTable({ projects }: { projects: ProjectCard[] }) {
             <th className="h-9 px-4 text-right"><Term term="runs">Runs</Term></th>
             <th className="h-9 px-4 text-right"><Term term="explored">Scenarios explored</Term></th>
             <th className="h-9 px-4"><Term term="lastRun">Last run</Term></th>
-            <th className="h-9 px-4"></th>
+            <th className="h-9 px-4"><Term term="legacy">Record</Term></th>
           </tr>
         </thead>
         <tbody>

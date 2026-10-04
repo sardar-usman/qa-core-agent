@@ -85,6 +85,15 @@ export const GLOSSARY = {
   // Source: dashboard/src/pages/Projects.tsx splitProjects (the grouping rule) over src/server/api.ts projectCard (reported_runs, legacy_runs, runs).
   earlierExperiments: { term: 'Earlier experiments (pre-v2)', text: 'Projects whose runs are all pre-v2 summaries, projects with no runs yet, and the Unassigned record. They have no shipped count to show, so they are listed in a table instead of cards; nothing is deleted.' },
 
+  // Source: CLAUDE.md invariants 47 and 50 (every number comes from the run report or the index built from the files; the index is rebuildable); src/server/api.ts listProjects.
+  projectsPage: { term: 'Projects', text: 'One card per website the agent has tested. Every number on this page is read from the run index, which is built from the run reports on disk; the page computes nothing.' },
+
+  // Source: src/server/api.ts projectCoverage (runs_covered and runs_reported per rule, counted over the rule_coverage rows); CLAUDE.md invariant 26 (rule-coverage.json per SRS run).
+  runsCovered: { term: 'Runs covered', text: 'How many of this project\'s SRS runs covered the rule, over how many SRS runs reported it. Counted from the rule-coverage file of each run.' },
+
+  // Source: CLAUDE.md invariant 52 (the project SRS is kept under output/<slug>/srs/, earlier uploads renamed with their upload time, a copy in every run that uses it); src/server/project-srs.ts storeProjectSrs.
+  requirementsDocument: { term: 'Requirements document (SRS)', text: 'The project\'s current requirements file, kept in the project folder and copied into every run that uses it, so a run always has the exact document it was planned from. Earlier uploads are kept, renamed with their upload time.' },
+
   // Source: src/server/api.ts projectCard (reported_runs: runs WHERE report_path IS NOT NULL); CLAUDE.md invariant 50 (a legacy row has report_path null).
   reportedRuns: { term: 'With a report', text: 'Runs whose run-report.json is on disk. Pre-v2 summaries have no report, so they are counted in runs but not here.' },
 

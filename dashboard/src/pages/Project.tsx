@@ -182,18 +182,20 @@ function RequirementsDocument({ id, srs, onChanged }: { id: string; srs: Project
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-line bg-bg-1 p-4" data-testid="project-srs">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-section font-semibold">Requirements document</h2>
-        <span className="text-s text-fg-2">.md, .txt, .pdf or .docx, 2 MB cap. The Terminal offers it by default for runs against this host; each run keeps its own copy.</span>
+        <h2 className="text-section font-semibold"><Term term="requirementsDocument">Requirements document (SRS)</Term></h2>
         <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx" hidden data-testid="project-srs-file" onChange={(e) => pick(e.target.files?.[0])} />
-        <Button type="button" variant="outline" size="sm" className="ml-auto" disabled={busy} onClick={() => fileRef.current?.click()} data-testid="project-srs-upload">{srs.current ? 'Replace SRS' : 'Upload SRS'}</Button>
+        <Button type="button" variant="outline" size="sm" className="ml-auto" disabled={busy} onClick={() => fileRef.current?.click()} data-testid="project-srs-upload">{srs.current ? 'Replace document' : 'Upload document'}</Button>
       </div>
       {error ? <div className="text-s text-reject" data-testid="project-srs-error">{error}</div> : null}
       {srs.current ? (
-        <div className="text-s" data-testid="project-srs-current"><span className="mono text-fg">{srs.current.original_name}</span> <span className="text-fg-2">uploaded {fmtDate(srs.current.uploaded_at)} · {(srs.current.size / 1024).toFixed(1)} KB · stored at <span className="mono">{srs.current.path}</span></span></div>
-      ) : <div className="text-s text-fg-2" data-testid="project-srs-none">No requirements document yet.</div>}
+        <div className="text-s text-fg-2" data-testid="project-srs-current">
+          <Tip text={`Stored at ${srs.current.path}. Accepted: .md, .txt, .pdf or .docx, 2 MB cap. The Terminal offers it by default for runs against this host; each run keeps its own copy.`}><span className="font-semibold text-fg">{srs.current.original_name}</span></Tip>
+          {' '}uploaded <Tip text={srs.current.uploaded_at}>{fmtDate(srs.current.uploaded_at)}</Tip> · <span className="tabular-nums">{(srs.current.size / 1024).toFixed(1)} KB</span>
+        </div>
+      ) : <div className="text-s text-fg-2" data-testid="project-srs-none">No requirements document yet. Accepted: .md, .txt, .pdf or .docx, 2 MB cap.</div>}
       {srs.previous.length ? (
         <details className="text-s">
-          <summary className="cursor-pointer text-fg-2">Previous uploads <span className="tabular-nums">{srs.previous.length}</span>, kept so no SRS a run used is ever lost</summary>
+          <summary className="cursor-pointer text-fg-2">Previous uploads <span className="tabular-nums">{srs.previous.length}</span>, kept so no document a run used is ever lost</summary>
           <ul className="mt-1 flex flex-col gap-1" data-testid="project-srs-previous">
             {srs.previous.map((r) => <li key={r.path} className="text-fg-2" data-testid="project-srs-previous-row"><span className="mono text-fg">{r.file}</span> uploaded {fmtDate(r.uploaded_at)} <span className="mono">{r.path}</span></li>)}
           </ul>
