@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { Header } from '@/components/Header';
+import { Sidebar } from '@/components/Sidebar';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ProjectsPage } from '@/pages/Projects';
 import { RunsPage } from '@/pages/Runs';
@@ -21,9 +21,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <TooltipProvider delayDuration={300} skipDelayDuration={200}>
-        <div className="min-h-full">
-          <Header onReindexed={() => setRefreshKey((k) => k + 1)} />
-          <main className="mx-auto max-w-content px-6 py-8">
+        <div className="flex min-h-full flex-wrap md:flex-nowrap">
+          <Sidebar refreshKey={refreshKey} onReindexed={() => setRefreshKey((k) => k + 1)} />
+          <main className="min-w-0 flex-1 px-4 py-6 md:px-12 md:py-10">
             <PageTransition>
               <Routes>
                 <Route path="/" element={<ProjectsPage refreshKey={refreshKey} />} />
@@ -47,5 +47,6 @@ export default function App() {
 /** Page content fades in (150 ms) on every route change; off under prefers-reduced-motion (index.css). */
 function PageTransition({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
-  return <div key={pathname} className="page-enter">{children}</div>;
+  // The Projects page is the redesign's 1120px column; every other page keeps the 1280px content width it had.
+  return <div key={pathname} className={`page-enter mx-auto ${pathname === '/' ? 'max-w-[1120px]' : 'max-w-content'}`}>{children}</div>;
 }

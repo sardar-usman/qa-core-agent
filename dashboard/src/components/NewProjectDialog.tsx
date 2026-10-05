@@ -1,6 +1,5 @@
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus } from 'lucide-react';
 import { api, ApiWriteError, PROJECT_ENVIRONMENTS } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -51,7 +50,7 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
   return (
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
-        <Button type="button" size="sm" data-testid="new-project-open"><Plus className="h-4 w-4" /> New project</Button>
+        <Button type="button" variant="outline" className="h-auto rounded-lg border-line-strong bg-bg-1 px-4 py-[11px] text-[14px] font-bold text-fg hover:bg-bg-2" data-testid="new-project-open">New project</Button>
       </DialogTrigger>
       <DialogContent data-testid="new-project-dialog" onOpenAutoFocus={(e) => { e.preventDefault(); urlRef.current?.focus(); }}>
         <DialogHeader>

@@ -39,7 +39,8 @@ window.__contrast = function (selectors) {
   selectors.forEach(function (s) { var el = document.querySelector(s); if (!el) { out[s] = -1; return; } var a = lum(getComputedStyle(el).color), bb = lum(bgOf(el)); out[s] = Math.round(((Math.max(a, bb) + 0.05) / (Math.min(a, bb) + 0.05)) * 10) / 10; });
   return out;
 };`;
-const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-testid="card-tiles"] dt', '[data-testid="card-tiles"] dd:last-child', '[data-testid="card-url"]', '[data-testid="runs-count"]', '[data-testid="card-footer"]', '[data-testid="coverage-latest"]', '[data-testid="coverage-none"]', '[data-testid="card-status-line"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-testid="earlier-note"]', '[data-testid="new-project-open"]', '[data-testid="earlier-row"] [data-glossary="legacy"]', '[data-testid="earlier-host"]'];
+// Redesign v2: the card rows, the sentence, "Open project", the headline and subline, the sidebar's nav, status box and badge.
+const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-testid="card-review-row"]', '[data-testid="card-sentence"]', '[data-testid="card-url"]', '[data-testid="runs-count"]', '[data-testid="card-open"]', '[data-testid="coverage-latest"]', '[data-testid="coverage-none"]', '[data-testid="card-status"]', '[data-testid="card-letter"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="projects-headline"]', '[data-testid="projects-subline"]', '[data-testid="nav-projects"]', '[data-testid="nav-runs"]', '[data-testid="nav-to-review-count"]', '[data-testid="run-a-test"]', '[data-testid="earlier-note"]', '[data-testid="new-project-open"]', '[data-testid="earlier-row"] [data-glossary="legacy"]', '[data-testid="earlier-host"]'];
 const RUNS_CONTRAST = ['[data-testid="cost"]', '[data-testid="flake-rate"]', '[data-testid="duration"]', '[data-testid="run-source"]', '[data-testid="shipped-planned"]', '[data-status="completed"]', '[data-status="stopped"]', '[data-status="empty"]', '[data-status="legacy"]', '[data-testid="toggle-legacy"]', '[data-testid="runs-count"]', 'th [data-glossary="cost"]'];
 
 let pass = 0;
@@ -145,9 +146,13 @@ for (const theme of ['dark', 'light'] as const) {
     spendTip: el.querySelector('[data-testid="spend-month"] [data-tip]')?.getAttribute('data-tip') ?? null,
     latest: el.querySelector('[data-testid="latest-shipped"]')?.textContent ?? null,
     naTerms: Array.from(el.querySelectorAll('[data-glossary="notAvailable"]')).length,
-    legacySub: el.querySelector('[data-testid="legacy-note"]')?.getAttribute('data-tip') ?? null,
+    legacyRuns: el.querySelector('[data-testid="legacy-runs"]')?.textContent ?? null,
     envBadge: el.querySelector('[data-testid="env-badge"]')?.textContent ?? null,
-    status: el.querySelector('[data-status]')?.getAttribute('data-status'),
+    // Redesign v2: the amber pill beside the name exists only when the last run is not completed.
+    status: el.querySelector('[data-testid="card-status"]')?.getAttribute('data-status') ?? null,
+    statusText: el.querySelector('[data-testid="card-status"]')?.textContent ?? null,
+    letter: el.querySelector('[data-testid="card-letter"]')?.textContent ?? null,
+    open: el.querySelector('[data-testid="card-open"]')?.textContent ?? null,
     text: el.textContent ?? '',
   })));
   // Cards: only projects with at least one run that has a report (PR F part 1 refinement). A legacy-only project is never a card.
@@ -157,8 +162,10 @@ for (const theme of ['dark', 'light'] as const) {
     const c = cards.find((x) => x.id === p.id);
     const last = p.last_run as Record<string, unknown> | null;
     // Money on a card is 2 decimals; the exact stored value travels in the tooltip (PR F part 1).
-    const ok = !!c && c.shipped === String(p.shipped) && c.findings === String(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === last?.status;
-    check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (2 decimals, exact value in the tooltip), last run status`, ok, JSON.stringify({ c, p: { shipped: p.shipped, f: p.unresolved_findings, s: p.spend_month, st: last?.status } }));
+    // Redesign v2: the sentence names shipped "across all N runs" when the project has no pre-v2 record, else "<legacy_runs> older runs kept a summary only."; a last run that is not completed shows an amber "Last run <LABEL>" pill, a completed one shows none.
+    const expectStatus = last && last.status !== 'completed' ? String(last.status) : null;
+    const ok = !!c && (Number(p.legacy_runs) ? c.shipped === null && c.legacyRuns === String(p.legacy_runs) : c.shipped === String(p.shipped) && c.legacyRuns === null) && c.findings === String(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === expectStatus && (expectStatus === null || /^Last run /.test(c.statusText ?? '')) && c.letter === String(p.name).trim()[0]!.toUpperCase() && c.open === 'Open project →';
+    check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (2 decimals, exact value in the tooltip), the last run's pill only when not completed, the letter badge and "Open project"`, ok, JSON.stringify({ c, p: { shipped: p.shipped, legacy: p.legacy_runs, f: p.unresolved_findings, s: p.spend_month, st: last?.status } }));
     // The headline is the latest run's shipped count, straight from last_run.shipped (no arithmetic).
     const expectLatest = last && last.shipped !== null && last.shipped !== undefined ? String(last.shipped) : null;
     check(`${theme}: card ${p.id} headlines "tests in the latest run" with last_run.shipped (${expectLatest})`, c?.latest === expectLatest, JSON.stringify({ latest: c?.latest, last }));
@@ -167,15 +174,15 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: the Projects page renders no "n/a" text`, (await page.evaluate(() => (document.body.innerText.match(/\bn\/a\b/g) || []).length)) === 0);
   // Earlier experiments: a muted line with the count and a Show link; the table lists the legacy-only project with its explored count and "summary only".
   const noteBefore = await page.evaluate(() => ({ note: document.querySelector('[data-testid="earlier-note"]')?.textContent ?? '', toggle: document.querySelector('[data-testid="earlier-toggle"]')?.textContent ?? '', table: !!document.querySelector('[data-testid="earlier-table"]') }));
-  check(`${theme}: under the grid one muted line says "1 earlier experiment is hidden." with a Show link and no table yet`, /^1 earlier experiment is hidden\./.test(noteBefore.note.trim()) && noteBefore.toggle === 'Show' && !noteBefore.table, JSON.stringify(noteBefore));
+  check(`${theme}: under the grid one muted line says "1 earlier experiment is hidden." with a "Show them" link and no table yet`, /^1 earlier experiment is hidden\./.test(noteBefore.note.trim()) && noteBefore.toggle === 'Show them' && !noteBefore.table, JSON.stringify(noteBefore));
   await page.click('[data-testid="earlier-toggle"]');
   await page.waitForSelector('[data-testid="earlier-table"]');
   const earlierRows = await page.$$eval('[data-testid="earlier-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.projectId, name: el.querySelector('[data-testid="earlier-name"]')?.textContent, host: el.querySelector('[data-testid="earlier-host"]')?.textContent, runs: el.querySelector('[data-testid="earlier-runs"]')?.textContent, explored: el.querySelector('[data-testid="earlier-explored"]')?.textContent, label: el.lastElementChild?.textContent })));
   check(`${theme}: Show reveals the compact table: the demoqa record with 1 run, 1 scenario explored and the "summary only" label in words, never a shipped count`, earlierRows.length === 1 && earlierRows[0]?.id === 'demoqa-com' && earlierRows[0]?.host === 'demoqa.com' && earlierRows[0]?.runs === '1' && earlierRows[0]?.explored === '1' && earlierRows[0]?.label === 'summary only', JSON.stringify(earlierRows));
   // Tooltips render the glossary entry, word for word (hover the tile's info icon, then read role=tooltip).
-  await page.hover('[data-project-id="saucedemo-com"] [data-glossary="latestShipped"]');
+  await page.hover('[data-project-id="saucedemo-com"] [data-glossary="unresolvedFindings"]');
   await page.waitForSelector('[role="tooltip"]', { timeout: 5000 });
-  check(`${theme}: hovering the "Verified tests" icon on a card shows its glossary entry`, (await page.textContent('[role="tooltip"]')) === tipText('latestShipped'), (await page.textContent('[role="tooltip"]')) ?? '');
+  check(`${theme}: hovering the "Product behavior to review" row label on a card shows its glossary entry (no info icons on the card)`, (await page.textContent('[role="tooltip"]')) === tipText('unresolvedFindings') && (await page.$$('[data-testid="project-card"] [data-glossary] svg')).length === 0, (await page.textContent('[role="tooltip"]')) ?? '');
   // A Term trigger has no underline at rest and a dotted underline on hover (PR F part 1, third refinement).
   const termRest = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="earlier-note"] [data-glossary]')!).textDecorationLine);
   await page.hover('[data-testid="earlier-note"] [data-glossary]');
@@ -197,7 +204,7 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: every sampled Projects text keeps at least 4.5:1 contrast against its background`, Object.values(pc).every((v) => v >= 4.5), JSON.stringify(pc));
   await page.click('[data-testid="earlier-toggle"]');
   await page.waitForSelector('[data-testid="earlier-table"]', { state: 'detached' });
-  check(`${theme}: Hide removes the table again`, !(await page.$('[data-testid="earlier-table"]')));
+  check(`${theme}: "Hide them" removes the table again`, !(await page.$('[data-testid="earlier-table"]')));
   // The New project dialog: Escape and focus return, a blocked empty submit, and the API's own 409 for a host that already has a project (nothing is created).
   const projectsBefore = ((await authGet('/api/projects')).projects as unknown[]).length;
   await page.click('[data-testid="new-project-open"]');
@@ -237,21 +244,52 @@ for (const theme of ['dark', 'light'] as const) {
   const sauceApi = projects.find((p) => p.id === 'saucedemo-com')!.coverage_series as Array<{ covered: number; total: number; percent: number }>;
   const sauceLatest = sauceApi[sauceApi.length - 1]!;
   check(`${theme}: the requirements row reads "${sauceLatest.covered} of ${sauceLatest.total}" from the latest coverage_series entry and the bar width is its percent (${sauceLatest.percent}%)`, /Requirements covered/.test(sauce.text) && sauceCov.text === `${sauceLatest.covered} of ${sauceLatest.total}` && sauceCov.percent === String(sauceLatest.percent) && sauceCov.width === `${sauceLatest.percent}%` && sauceLatest.covered === 3 && sauceLatest.total === 3, JSON.stringify({ sauceCov, sauceLatest }));
-  check(`${theme}: a project without SRS runs says "No requirements document used yet" under the same label`, /Requirements covered/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && /No requirements document used yet/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && !/\d+ of \d+/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? ''));
-  const cardGeometry = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({ h: el.getBoundingClientRect().height, footer: el.querySelector('[data-testid="card-footer"]')!.getBoundingClientRect().top })));
-  check(`${theme}: every card has the same height and the footers share one top (within 1px)`, cardGeometry.length > 1 && cardGeometry.every((g) => Math.abs(g.h - cardGeometry[0]!.h) <= 1 && Math.abs(g.footer - cardGeometry[0]!.footer) <= 1), JSON.stringify(cardGeometry));
-  const fonts = await page.evaluate(() => ({ number: getComputedStyle(document.querySelector('[data-testid="latest-shipped"]')!).fontFamily, label: getComputedStyle(document.querySelector('[data-testid="card-tiles"] dt')!).fontFamily }));
-  check(`${theme}: card numbers and tile labels render in Inter, never Geist`, /Inter/.test(fonts.number) && /Inter/.test(fonts.label) && !/Geist/.test(fonts.number + fonts.label), JSON.stringify(fonts));
+  check(`${theme}: a project without SRS runs says "No document yet" under the same label with an empty track`, /Requirements covered/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && /No document yet/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && !/\d+ of \d+/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && !!(await page.$('[data-project-id="the-internet-herokuapp-com"] [data-testid="coverage-bar-empty"]')));
+  // Redesign v2: equal card heights and "Open project" tops at 1440 and at 1280, no nested interactive element, no horizontal scroll at 390 / 1280 / 1440.
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const cardGeometry = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({ h: el.getBoundingClientRect().height, open: el.querySelector('[data-testid="card-open"]')!.getBoundingClientRect().top })));
+    check(`${theme}: at ${width} every card has the same height and "Open project" shares one top (within 1px)`, cardGeometry.length > 1 && cardGeometry.every((g) => Math.abs(g.h - cardGeometry[0]!.h) <= 1 && Math.abs(g.open - cardGeometry[0]!.open) <= 1), JSON.stringify(cardGeometry));
+  }
+  for (const width of [390, 1280, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const scroll = await page.evaluate(() => ({ h: document.documentElement.scrollWidth > document.documentElement.clientWidth, sidebarTop: document.querySelector('[data-testid="sidebar"]')!.getBoundingClientRect().top, mainLeft: document.querySelector('main')!.getBoundingClientRect().left, sidebarWidth: document.querySelector('[data-testid="sidebar"]')!.getBoundingClientRect().width }));
+    check(`${theme}: at ${width} no horizontal page scroll; the sidebar ${width < 768 ? 'stacks above the content (full width)' : 'sits at the left, 236px wide'}`, !scroll.h && (width < 768 ? scroll.sidebarWidth === width && scroll.mainLeft === 0 : scroll.sidebarWidth === 236 && scroll.mainLeft === 236), JSON.stringify(scroll));
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fonts = await page.evaluate(() => ({ number: getComputedStyle(document.querySelector('[data-testid="latest-shipped"]')!).fontFamily, label: getComputedStyle(document.querySelector('[data-testid="card-review-row"]')!).fontFamily, nav: getComputedStyle(document.querySelector('[data-testid="nav-projects"]')!).fontFamily, models: getComputedStyle(document.querySelector('[data-testid="model-chips"]')!).fontFamily }));
+  check(`${theme}: card numbers, card labels and sidebar items render in Plus Jakarta Sans, never Inter or Geist; the model names are Geist Mono`, /Plus Jakarta Sans/.test(fonts.number) && /Plus Jakarta Sans/.test(fonts.label) && /Plus Jakarta Sans/.test(fonts.nav) && !/Inter|Geist/.test(fonts.number + fonts.label + fonts.nav) && /Geist Mono/.test(fonts.models), JSON.stringify(fonts));
   const header = await page.evaluate(() => ({
     gateway: document.querySelector('[data-testid="gateway-status"]')?.textContent ?? '',
     session: document.querySelector('[data-testid="session-spend"]')?.textContent ?? '',
     models: Array.from(document.querySelectorAll('[data-testid="model-chip"]')).map((m) => m.textContent),
+    runATest: document.querySelector('[data-testid="run-a-test"]')?.getAttribute('href') ?? null,
+    nav: Array.from(document.querySelectorAll('[data-testid="nav"] a')).map((a) => `${a.getAttribute('href')} ${a.textContent?.replace(/\d+$/, '').trim()}`),
+    active: document.querySelector('[data-testid="nav"] a[aria-current="page"]')?.getAttribute('data-testid') ?? null,
+    iconButtonsLabelled: Array.from(document.querySelectorAll('[data-testid="status-box"] button')).every((b) => (b.getAttribute('aria-label') ?? '').length > 0),
+    badge: document.querySelector('[data-testid="nav-to-review-count"]')?.textContent ?? null,
   }));
-  check(`${theme}: header shows gateway connected (from the socket), session spend, and three model chips from settings`, /connected/.test(header.gateway) && /\$0\.00/.test(header.session) && header.models.length === 3 && header.models.some((m) => /haiku/.test(m ?? '')), JSON.stringify(header));
+  check(`${theme}: the sidebar status box shows "Gateway connected" (from the socket), "This session $0.00", and the three model names in mono; "Run a test" links to /terminal; the nav reads Projects, Runs, To review, Requirements, Settings with Projects active; every icon button has an aria-label`, /^Gateway connected$/.test(header.gateway) && /^This session \$0\.00$/.test(header.session) && header.models.length === 3 && header.models.some((m) => /haiku/.test(m ?? '')) && header.runATest === '/terminal' && JSON.stringify(header.nav) === JSON.stringify(['/ Projects', '/runs Runs', '/findings To review', '/coverage Requirements', '/settings Settings']) && header.active === 'nav-projects' && header.iconButtonsLabelled, JSON.stringify(header));
+  const apiTotals = (await authGet('/api/projects')).totals as { websites: number; latest_verified: number; to_review: number; spend_month: number };
+  const headlineOnPage = await page.evaluate(() => ({ h: document.querySelector('[data-testid="projects-headline"]')?.textContent ?? '', s: document.querySelector('[data-testid="projects-subline"]')?.textContent ?? '' }));
+  check(`${theme}: the headline and subline are the server totals in words, and the To review badge is totals.to_review`, headlineOnPage.h === `${apiTotals.latest_verified} tests are ready to run. ${apiTotals.to_review === 1 ? '1 thing needs your eyes.' : `${apiTotals.to_review} things need your eyes.`}` && headlineOnPage.s === `Across ${apiTotals.websites} websites. $${apiTotals.spend_month.toFixed(2)} spent on testing this month.` && (apiTotals.to_review === 0 ? header.badge === null : header.badge === String(apiTotals.to_review)), JSON.stringify({ headlineOnPage, apiTotals, badge: header.badge }));
 
   if (shotDir) {
     fs.mkdirSync(shotDir, { recursive: true });
     await page.screenshot({ path: path.join(shotDir, `projects-${theme}.png`) });
+  }
+  if (theme === 'light') {
+    // Redesign v2: with nothing stored the app opens in light; after the toggle it opens in dark on reload (the saved choice is kept).
+    const fresh = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+    const fp = await fresh.newPage();
+    await fp.goto(`${base}/#token=${TOKEN}`, { waitUntil: 'networkidle' });
+    const opened = await fp.evaluate(() => ({ cls: document.documentElement.className, stored: localStorage.getItem('qa-core.theme') }));
+    await fp.click('[data-testid="theme-toggle"]');
+    await fp.waitForFunction(() => !document.documentElement.classList.contains('light'));
+    await fp.reload({ waitUntil: 'networkidle' });
+    const reloaded = await fp.evaluate(() => ({ cls: document.documentElement.className, stored: localStorage.getItem('qa-core.theme') }));
+    check('light is the default with no stored theme even when the system prefers dark, and the toggled dark choice survives a reload', opened.cls === 'light' && opened.stored === 'light' && reloaded.cls === '' && reloaded.stored === 'dark', JSON.stringify({ opened, reloaded }));
+    await fresh.close();
   }
 
   // Runs table.
@@ -275,7 +313,7 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
   const legacyRow = rows.find((r) => r.status === 'legacy')!;
   check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, "N explored" instead of shipped/planned, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1 explored' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
-  check(`${theme}: cards with real runs and no pre-v2 record carry no pre-v2 footer icon`, cards.every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
+  check(`${theme}: cards with real runs and no pre-v2 record carry no "older runs kept a summary only" sentence`, cards.every((c) => c.legacyRuns === null && !/older runs kept a summary only/.test(c.text)), JSON.stringify(cards.map((c) => [c.id, c.legacyRuns])));
   check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
   check(`${theme}: a status badge carries its glossary entry (hover "stopped")`, await (async () => { await page.hover('[data-status="stopped"]'); await page.waitForFunction((t) => document.querySelector('[role="tooltip"]')?.textContent === t, tipText('statusStopped'), { timeout: 5000 }).catch(() => null); return (await page.textContent('[role="tooltip"]')) === tipText('statusStopped'); })(), (await page.textContent('[role="tooltip"]').catch(() => null)) ?? '');
   await page.mouse.move(0, 0);

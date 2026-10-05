@@ -71,7 +71,7 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
     const parts = url.pathname.split('/').filter(Boolean); // ['api', ...]
     try {
       if (method === 'GET' && parts.length === 2 && parts[1] === 'settings') { json(res, 200, gatewaySettings(ctx)); return true; }
-      if (method === 'GET' && parts.length === 2 && parts[1] === 'projects') { json(res, 200, { projects: listProjects(db, root) }); return true; }
+      if (method === 'GET' && parts.length === 2 && parts[1] === 'projects') { const projects = listProjects(db, root); json(res, 200, { projects, totals: projectTotals(projects) }); return true; }
       if (method === 'POST' && parts.length === 2 && parts[1] === 'projects') {
         const result = createProject(db, await readJsonBody(req));
         json(res, result.status, result.body); return true;
@@ -263,6 +263,26 @@ export interface ProjectCard {
   coverage_series: Array<{ run_id: string; started_at: string | null; covered: number; total: number; percent: number }>;
   /** The project-level requirements document, read from output/<slug>/srs/ (files are truth). */
   srs: { name: string; uploaded_at: string; path: string } | null;
+}
+
+/**
+ * The Projects page headline numbers, summed on the server over the projects
+ * that render as cards (at least one run with a report, never Unassigned),
+ * so the page adds nothing (standing rule 3): websites = their count,
+ * latest_verified = sum of last_run.shipped, to_review = sum of
+ * unresolved_findings (product findings only, invariant 67), spend_month =
+ * sum of spend_month. A hidden earlier experiment never counts.
+ */
+export interface ProjectTotals { websites: number; latest_verified: number; to_review: number; spend_month: number }
+
+export function projectTotals(projects: ProjectCard[]): ProjectTotals {
+  const cards = projects.filter((p) => p.id !== 'unassigned' && p.reported_runs > 0);
+  return {
+    websites: cards.length,
+    latest_verified: cards.reduce((n, p) => n + (p.last_run?.shipped ?? 0), 0),
+    to_review: cards.reduce((n, p) => n + (p.unresolved_findings ?? 0), 0),
+    spend_month: cards.reduce((n, p) => n + p.spend_month, 0),
+  };
 }
 
 export function listProjects(db: Database.Database, root?: string): ProjectCard[] {

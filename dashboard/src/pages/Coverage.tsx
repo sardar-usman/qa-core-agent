@@ -25,7 +25,7 @@ export function CoveragePage({ refreshKey }: { refreshKey: number }) {
   if (items.length === 0) return <EmptyState title="No projects yet">A project appears for every host you explore.</EmptyState>;
   return (
     <div className="flex flex-col gap-6" data-testid="coverage-page">
-      <PageHeader title="Coverage" description="Requirements coverage per project, from each SRS run's rule-coverage.json: every rule seen, its latest classification, and the considered-not-automated list with reasons." />
+      <PageHeader title="Requirements" description="Requirements coverage per project, from each SRS run's rule-coverage.json: every rule seen, its latest classification, and the considered-not-automated list with reasons." />
       {items.map(({ project, coverage }) => (
         <section key={project.id} className="flex flex-col gap-2" data-testid="coverage-project" data-project-id={project.id}>
           <h2 className="text-m font-semibold"><Link to={`/projects/${encodeURIComponent(project.id)}`} className="hover:underline">{project.name}</Link></h2>

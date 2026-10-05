@@ -2,61 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens (PR F, part 1). HSL triples so Tailwind can add alpha.
-   Dark is the default; .light flips the surfaces (lib/theme.ts toggles the
-   class and stores the choice under localStorage['qa-core.theme']).
+/* Design tokens (redesign v2, docs/ui/redesign-v2/). HSL triples so Tailwind
+   can add alpha. The values are the two target mockups' colours: light page
+   #F6F5F1, surface #FFFFFF, line #E6E3DC, text #17191C, muted #5B616B and
+   #6B717B (text-3 is one step darker than #6B717B so it keeps 4.5:1 on the
+   page background), brand teal #076887; dark page #0B0D10, surface #0F1216,
+   line #1C2128, text #E8ECF1, muted #9AA4B2 and #8A94A1, brand mint #59DFCF.
+   LIGHT is the default when localStorage['qa-core.theme'] holds no value
+   (lib/theme.ts); :root carries the dark set and .light the light set so
+   the smoke-glossary parser reads both blocks as before.
 
    Semantic colours are fixed by the design skill: pass green, rework amber,
    reject red, findings violet (findings only), neutral grey, one cost accent
-   (blue, so money never reads as a status). The brand pair is SprintSynergy
-   teal #076887 and mint #59DFCF: mint is the accent on dark, teal on light,
-   used for primary actions, focus rings and the active nav item.
+   (blue, so money never reads as a status). --nav-active-bg / --nav-active-fg
+   are the sidebar's active item (a soft teal with teal text on light, the
+   raised surface with the page text on dark, as the mockups draw it).
 
    Every text and status colour below keeps at least 4.5:1 against bg-0,
-   bg-1, bg-2 and its own soft tint in both themes (the pairs and ratios are
-   listed in the PR summary; smoke-dashboard measures a sample live). */
+   bg-1, bg-2 and its own soft tint in both themes (smoke-glossary parses
+   both blocks; smoke-dashboard measures a sample live). */
 :root {
-  --bg-0: 222 22% 5%;
-  --bg-1: 222 18% 8%;
-  --bg-2: 222 16% 11%;
-  --bg-3: 222 14% 16%;
-  --line: 0 0% 100% / 0.08;
-  --line-strong: 0 0% 100% / 0.14;
-  --text: 220 20% 96%;
-  --text-2: 220 10% 72%;
-  --text-3: 220 8% 60%;
-  --accent: 173 68% 61%;
-  --brand: 173 68% 61%;
-  --brand-fg: 222 22% 5%;
-  --pass: 152 55% 58%;
+  --bg-0: 216 19% 5.3%;
+  --bg-1: 214 19% 7.3%;
+  --bg-2: 213 20% 10.8%;
+  --bg-3: 215 18% 13.3%;
+  --line: 215 18% 13.3%;
+  --line-strong: 214 17% 18%;
+  --text: 213 24% 92.7%;
+  --text-2: 215 13% 65.1%;
+  --text-3: 214 11% 58.6%;
+  --accent: 173 68% 61.2%;
+  --brand: 173 68% 61.2%;
+  --brand-fg: 216 19% 5.3%;
+  --nav-active-bg: 213 20% 10.8%;
+  --nav-active-fg: 213 24% 92.7%;
+  --pass: 153 72% 66.9%;
   --rework: 40 90% 62%;
   --reject: 354 85% 72%;
-  --finding: 258 95% 82%;
-  --neutral: 220 10% 72%;
-  --cost: 212 92% 76%;
+  --finding: 252 100% 87.3%;
+  --neutral: 215 13% 65.1%;
+  --cost: 216 100% 80.6%;
   --shadow-lift: 0 8px 24px -10px hsl(0 0% 0% / 0.7), 0 1px 0 hsl(0 0% 100% / 0.04) inset;
   color-scheme: dark;
 }
 .light {
-  --bg-0: 220 20% 97%;
+  --bg-0: 48 22% 95.5%;
   --bg-1: 0 0% 100%;
-  --bg-2: 220 20% 97.5%;
-  --bg-3: 220 16% 93%;
-  --line: 222 30% 10% / 0.09;
-  --line-strong: 222 30% 10% / 0.16;
-  --text: 222 25% 10%;
-  --text-2: 222 10% 36%;
-  --text-3: 222 8% 42%;
-  --accent: 194 90% 28%;
-  --brand: 194 90% 28%;
+  --bg-2: 48 22% 95.5%;
+  --bg-3: 40 22% 92%;
+  --line: 42 17% 88.2%;
+  --line-strong: 42 16% 83.7%;
+  --text: 216 10% 10%;
+  --text-2: 218 8% 38.8%;
+  --text-3: 218 7% 42%;
+  --accent: 195 90% 27.8%;
+  --brand: 195 90% 27.8%;
   --brand-fg: 0 0% 100%;
-  --pass: 152 70% 27%;
+  --nav-active-bg: 194 42% 93.9%;
+  --nav-active-fg: 195 90% 27.8%;
+  --pass: 154 66% 26.7%;
   --rework: 36 100% 27%;
   --reject: 352 70% 40%;
-  --finding: 258 60% 46%;
-  --neutral: 222 10% 36%;
-  --cost: 212 80% 34%;
-  --shadow-lift: 0 8px 24px -12px hsl(222 30% 10% / 0.22);
+  --finding: 252 55% 49%;
+  --neutral: 218 8% 38.8%;
+  --cost: 209 88% 35.1%;
+  --shadow-lift: 0 1px 2px hsl(216 10% 10% / 0.04), 0 8px 24px -12px hsl(216 10% 10% / 0.18);
   color-scheme: light;
 }
 
@@ -65,7 +75,7 @@
   /* Every number on the dashboard lines up: tabular figures everywhere, in both families. */
   html { font-variant-numeric: tabular-nums; }
   body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
-  /* Numbers, money included, are Inter with tabular figures; .mono is for run ids, commands and code only. */
+  /* Numbers, money included, are Plus Jakarta Sans with tabular figures; .mono is for run ids, commands and code only. */
   .money { @apply font-sans tabular-nums; }
   .mono { @apply font-mono; }
   /* A visible focus ring on anything focusable that does not draw its own. */

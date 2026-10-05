@@ -71,7 +71,7 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 await page.goto(`${base}/#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="project-card"]');
-const cards = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.projectId, title: el.querySelector('h3')?.textContent ?? '', url: el.querySelector('p')?.textContent ?? '' })));
+const cards = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.projectId, title: el.querySelector('h2')?.textContent ?? '', url: el.querySelector('[data-testid="card-url"]')?.textContent ?? '' })));
 check('D. Projects: card titles are brand slugs and the card keeps the base URL beneath for identity', runs.every((r) => { const c = cards.find((x) => x.id === projectSlug(r.url)); return c?.title === brandSlug(r.url) && c.url.includes(r.host); }), JSON.stringify(cards));
 const sauce = runs[0]!;
 await page.goto(`${base}/runs/${sauce.id}#token=${TOKEN}`, { waitUntil: 'networkidle' });

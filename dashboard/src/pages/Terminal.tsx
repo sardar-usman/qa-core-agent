@@ -127,7 +127,7 @@ export function TerminalPage() {
 
   return (
     <div className="flex flex-col gap-5" data-testid="terminal">
-      <PageHeader title="Terminal" description="Start a QA-Core run and watch it live. Commands only, no shell.">
+      <PageHeader title="Run a test" description="Start a QA-Core run and watch it live. Commands only, no shell.">
         <details className="relative text-s" data-testid="usage-help">
           <summary className="inline-flex cursor-pointer items-center gap-1 text-fg-2 hover:text-fg"><HelpCircle className="h-3.5 w-3.5" /> usage</summary>
           <div className="absolute right-0 z-10 mt-1 w-[28rem] rounded-lg border border-line bg-bg-1 p-3 text-fg-2 shadow-lg">

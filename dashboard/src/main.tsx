@@ -1,9 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 // Fonts are bundled by Vite from the @fontsource-variable packages (no CDN,
-// works offline): Inter for all UI text and numbers, Geist Mono only for
-// run ids, commands and code.
-import '@fontsource-variable/inter';
+// works offline): Plus Jakarta Sans for all UI text and numbers, Geist Mono
+// only for run ids, commands and code.
+import '@fontsource-variable/plus-jakarta-sans';
 import '@fontsource-variable/geist-mono';
 import App from './App';
 import './index.css';
