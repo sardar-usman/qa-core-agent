@@ -1,24 +1,47 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderOpen } from 'lucide-react';
+import { ChevronRight, FolderOpen } from 'lucide-react';
 import { api, ApiError, type ProjectCard } from '@/lib/api';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import type { GlossaryKey } from '@/lib/glossary';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/EmptyState';
-import { Sparkline } from '@/components/Sparkline';
-import { StatusBadge } from '@/components/StatusBadge';
-import { fmtDate, usd } from '@/lib/utils';
-import { ApiWriteError, PROJECT_ENVIRONMENTS } from '@/lib/api';
-import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/PageHeader';
+import { NewProjectDialog } from '@/components/NewProjectDialog';
+import { ProjectsSkeleton } from '@/components/Skeleton';
+import { StatusWord } from '@/components/StatusBadge';
+import { InfoTerm, InfoTip, Term, Tip } from '@/components/Term';
+import { cn, exactMoney, fmtDate, hostOf, money } from '@/lib/utils';
+
+/**
+ * Projects: one card per host with at least one run that has a report.
+ * Every number on a card is a field of /api/projects (the index's aggregate
+ * over run-report columns); the page formats and groups, it never computes
+ * a value, and it never renders "n/a": a value the index does not have is
+ * not rendered as a metric.
+ *
+ * Projects whose runs are all pre-v2 records, projects with no runs yet and
+ * the Unassigned record are not cards. One muted line under the grid counts
+ * them and a "Show" link reveals a compact table, so nothing is hidden
+ * without a count and nothing is deleted from the data.
+ */
 
 const UNASSIGNED = 'unassigned';
 
 const ENV_VARIANT: Record<string, 'accent' | 'rework' | 'neutral'> = { staging: 'accent', production: 'rework', other: 'neutral' };
 
+/** Cards: at least one reported (v2) run. Earlier: everything else, Unassigned last. Exported for the smoke. */
+export function splitProjects(projects: ProjectCard[]): { active: ProjectCard[]; earlier: ProjectCard[] } {
+  const active = projects.filter((p) => p.id !== UNASSIGNED && p.reported_runs > 0);
+  const earlier = projects.filter((p) => !active.includes(p)).sort((a, b) => Number(a.id === UNASSIGNED) - Number(b.id === UNASSIGNED));
+  return { active, earlier };
+}
+
 export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   const [projects, setProjects] = useState<ProjectCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [showEarlier, setShowEarlier] = useState(false);
   useEffect(() => {
     let live = true;
     api.projects()
@@ -27,123 +50,171 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
     return () => { live = false; };
   }, [refreshKey, reload]);
 
-  if (error) return <EmptyState title="Could not load projects">{error}</EmptyState>;
-  if (projects === null) return <div className="text-s text-fg-3">Loading…</div>;
-  const creator = <CreateProject onCreated={() => setReload((n) => n + 1)} />;
+  const header = (
+    <PageHeader title={<Term term="projectsPage" className="decoration-line-strong">Projects</Term>} description="Each card is one website the agent has tested. Click a card to see its runs, tests and requirements.">
+      <NewProjectDialog onCreated={() => setReload((n) => n + 1)} />
+    </PageHeader>
+  );
+  if (error) return <div className="flex flex-col gap-6">{header}<EmptyState title="Could not load projects">{error}</EmptyState></div>;
+  if (projects === null) return <div className="flex flex-col gap-6">{header}<ProjectsSkeleton /></div>;
   if (projects.length === 0) {
     return (
-      <div className="flex flex-col gap-4">
-        {creator}
-        <EmptyState title="No projects yet" icon={<FolderOpen className="h-8 w-8" />}>
-          A project appears for every host you explore, or create one above. Run <code className="mono">npm run explore -- https://your-app.example/</code> or start a run from the Terminal page; the index picks it up when the run finishes, or press the reindex button in the header.
+      <div className="flex flex-col gap-6">
+        {header}
+        <EmptyState title="No projects yet" icon={<FolderOpen className="h-5 w-5" />}>
+          A project appears for every host you explore, or create one with the button above. Run <code className="mono">npm run explore -- https://your-app.example/</code> or start a run from the Terminal page; the index picks it up when the run finishes, or press the rebuild button in the header.
         </EmptyState>
       </div>
     );
   }
-  // Unassigned (pre-v2 records with no URL) sorts last and is muted; the API orders it last too.
-  const ordered = [...projects].sort((a, b) => Number(a.id === UNASSIGNED) - Number(b.id === UNASSIGNED));
+  const { active, earlier } = splitProjects(projects);
   return (
-    <div className="flex flex-col gap-4">
-    {creator}
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="project-grid">
-      {ordered.map((p) => p.id === UNASSIGNED ? (
-        <Link key={p.id} to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id} data-unassigned="true">
-          <Card className="h-full border-dashed">
-            <CardHeader>
-              <CardTitle>Unassigned</CardTitle>
-              <CardDescription>pre-v2 records with no URL</CardDescription>
-            </CardHeader>
-            <CardContent className="text-s text-fg-2" data-testid="unassigned-note">{p.legacy_runs} pre-v2 record{p.legacy_runs === 1 ? '' : 's'} with no URL{p.legacy_first_at ? `, ${dateRange(p.legacy_first_at, p.legacy_last_at)}` : ''}</CardContent>
-          </Card>
-        </Link>
+    <div className="flex flex-col gap-6">
+      {header}
+      {active.length ? (
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3" data-testid="project-grid">
+          {active.map((p) => <ProjectCardView key={p.id} p={p} />)}
+        </div>
       ) : (
-        <Link key={p.id} to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id}>
-          <Card className="h-full transition-colors hover:border-line-strong">
-            <CardHeader>
-              <div className="flex items-start justify-between gap-2">
-                <CardTitle className="truncate" title={p.name}>{p.name}</CardTitle>
-                {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} data-testid="env-badge">{p.environment}</Badge> : null}
-              </div>
-              <CardDescription className="mono truncate" title={p.base_url ?? ''}>{p.base_url ?? 'no base URL'}</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="flex items-center gap-2 text-s text-fg-2">
-                {p.last_run ? (<><span>Last run</span><StatusBadge status={p.last_run.status} /><span>{fmtDate(p.last_run.started_at)}</span></>) : <span>No runs yet</span>}
-              </div>
-              <dl className="grid grid-cols-3 gap-2">
-                <Stat label="tests shipped" value={p.shipped === null ? 'n/a' : String(p.shipped)} testid="shipped" title={p.shipped === null ? NA_TITLE : undefined} sub={p.legacy_runs ? `${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored` : undefined} />
-                <Stat label="unresolved findings" value={p.unresolved_findings === null ? 'n/a' : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} testid="unresolved-findings" title={p.unresolved_findings === null ? NA_TITLE : undefined} />
-                <Stat label="spend this month" value={usd(p.spend_month)} tone="cost" mono testid="spend-month" />
-              </dl>
-              <div className="flex items-center justify-between text-s text-fg-3">
-                <span>{p.runs} run{p.runs === 1 ? '' : 's'}</span>
-                {p.coverage_series.length
-                  ? (<span className="flex items-center gap-2"><span>coverage</span><Sparkline values={p.coverage_series.map((c) => c.percent)} /><span className="mono text-fg-2">{p.coverage_series[p.coverage_series.length - 1]!.percent}%</span></span>)
-                  : <span>no SRS runs</span>}
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-      ))}
-    </div>
+        <EmptyState title="No project has a run with a report yet" icon={<FolderOpen className="h-5 w-5" />}>
+          Every project so far is a pre-v2 summary or has no runs. Start a run from the Terminal page to get the first full report.
+        </EmptyState>
+      )}
+      {earlier.length ? (
+        <div className="flex flex-col gap-3" data-testid="earlier-experiments">
+          <p className="text-s text-fg-3" data-testid="earlier-note">
+            <span className="tabular-nums" data-testid="earlier-count">{earlier.length}</span> <Term term="earlierExperiments">earlier experiment{earlier.length === 1 ? '' : 's'}</Term> {earlier.length === 1 ? 'is' : 'are'} hidden.{' '}
+            <button type="button" className="rounded-sm font-medium text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setShowEarlier((v) => !v)} aria-expanded={showEarlier} aria-controls="earlier-table" data-testid="earlier-toggle">{showEarlier ? 'Hide' : 'Show'}</button>
+          </p>
+          {showEarlier ? <EarlierTable projects={earlier} /> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-/** Create a project by host: name, base URL (identity), environment (unset unless chosen). */
-function CreateProject({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [environment, setEnvironment] = useState('');
-  const [error, setError] = useState<{ message: string; existing?: { id: string; name: string } } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const submit = async () => {
-    setSaving(true); setError(null);
-    try {
-      await api.createProject({ name: name.trim(), base_url: baseUrl.trim(), environment: environment || null });
-      setName(''); setBaseUrl(''); setEnvironment(''); setOpen(false); onCreated();
-    } catch (e) {
-      const w = e instanceof ApiWriteError ? e : null;
-      const existing = w?.body.existing as { id: string; name: string } | undefined;
-      setError({ message: (e as Error).message, ...(existing ? { existing } : {}) });
-    } finally { setSaving(false); }
-  };
+/**
+ * One project card (docs/ui/redesign-pr1/cards-target.png). The name is the
+ * link; its ::after overlay stretches over the whole card so the card is
+ * clickable without nesting interactive elements. Tooltip triggers (the
+ * info icons, the status word, the date and the exact money value) sit
+ * above the overlay (relative, z-10) so they open without navigating.
+ * Every card has the same structure, so the cards share one height and the
+ * footer is pinned to the bottom.
+ */
+function ProjectCardView({ p }: { p: ProjectCard }) {
+  const last = p.last_run;
+  const latest = last?.shipped ?? null;
+  const cov = p.coverage_series.length ? p.coverage_series[p.coverage_series.length - 1]! : null;
+  const href = `/projects/${encodeURIComponent(p.id)}`;
   return (
-    <details className="rounded-lg border border-line bg-bg-1" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} data-testid="create-project">
-      <summary className="cursor-pointer px-4 py-3 text-m font-semibold">New project <span className="text-s font-normal text-fg-2">by host; a run against that host lands in it</span></summary>
-      <form className="flex flex-wrap items-end gap-3 px-4 pb-4" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Base URL <span className="font-normal text-fg-2">required, the identity</span></span><input className={inputCls} data-testid="new-project-url" placeholder="https://shop.example/" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} /></label>
-        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Name <span className="font-normal text-fg-2">defaults to the host</span></span><input className={inputCls} data-testid="new-project-name" placeholder="shop" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label className="flex flex-col gap-1 text-s text-fg"><span className="font-semibold">Environment <span className="font-normal text-fg-2">optional</span></span>
-          <select className={inputCls} data-testid="new-project-env" value={environment} onChange={(e) => setEnvironment(e.target.value)}>
-            <option value="">unset</option>
-            {PROJECT_ENVIRONMENTS.map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        <Button type="submit" size="sm" disabled={saving || !baseUrl.trim()} data-testid="new-project-submit">Create</Button>
-        {error ? <span className="text-s text-reject" data-testid="new-project-error">{error.message}{error.existing ? <> <Link to={`/projects/${encodeURIComponent(error.existing.id)}`} className="underline" data-testid="new-project-existing">open {error.existing.name}</Link></> : null}</span> : null}
-      </form>
-    </details>
+    <Card className="card-lift relative flex h-full flex-col" data-testid="project-card" data-project-id={p.id} data-href={href}>
+      <CardHeader className="gap-3 pb-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <CardTitle className="min-w-0 truncate" title={p.name}>
+                <Link to={href} className="rounded-sm after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card-link">{p.name}</Link>
+              </CardTitle>
+              {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} className="shrink-0" data-testid="env-badge">{p.environment}</Badge> : null}
+            </div>
+            {p.base_url
+              ? <Tip text={p.base_url} className="relative z-10 mt-1 block min-w-0"><p className="truncate text-s text-fg-3" data-testid="card-url">{p.base_url}</p></Tip>
+              : <p className="mt-1 text-s text-fg-3" data-testid="card-url">no base URL</p>}
+          </div>
+          <ChevronRight className="h-4 w-4 shrink-0 text-fg-3" aria-hidden="true" />
+        </div>
+        <div className="flex items-center gap-2 text-s text-fg-2" data-testid="card-status-line">
+          {last
+            ? (<>
+                <StatusWord status={last.status} className="relative z-10" prefix="Last run" />
+                <span aria-hidden="true">·</span>
+                <Tip text={last.started_at ?? 'start time not recorded'} className="relative z-10">{fmtDate(last.started_at)}</Tip>
+              </>)
+            : <span>No runs yet</span>}
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col gap-4 pt-0">
+        <dl className="grid grid-cols-3 gap-1.5" data-testid="card-tiles">
+          <CardTile label="Verified tests" term="latestShipped" testid="latest-shipped" value={latest === null ? null : String(latest)} missing="pre-v2 summary" sub="in the latest run" />
+          <CardTile label="To review" term="unresolvedFindings" testid="unresolved-findings" value={p.unresolved_findings === null ? null : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : 'muted'} missing="no reported run" sub="product behavior" />
+          <CardTile label="Spent" term="spendMonth" testid="spend-month" tone="cost" value={<Tip className="relative z-10" text={`exact: ${exactMoney(p.spend_month)}`}>{money(p.spend_month)}</Tip>} sub="this month" />
+        </dl>
+        <div className="flex flex-col gap-2" data-testid="card-coverage">
+          <div className="flex items-center justify-between gap-2 text-s">
+            <span className="flex items-center gap-1 text-fg-2">Requirements covered <InfoTerm term="coverage" className="relative z-10" /></span>
+            {cov ? <span className="tabular-nums font-medium text-fg" data-testid="coverage-latest">{cov.covered} of {cov.total}</span> : null}
+          </div>
+          <div className="flex h-8 items-center">
+            {cov
+              ? (<div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-3" role="progressbar" aria-label="Requirements covered" aria-valuemin={0} aria-valuemax={100} aria-valuenow={cov.percent} data-testid="coverage-bar" data-percent={cov.percent}>
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${cov.percent}%` }} data-testid="coverage-bar-fill" />
+                </div>)
+              : <span className="text-s text-fg-3" data-testid="coverage-none">No requirements document used yet</span>}
+          </div>
+        </div>
+        <div className="mt-auto flex items-center gap-1.5 border-t border-line pt-3 text-s text-fg-3" data-testid="card-footer">
+          <span className="font-medium text-fg"><span data-testid="runs-count">{p.runs}</span> run{p.runs === 1 ? '' : 's'}</span>
+          {p.shipped === null ? null : (<>
+            <span aria-hidden="true">·</span>
+            <span><span className="tabular-nums" data-testid="shipped">{p.shipped}</span> verified test{p.shipped === 1 ? '' : 's'} in total</span>
+          </>)}
+          {p.legacy_runs ? <InfoTip testid="legacy-note" label="About pre-v2 runs" className="relative z-10" text={`${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored; pre-v2 runs have no verified-test count.`} /> : null}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
-const inputCls = 'h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg placeholder:text-fg-2 focus:outline-none focus:ring-2 focus:ring-accent';
-
-const NA_TITLE = 'no reported runs; pre-v2 records only';
-
-function dateRange(first: string | null, last: string | null): string {
-  const a = fmtDate(first);
-  const b = fmtDate(last);
-  return a === b ? a : `${a} to ${b}`;
+/**
+ * One metric tile on a card: a label with its glossary icon, the number,
+ * one muted sub-line. A null value renders the reason in words, never a
+ * number and never n/a.
+ */
+function CardTile({ label, term, value, sub, tone, testid, missing }: { label: string; term: GlossaryKey; value: ReactNode | null; sub: string; tone?: 'finding' | 'cost' | 'muted'; testid: string; missing?: string }) {
+  return (
+    <div className="flex min-w-0 flex-col rounded-md border border-line bg-bg-2 px-2.5 py-2.5">
+      <dt className="flex items-center gap-1 whitespace-nowrap text-s text-fg-2"><span>{label}</span><InfoTerm term={term} className="relative z-10 h-3.5 w-3.5 [&>svg]:h-3 [&>svg]:w-3" /></dt>
+      {value === null
+        ? <dd className="mt-1.5 text-s text-fg-3" data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
+        : <dd className={cn('money mt-1.5 text-l font-semibold leading-none', tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : tone === 'muted' ? 'text-neutral' : 'text-fg')} data-testid={testid}>{value}</dd>}
+      <dd className="mt-1.5 text-s text-fg-3">{sub}</dd>
+    </div>
+  );
 }
 
-function Stat({ label, value, tone, mono, testid, sub, title }: { label: string; value: string; tone?: 'finding' | 'cost'; mono?: boolean; testid: string; sub?: string; title?: string }) {
+/** The compact table of projects that are not cards: pre-v2 summaries, projects with no runs yet, the Unassigned record. */
+function EarlierTable({ projects }: { projects: ProjectCard[] }) {
   return (
-    <div>
-      <dd className={`text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : ''} ${mono ? 'mono' : ''}`} data-testid={testid} title={title}>{value}</dd>
-      <dt className="mt-1 text-s text-fg-2">{label}</dt>
-      {sub ? <div className="mt-0.5 text-s text-fg-3" data-testid={`${testid}-sub`} title="Pre-v2 records only recorded scenarios explored, never a shipped count">{sub}</div> : null}
+    <div id="earlier-table" className="overflow-auto rounded-lg border border-line bg-bg-1" data-testid="earlier-table">
+      <table className="w-full text-m">
+        <thead className="bg-bg-2 text-left text-xs font-semibold uppercase tracking-wide text-fg-2">
+          <tr>
+            <th className="h-9 px-4">Project</th>
+            <th className="h-9 px-4">Host</th>
+            <th className="h-9 px-4 text-right"><Term term="runs">Runs</Term></th>
+            <th className="h-9 px-4 text-right"><Term term="explored">Scenarios explored</Term></th>
+            <th className="h-9 px-4"><Term term="lastRun">Last run</Term></th>
+            <th className="h-9 px-4"><Term term="legacy">Record</Term></th>
+          </tr>
+        </thead>
+        <tbody>
+          {projects.map((p) => {
+            const unassigned = p.id === UNASSIGNED;
+            const noRuns = p.runs === 0;
+            return (
+              <tr key={p.id} className="border-t border-line hover:bg-bg-2" data-testid="earlier-row" data-project-id={p.id}>
+                <td className="px-4 py-2.5"><Link to={`/projects/${encodeURIComponent(p.id)}`} className="font-medium text-fg hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="earlier-name">{unassigned ? 'Unassigned' : p.name}</Link></td>
+                <td className="px-4 py-2.5 text-fg-2" data-testid="earlier-host">{unassigned ? 'no URL' : (hostOf(p.base_url) || 'no base URL')}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-fg" data-testid="earlier-runs">{p.runs}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-fg" data-testid="earlier-explored">{noRuns ? <span className="text-fg-3">none</span> : p.legacy_explored}</td>
+                <td className="px-4 py-2.5 text-fg-2" data-testid="earlier-last">{p.last_run ? <Tip text={p.last_run.started_at ?? 'start time not recorded'}>{fmtDate(p.last_run.started_at)}</Tip> : <span className="text-fg-3">no runs yet</span>}</td>
+                <td className="px-4 py-2.5"><Term term={noRuns ? 'runs' : 'legacy'} className="text-xs text-fg-3">{noRuns ? 'no runs' : 'summary only'}</Term></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

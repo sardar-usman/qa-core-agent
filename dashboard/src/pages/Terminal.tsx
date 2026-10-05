@@ -5,6 +5,7 @@ import { api, type ParsedCommand } from '@/lib/api';
 import { startCommand, useGateway } from '@/lib/gateway';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { PageHeader } from '@/components/PageHeader';
 import { buildCommand, defaultForm, formFromRequest, startBlocker, validateSrsFile, type TerminalForm } from '@/lib/command';
 import { useSessionOverrides } from '@/lib/session-overrides';
 import { fmtDate } from '@/lib/utils';
@@ -126,10 +127,8 @@ export function TerminalPage() {
 
   return (
     <div className="flex flex-col gap-5" data-testid="terminal">
-      <header className="flex flex-wrap items-baseline gap-2">
-        <h1 className="text-m font-semibold">Terminal</h1>
-        <span className="text-s text-fg-2">Start a QA-Core run and watch it live. Commands only, no shell.</span>
-        <details className="relative ml-auto text-s" data-testid="usage-help">
+      <PageHeader title="Terminal" description="Start a QA-Core run and watch it live. Commands only, no shell.">
+        <details className="relative text-s" data-testid="usage-help">
           <summary className="inline-flex cursor-pointer items-center gap-1 text-fg-2 hover:text-fg"><HelpCircle className="h-3.5 w-3.5" /> usage</summary>
           <div className="absolute right-0 z-10 mt-1 w-[28rem] rounded-lg border border-line bg-bg-1 p-3 text-fg-2 shadow-lg">
             <div className="mb-1 font-semibold text-fg">Commands the gateway accepts</div>
@@ -143,7 +142,7 @@ export function TerminalPage() {
             <div className="mt-2">Every flag the CLI accepts works here the same way. Words after the URL are a natural-language feature hint.</div>
           </div>
         </details>
-      </header>
+      </PageHeader>
 
       {/* Tier 1: what to test, with what, and go. */}
       <section className="rounded-lg border border-line bg-bg-1 p-4" data-testid="composer" data-tier="top">

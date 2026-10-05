@@ -254,8 +254,8 @@ export interface ProjectCard {
   unresolved_findings: number | null;
   spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
-  /** Rule coverage percent per run (oldest first), for the sparkline; empty without SRS runs. */
-  coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
+  /** Rule coverage per SRS run (oldest first): covered rules, all rules, and the percent computed from the same two counts; empty without SRS runs. */
+  coverage_series: Array<{ run_id: string; started_at: string | null; covered: number; total: number; percent: number }>;
   /** The project-level requirements document, read from output/<slug>/srs/ (files are truth). */
   srs: { name: string; uploaded_at: string; path: string } | null;
 }
@@ -293,7 +293,7 @@ function projectCard(db: Database.Database, p: Record<string, unknown>, root?: s
     legacy_first_at: agg.legacy_first_at ?? null, legacy_last_at: agg.legacy_last_at ?? null,
     unresolved_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
-    coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),
+    coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, covered: c.covered, total: c.total, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),
   };
 }
 

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- QA-Core mark: isometric cube, flat shaded in the SprintSynergy pair (mint top, teal left, deep teal right). Same geometry as src/components/BrandMark.tsx. -->
+  <polygon points="16,3 27.3,9.5 16,16 4.7,9.5" fill="#59DFCF"/>
+  <polygon points="4.7,9.5 16,16 16,29 4.7,22.5" fill="#076887"/>
+  <polygon points="16,16 27.3,9.5 27.3,22.5 16,29" fill="#05485E"/>
+</svg>

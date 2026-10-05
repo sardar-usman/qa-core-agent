@@ -61,3 +61,6 @@ Desktop.ini
 .DS_Store
 repomix-output.xml
 packages/
+
+# Playwright MCP snapshots written while driving the dashboard from Claude Code
+.playwright-mcp/
