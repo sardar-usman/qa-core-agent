@@ -8,7 +8,8 @@ export function readTheme(): Theme {
     const stored = localStorage.getItem(KEY);
     if (stored === 'light' || stored === 'dark') return stored;
   } catch { /* private mode */ }
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  // Light is the default when nothing is stored (redesign v2); a saved choice is kept.
+  return 'light';
 }
 
 export function applyTheme(t: Theme): void {

@@ -70,6 +70,9 @@ export const GLOSSARY = {
   // Source: src/server/api.ts projectCard coverage_series (covered and total per SRS run from the rule_coverage rows, percent computed from the same two counts); CLAUDE.md invariant 26 (rule-coverage.json).
   coverage: { term: 'Requirements covered', text: 'How many rules of the requirements document the latest SRS run covered, out of all its rules, read from that run\'s rule-coverage file. The bar shows the same two numbers as a share.' },
 
+  // Source: src/server/api.ts projectTotals (websites, latest_verified, to_review and spend_month summed over the projects that render as cards); CLAUDE.md invariant 66 (the headline is built from the server totals).
+  projectTotals: { term: 'Headline totals', text: 'Summed on the server over the websites that have a run with a report: tests verified in each latest run, product findings still to review, and this month\'s spend. Hidden earlier experiments never count.' },
+
   // Source: src/server/api.ts projectCard (COUNT of runs for the project, reported and legacy).
   runs: { term: 'Runs', text: 'Every run indexed for this project, whether it has a report or is a pre-v2 record.' },
 
@@ -83,7 +86,7 @@ export const GLOSSARY = {
   earlierExperiments: { term: 'Earlier experiments', text: 'Projects whose runs are all pre-v2 summaries, projects with no runs yet, and the Unassigned record. They have no verified-test count to show, so they are listed in a table instead of cards; nothing is deleted.' },
 
   // Source: CLAUDE.md invariants 47 and 50 (every number comes from the run report or the index built from the files; the index is rebuildable); src/server/api.ts listProjects.
-  projectsPage: { term: 'Projects', text: 'One card per website the agent has tested. Every number on this page is read from the run index, which is built from the run reports on disk; the page computes nothing.' },
+  projectsPage: { term: 'Projects', text: 'One card per website the agent has tested. Every number on this page, the headline totals included, is read from the run index, which is built from the run reports on disk and summed on the server; the page computes nothing.' },
 
   // Source: src/server/api.ts projectCoverage (runs_covered and runs_reported per rule, counted over the rule_coverage rows); CLAUDE.md invariant 26 (rule-coverage.json per SRS run).
   runsCovered: { term: 'Runs covered', text: 'How many of this project\'s SRS runs covered the rule, over how many SRS runs reported it. Counted from the rule-coverage file of each run.' },

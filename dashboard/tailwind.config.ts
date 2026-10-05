@@ -4,8 +4,8 @@ import animate from 'tailwindcss-animate';
 // Design tokens (PR F, part 1). Values live as CSS variables in
 // src/index.css so both themes share the same class names. Fonts come from
 // the bundled @fontsource-variable packages (imported in src/main.tsx), never
-// a CDN: Inter for all UI text and all numbers (tabular figures on), Geist
-// Mono only for run ids, commands and code.
+// a CDN: Plus Jakarta Sans for all UI text and all numbers (tabular figures
+// on), Geist Mono only for run ids, commands and code.
 //
 // Type scale: xs 11, s 12 (labels), m 13 (body and tables), section 15
 // semibold, title 22 semibold (page titles), l 24 semibold (key metrics),
@@ -17,7 +17,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
+        sans: ['Plus Jakarta Sans Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
         mono: ['Geist Mono Variable', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       fontSize: {
@@ -34,6 +34,7 @@ export default {
         line: { DEFAULT: 'hsl(var(--line))', strong: 'hsl(var(--line-strong))' },
         fg: { DEFAULT: 'hsl(var(--text))', 2: 'hsl(var(--text-2))', 3: 'hsl(var(--text-3))' },
         accent: { DEFAULT: 'hsl(var(--accent))', soft: 'hsl(var(--accent) / 0.12)' },
+        'nav-active': { DEFAULT: 'hsl(var(--nav-active-bg))', fg: 'hsl(var(--nav-active-fg))' },
         brand: { DEFAULT: 'hsl(var(--brand))', fg: 'hsl(var(--brand-fg))', soft: 'hsl(var(--brand) / 0.12)' },
         pass: { DEFAULT: 'hsl(var(--pass))', soft: 'hsl(var(--pass) / 0.12)' },
         rework: { DEFAULT: 'hsl(var(--rework))', soft: 'hsl(var(--rework) / 0.14)' },
@@ -42,7 +43,7 @@ export default {
         neutral: { DEFAULT: 'hsl(var(--neutral))', soft: 'hsl(var(--neutral) / 0.12)' },
         cost: { DEFAULT: 'hsl(var(--cost))', soft: 'hsl(var(--cost) / 0.12)' },
       },
-      borderRadius: { lg: '12px', md: '9px', sm: '6px' },
+      borderRadius: { xl: '18px', lg: '12px', md: '9px', sm: '6px' },
       boxShadow: { lift: 'var(--shadow-lift)' },
       maxWidth: { content: '1280px' },
     },

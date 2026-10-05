@@ -34,7 +34,7 @@ export function FindingsPage({ refreshKey }: { refreshKey: number }) {
 
   return (
     <div className="flex flex-col gap-6" data-testid="findings-page">
-      <PageHeader title="Findings" description="Every deduped finding across projects, with the runs that saw it. Status and notes are yours to set and survive every re-index." />
+      <PageHeader title="To review" description="Every deduped finding across projects, with the runs that saw it. Status and notes are yours to set and survive every re-index." />
       <FindingsHeading count={productFindings.length} />
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 text-s text-fg-2">Project

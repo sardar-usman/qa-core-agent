@@ -67,7 +67,7 @@ export function LocatorFailuresSection({ findings, showProject = true, open = fa
                   const last = f.last_seen_at ? fmtDate(f.last_seen_at) : f.last_seen_run_id;
                   return (
                     <tr key={f.id} className="border-t border-line align-top" data-testid="locator-failure-row" data-finding-id={f.id}>
-                      {showProject ? <td className="px-3 py-3"><Link to={`/projects/${encodeURIComponent(f.project_id)}`} className="truncate text-fg hover:underline">{f.project_name}</Link></td> : null}
+                      {showProject ? <td className="px-3 py-3"><Link to={`/projects/${encodeURIComponent(f.project_id)}`} className="block truncate text-fg hover:underline" title={f.project_name}>{f.project_name}</Link></td> : null}
                       <td className="px-3 py-3">
                         <div className="font-semibold text-fg" data-testid="locator-failure-scenario">{f.scenario}</div>
                         {f.observed ? <Tip text={f.observed} className="block"><div className="line-clamp-2 text-s text-fg-3">{f.observed}</div></Tip> : null}
@@ -147,7 +147,7 @@ function FindingRowView({ f, showProject, onChange }: { f: FindingRow; showProje
   const seenTip = sameDay ? `seen ${f.times_seen} time${f.times_seen === 1 ? '' : 's'}, ${f.first_seen_at ?? f.first_seen_run_id}` : `first ${f.first_seen_at ?? f.first_seen_run_id}, last ${f.last_seen_at ?? f.last_seen_run_id}`;
   return (
     <tr className="border-t border-line align-top" data-testid="finding-row" data-finding-id={f.id} data-status={f.status}>
-      {showProject ? <td className="px-3 py-3"><Link to={`/projects/${encodeURIComponent(f.project_id)}`} className="truncate text-fg hover:underline">{f.project_name}</Link></td> : null}
+      {showProject ? <td className="px-3 py-3"><Link to={`/projects/${encodeURIComponent(f.project_id)}`} className="block truncate text-fg hover:underline" title={f.project_name}>{f.project_name}</Link></td> : null}
       <td className="px-3 py-3">
         <div className="font-semibold text-finding" data-testid="finding-scenario">{f.scenario}</div>
         {f.observed ? <Tip text={f.observed} className="block"><div className="line-clamp-2 text-s text-fg-3" data-testid="finding-observed">{f.observed}</div></Tip> : null}

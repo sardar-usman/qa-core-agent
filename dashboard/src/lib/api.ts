@@ -16,6 +16,9 @@ export interface ProjectCard {
   srs: { name: string; uploaded_at: string; path: string } | null;
 }
 
+/** Summed on the server over the projects that render as cards (src/server/api.ts projectTotals). */
+export interface ProjectTotals { websites: number; latest_verified: number; to_review: number; spend_month: number }
+
 export interface GatewaySettings {
   run_settings: Array<{ name: string; label: string; value: string; fromEnv: boolean; help?: string }>;
   output_root: string;
@@ -180,6 +183,8 @@ async function get<T>(path: string): Promise<T> {
 
 export const api = {
   projects: () => get<{ projects: ProjectCard[] }>('/api/projects').then((r) => r.projects),
+  /** The cards plus the server-summed totals for the Projects headline and the sidebar badge (the page adds nothing). */
+  projectsWithTotals: () => get<{ projects: ProjectCard[]; totals: ProjectTotals }>('/api/projects'),
   project: (id: string) => get<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
   projectCoverage: (id: string) => get<ProjectCoverage>(`/api/projects/${encodeURIComponent(id)}/coverage`),
   projectTrends: (id: string) => get<ProjectTrends>(`/api/projects/${encodeURIComponent(id)}/trends`),
