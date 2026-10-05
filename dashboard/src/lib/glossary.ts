@@ -49,11 +49,8 @@ export const GLOSSARY = {
   // Source: CLAUDE.md pipeline table (stages 3 to 5: Critic, one fresh replay, three stability re-runs) and invariant 63 (the emitted-spec check runs before the zip and drops a test that fails twice); src/server/db/indexer.ts runRowFromReport (shipped = scenarios.length, the report's emitted list).
   shipped: { term: 'Shipped', text: 'A scenario that passed the Critic, one fresh replay and three stability re-runs, then the emitted-spec check, and is in the framework zip. Counted from the run report\'s scenario list.' },
 
-  // Source: src/server/api.ts projectCard (SUM of shipped over runs WHERE report_path IS NOT NULL; null when the project has no reported run); CLAUDE.md invariant 50.
-  testsShipped: { term: 'Tests shipped', text: 'Shipped scenarios summed over this project\'s runs that have a report. Pre-v2 records are left out because they never recorded a shipped count.' },
-
-  // Source: src/server/api.ts projectCard (last_run: the newest run by start time, its shipped column).
-  latestShipped: { term: 'Tests in the latest run', text: 'The shipped count of this project\'s most recent run, read from that run\'s index row.' },
+  // Source: src/server/api.ts projectCard (last_run.shipped: the newest run's shipped column; shipped: SUM of shipped over runs WHERE report_path IS NOT NULL); CLAUDE.md pipeline table (stages 3 to 5) and invariant 63 (the emitted-spec check).
+  latestShipped: { term: 'Verified tests', text: 'Tests in the latest run that passed the Critic, one fresh replay, three stability re-runs and the emitted-spec check, and shipped in the framework zip. The total beneath sums the same count over every run with a report; pre-v2 records never recorded one.' },
 
   // Source: CLAUDE.md pipeline table (stage 1, Planner) and invariants 31 and 63 (the reconciliation identity); src/server/db/indexer.ts runRowFromReport (planned = reconciliation.planned).
   planned: { term: 'Planned', text: 'Scenarios the Planner listed for the run before exploration began. Each one ends in exactly one bucket: shipped, dropped, incomplete, finding, skipped or emitted failed.' },
@@ -62,19 +59,16 @@ export const GLOSSARY = {
   explored: { term: 'Explored', text: 'Scenarios the Explorer recorded in the browser. A pre-v2 record kept only this count, written before replay and stability dropped anything, so it is never a shipped count.' },
 
   // Source: src/server/api.ts projectCard (COUNT of findings WHERE status IN open, triaged); CLAUDE.md invariant 50 (finding statuses) and invariant 13 (a finding is product behavior, never a test failure).
-  unresolvedFindings: { term: 'Unresolved findings', text: 'Findings with status open or triaged. A finding is product behavior the agent observed that differed from what the scenario expected; it is never a test failure.' },
+  unresolvedFindings: { term: 'To review', text: 'Findings with status open or triaged, waiting for a person to look at them. A finding is product behavior the agent saw that differed from what the scenario expected; it is never a test failure.' },
 
   // Source: src/server/api.ts projectCard and monthStart (SUM of cost_total over runs started since the first day of the current UTC month); src/agent/cost-total.ts totalCost (API cost only).
-  spendMonth: { term: 'Spend this month', text: 'Model spend, API cost only, summed over this project\'s runs started since the first day of the current month (UTC).' },
+  spendMonth: { term: 'Spent', text: 'Model spend this month, API cost only, summed over this project\'s runs started since the first day of the current month (UTC). The number is rounded to cents and its tooltip holds the exact stored value.' },
 
-  // Source: src/server/api.ts projectCard coverage_series (covered rules over all rules per SRS run, rounded to a whole percent); CLAUDE.md invariant 26 (rule-coverage.json).
-  coverage: { term: 'Coverage', text: 'The share of SRS rules a run covered, from its rule-coverage file: covered rules over all rules, rounded to a whole percent. The line shows each SRS run in order; the number is the latest.' },
+  // Source: src/server/api.ts projectCard coverage_series (covered and total per SRS run from the rule_coverage rows, percent computed from the same two counts); CLAUDE.md invariant 26 (rule-coverage.json).
+  coverage: { term: 'Requirements covered', text: 'How many rules of the requirements document the latest SRS run covered, out of all its rules, read from that run\'s rule-coverage file. The bar shows the same two numbers as a share.' },
 
   // Source: src/server/api.ts projectCard (COUNT of runs for the project, reported and legacy).
   runs: { term: 'Runs', text: 'Every run indexed for this project, whether it has a report or is a pre-v2 record.' },
-
-  // Source: src/server/api.ts projectCoverage (srs_runs: runs that recorded rule coverage); CLAUDE.md invariant 26 (--srs).
-  srsRuns: { term: 'SRS runs', text: 'Runs given a requirements document (the srs option). Only those record rule coverage.' },
 
   // Source: src/server/db/indexer.ts importLegacyRecords and runRowFromLegacyRecord (.qa-core/sites records imported with status legacy); STATE.md standing decisions.
   legacy: { term: 'Summary only (pre-v2)', text: 'A record from before runs had their own folder. The gateway kept only the count explored, the cost, the model and the duration: there is no report, no zip and no shipped count.' },
@@ -83,7 +77,7 @@ export const GLOSSARY = {
   lastRun: { term: 'Last run', text: 'The project\'s most recent run by start time, with its status and when it started.' },
 
   // Source: dashboard/src/pages/Projects.tsx splitProjects (the grouping rule) over src/server/api.ts projectCard (reported_runs, legacy_runs, runs).
-  earlierExperiments: { term: 'Earlier experiments (pre-v2)', text: 'Projects whose runs are all pre-v2 summaries, projects with no runs yet, and the Unassigned record. They have no shipped count to show, so they are listed in a table instead of cards; nothing is deleted.' },
+  earlierExperiments: { term: 'Earlier experiments', text: 'Projects whose runs are all pre-v2 summaries, projects with no runs yet, and the Unassigned record. They have no verified-test count to show, so they are listed in a table instead of cards; nothing is deleted.' },
 
   // Source: CLAUDE.md invariants 47 and 50 (every number comes from the run report or the index built from the files; the index is rebuildable); src/server/api.ts listProjects.
   projectsPage: { term: 'Projects', text: 'One card per website the agent has tested. Every number on this page is read from the run index, which is built from the run reports on disk; the page computes nothing.' },

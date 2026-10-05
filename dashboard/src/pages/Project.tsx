@@ -11,7 +11,8 @@ import { RunsTable } from '@/components/RunsTable';
 import { FindingsHeading, FindingsTable } from '@/components/FindingsTable';
 import { CoverageTable } from '@/components/CoverageTable';
 import { Trends } from '@/components/Trends';
-import { Term, Tip } from '@/components/Term';
+import { InfoTerm, InfoTip, Term, Tip } from '@/components/Term';
+import type { GlossaryKey } from '@/lib/glossary';
 
 const ENV_VARIANT: Record<string, 'accent' | 'rework' | 'neutral'> = { staging: 'accent', production: 'rework', other: 'neutral' };
 
@@ -53,7 +54,6 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
   const p = detail.project;
   const s = detail.summary;
   const latest = s.last_run?.shipped ?? null;
-  const runsWord = s.reported_runs === s.runs ? 'run' : 'reported run';
   return (
     <div className="flex flex-col gap-7" data-testid="project-page" data-project-id={p.id}>
       <Link to="/" className="inline-flex items-center gap-1 text-s text-fg-2 hover:text-fg" data-testid="back-link"><ArrowLeft className="h-3.5 w-3.5" /> Back to projects</Link>
@@ -69,14 +69,18 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
           {p.id !== 'unassigned' ? <div className="ml-auto"><EditProject id={p.id} name={p.name} environment={p.environment} onSaved={() => setReload((n) => n + 1)} /></div> : null}
         </div>
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Tile label={<Term term="latestShipped">Tests in the latest run</Term>} value={latest === null ? null : String(latest)} missing={s.last_run ? 'latest run is a pre-v2 summary' : 'no runs yet'} testid="project-latest-shipped">
-            {s.shipped === null ? null : <div className="mt-1.5 text-xs text-fg-2"><span className="tabular-nums text-fg" data-testid="project-shipped">{s.shipped}</span> <Term term="testsShipped">shipped</Term> across <span className="tabular-nums text-fg" data-testid="project-reported-runs">{s.reported_runs}</span> {runsWord}{s.reported_runs === 1 ? '' : 's'}</div>}
-            {s.legacy_runs ? <div className="mt-0.5 text-xs text-fg-3" data-testid="project-shipped-sub">{s.legacy_runs} pre-v2 run{s.legacy_runs === 1 ? '' : 's'}, {s.legacy_explored} scenario{s.legacy_explored === 1 ? '' : 's'} <Term term="explored">explored</Term></div> : null}
+          <Tile label="Verified tests" term="latestShipped" value={latest === null ? null : String(latest)} missing={s.last_run ? 'latest run is a pre-v2 summary' : 'no runs yet'} testid="project-latest-shipped" sub="in the latest run">
+            {s.shipped === null ? null : (
+              <div className="mt-1.5 flex items-center gap-1 text-xs text-fg-2" data-testid="project-shipped-line">
+                <span><span className="tabular-nums text-fg" data-testid="project-shipped">{s.shipped}</span> in total across <span className="tabular-nums text-fg" data-testid="project-runs-total">{s.runs}</span> run{s.runs === 1 ? '' : 's'}</span>
+                {s.legacy_runs ? <InfoTip testid="project-legacy-note" label="About pre-v2 runs" text={`${s.legacy_runs} pre-v2 run${s.legacy_runs === 1 ? '' : 's'}, ${s.legacy_explored} scenario${s.legacy_explored === 1 ? '' : 's'} explored; pre-v2 runs have no verified-test count.`} /> : null}
+              </div>
+            )}
           </Tile>
-          <Tile label={<Term term="unresolvedFindings">Unresolved findings</Term>} value={s.unresolved_findings === null ? null : String(s.unresolved_findings)} tone={s.unresolved_findings ? 'finding' : undefined} missing="no run with a report" testid="project-unresolved-findings" />
-          <Tile label={<Term term="spendMonth">Spend this month</Term>} value={<Tip text={`exact: ${exactMoney(s.spend_month)}`}>{money(s.spend_month)}</Tip>} tone="cost" testid="project-spend-month" />
-          <Tile label={<Term term="runs">Runs</Term>} value={String(s.runs)} testid="project-runs">
-            <div className="mt-1.5 text-xs text-fg-2"><span className="tabular-nums text-fg" data-testid="project-runs-reported">{s.reported_runs}</span> <Term term="reportedRuns">with a report</Term></div>
+          <Tile label="To review" term="unresolvedFindings" value={s.unresolved_findings === null ? null : String(s.unresolved_findings)} tone={s.unresolved_findings ? 'finding' : 'muted'} missing="no run with a report" testid="project-unresolved-findings" sub="product behavior" />
+          <Tile label="Spent" term="spendMonth" value={<Tip text={`exact: ${exactMoney(s.spend_month)}`}>{money(s.spend_month)}</Tip>} tone="cost" testid="project-spend-month" sub="this month" />
+          <Tile label="Runs" term="runs" value={String(s.runs)} testid="project-runs" sub="reported and pre-v2">
+            <div className="mt-1.5 flex items-center gap-1 text-xs text-fg-2"><span><span className="tabular-nums text-fg" data-testid="project-runs-reported">{s.reported_runs}</span> with a report</span><InfoTerm term="reportedRuns" /></div>
           </Tile>
         </dl>
       </header>
@@ -110,14 +114,19 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
   );
 }
 
-/** One stat tile: label above value, left aligned. A null value renders its reason in words, never a number and never n/a. */
-function Tile({ label, value, tone, testid, missing, children }: { label: ReactNode; value: ReactNode | null; tone?: 'finding' | 'cost'; testid: string; missing?: string; children?: ReactNode }) {
+/**
+ * One stat tile, the same shape as a project card tile: a label with its
+ * glossary icon, the number, one muted sub-line, then any extra line. A
+ * null value renders its reason in words, never a number and never n/a.
+ */
+function Tile({ label, term, value, sub, tone, testid, missing, children }: { label: string; term: GlossaryKey; value: ReactNode | null; sub: string; tone?: 'finding' | 'cost' | 'muted'; testid: string; missing?: string; children?: ReactNode }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1 px-4 py-3">
-      <dt className="text-xs text-fg-2">{label}</dt>
+      <dt className="flex items-center gap-1 text-s text-fg-2"><span>{label}</span><InfoTerm term={term} /></dt>
       {value === null
         ? <dd className="mt-1.5 text-s text-fg-3" data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
-        : <dd className={`money mt-1.5 text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : 'text-fg'}`} data-testid={testid}>{value}</dd>}
+        : <dd className={`money mt-1.5 text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : tone === 'muted' ? 'text-neutral' : 'text-fg'}`} data-testid={testid}>{value}</dd>}
+      <dd className="mt-1.5 text-s text-fg-3">{sub}</dd>
       {children}
     </div>
   );

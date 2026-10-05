@@ -65,7 +65,7 @@
   /* Every number on the dashboard lines up: tabular figures everywhere, in both families. */
   html { font-variant-numeric: tabular-nums; }
   body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
-  /* Numbers, money included, are Geist Sans with tabular figures; .mono is for run ids, commands and code only. */
+  /* Numbers, money included, are Inter with tabular figures; .mono is for run ids, commands and code only. */
   .money { @apply font-sans tabular-nums; }
   .mono { @apply font-mono; }
   /* A visible focus ring on anything focusable that does not draw its own. */

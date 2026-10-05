@@ -8,7 +8,8 @@ export interface ProjectCard {
   /** null when the project has no reported run (pre-v2 records only): unknown, never 0. */
   shipped: number | null; legacy_runs: number; legacy_explored: number; legacy_first_at: string | null; legacy_last_at: string | null; unresolved_findings: number | null; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
-  coverage_series: Array<{ run_id: string; started_at: string | null; percent: number }>;
+  /** Per SRS run, oldest first: covered rules, all rules, and the percent the API computed from those two counts. */
+  coverage_series: Array<{ run_id: string; started_at: string | null; covered: number; total: number; percent: number }>;
   srs: { name: string; uploaded_at: string; path: string } | null;
 }
 

@@ -39,7 +39,7 @@ window.__contrast = function (selectors) {
   selectors.forEach(function (s) { var el = document.querySelector(s); if (!el) { out[s] = -1; return; } var a = lum(getComputedStyle(el).color), bb = lum(bgOf(el)); out[s] = Math.round(((Math.max(a, bb) + 0.05) / (Math.min(a, bb) + 0.05)) * 10) / 10; });
   return out;
 };`;
-const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-glossary="testsShipped"]', '[data-glossary="latestShipped"]', '[data-testid="card-url"]', '[data-testid="runs-count"]', '[data-glossary="srsRuns"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-testid="earlier-note"]', '[data-testid="new-project-open"]', '[data-testid="earlier-row"] [data-glossary="legacy"]', '[data-testid="earlier-host"]'];
+const PROJECTS_CONTRAST = ['[data-testid="latest-shipped"]', '[data-testid="shipped"]', '[data-testid="unresolved-findings"]', '[data-testid="spend-month"]', '[data-testid="card-tiles"] dt', '[data-testid="card-tiles"] dd:last-child', '[data-testid="card-url"]', '[data-testid="runs-count"]', '[data-testid="card-footer"]', '[data-testid="coverage-latest"]', '[data-testid="coverage-none"]', '[data-testid="card-status-line"]', '[data-testid="gateway-status"]', '[data-testid="session-spend"]', '[data-testid="model-chip"]', '[data-testid="page-header"] h1', '[data-testid="page-header"] p', '[data-status="completed"]', '[data-testid="earlier-note"]', '[data-testid="new-project-open"]', '[data-testid="earlier-row"] [data-glossary="legacy"]', '[data-testid="earlier-host"]'];
 const RUNS_CONTRAST = ['[data-testid="cost"]', '[data-testid="flake-rate"]', '[data-testid="duration"]', '[data-testid="run-source"]', '[data-testid="shipped-planned"]', '[data-status="completed"]', '[data-status="stopped"]', '[data-status="empty"]', '[data-status="legacy"]', '[data-testid="toggle-legacy"]', '[data-testid="runs-count"]', 'th [data-glossary="cost"]'];
 
 let pass = 0;
@@ -145,7 +145,7 @@ for (const theme of ['dark', 'light'] as const) {
     spendTip: el.querySelector('[data-testid="spend-month"] [data-tip]')?.getAttribute('data-tip') ?? null,
     latest: el.querySelector('[data-testid="latest-shipped"]')?.textContent ?? null,
     naTerms: Array.from(el.querySelectorAll('[data-glossary="notAvailable"]')).length,
-    legacySub: el.querySelector('[data-testid="shipped-sub"]')?.textContent ?? null,
+    legacySub: el.querySelector('[data-testid="legacy-note"]')?.getAttribute('data-tip') ?? null,
     envBadge: el.querySelector('[data-testid="env-badge"]')?.textContent ?? null,
     status: el.querySelector('[data-status]')?.getAttribute('data-status'),
     text: el.textContent ?? '',
@@ -167,15 +167,22 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: the Projects page renders no "n/a" text`, (await page.evaluate(() => (document.body.innerText.match(/\bn\/a\b/g) || []).length)) === 0);
   // Earlier experiments: a muted line with the count and a Show link; the table lists the legacy-only project with its explored count and "summary only".
   const noteBefore = await page.evaluate(() => ({ note: document.querySelector('[data-testid="earlier-note"]')?.textContent ?? '', toggle: document.querySelector('[data-testid="earlier-toggle"]')?.textContent ?? '', table: !!document.querySelector('[data-testid="earlier-table"]') }));
-  check(`${theme}: under the grid one muted line says "1 earlier experiment (pre-v2 summary) is not shown." with a Show link and no table yet`, /^1 earlier experiment \(pre-v2 summary\) is not shown\./.test(noteBefore.note.trim()) && noteBefore.toggle === 'Show' && !noteBefore.table, JSON.stringify(noteBefore));
+  check(`${theme}: under the grid one muted line says "1 earlier experiment is hidden." with a Show link and no table yet`, /^1 earlier experiment is hidden\./.test(noteBefore.note.trim()) && noteBefore.toggle === 'Show' && !noteBefore.table, JSON.stringify(noteBefore));
   await page.click('[data-testid="earlier-toggle"]');
   await page.waitForSelector('[data-testid="earlier-table"]');
   const earlierRows = await page.$$eval('[data-testid="earlier-row"]', (els) => els.map((el) => ({ id: (el as HTMLElement).dataset.projectId, name: el.querySelector('[data-testid="earlier-name"]')?.textContent, host: el.querySelector('[data-testid="earlier-host"]')?.textContent, runs: el.querySelector('[data-testid="earlier-runs"]')?.textContent, explored: el.querySelector('[data-testid="earlier-explored"]')?.textContent, label: el.lastElementChild?.textContent })));
   check(`${theme}: Show reveals the compact table: the demoqa record with 1 run, 1 scenario explored and the "summary only" label in words, never a shipped count`, earlierRows.length === 1 && earlierRows[0]?.id === 'demoqa-com' && earlierRows[0]?.host === 'demoqa.com' && earlierRows[0]?.runs === '1' && earlierRows[0]?.explored === '1' && earlierRows[0]?.label === 'summary only', JSON.stringify(earlierRows));
-  // Tooltips render the glossary entry, word for word (hover, then read role=tooltip).
-  await page.hover('[data-project-id="saucedemo-com"] [data-glossary="testsShipped"]');
+  // Tooltips render the glossary entry, word for word (hover the tile's info icon, then read role=tooltip).
+  await page.hover('[data-project-id="saucedemo-com"] [data-glossary="latestShipped"]');
   await page.waitForSelector('[role="tooltip"]', { timeout: 5000 });
-  check(`${theme}: hovering "shipped" on a card shows the glossary entry for tests shipped`, (await page.textContent('[role="tooltip"]')) === tipText('testsShipped'), (await page.textContent('[role="tooltip"]')) ?? '');
+  check(`${theme}: hovering the "Verified tests" icon on a card shows its glossary entry`, (await page.textContent('[role="tooltip"]')) === tipText('latestShipped'), (await page.textContent('[role="tooltip"]')) ?? '');
+  // A Term trigger has no underline at rest and a dotted underline on hover (PR F part 1, third refinement).
+  const termRest = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="earlier-note"] [data-glossary]')!).textDecorationLine);
+  await page.hover('[data-testid="earlier-note"] [data-glossary]');
+  const termHover = await page.evaluate(() => { const el = document.querySelector('[data-testid="earlier-note"] [data-glossary]')!; const cs = getComputedStyle(el); return `${cs.textDecorationLine} ${cs.textDecorationStyle}`; });
+  check(`${theme}: a glossary term has no underline at rest and a dotted underline on hover`, termRest === 'none' && termHover === 'underline dotted', JSON.stringify({ termRest, termHover }));
+  // No interactive element nests in another on the page: the card is clickable through the name link's stretched overlay, not an <a> around the card.
+  check(`${theme}: no nested interactive elements on the Projects page`, (await page.evaluate(() => document.querySelectorAll('a a, a button, button button, button a').length)) === 0);
   await page.mouse.move(0, 0);
   await page.waitForSelector('[role="tooltip"]', { state: 'detached', timeout: 5000 }).catch(() => null);
   // The keyboard path: a focused trigger opens its tooltip and is described by it (aria-describedby).
@@ -213,8 +220,16 @@ for (const theme of ['dark', 'light'] as const) {
   await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'new-project-open', null, { timeout: 3000 }).catch(() => null);
   check(`${theme}: Escape closes the dialog, focus returns to the button, and no project was created`, (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'new-project-open' && ((await authGet('/api/projects')).projects as unknown[]).length === projectsBefore);
   const sauce = cards.find((c) => c.id === 'saucedemo-com')!;
-  check(`${theme}: coverage sparkline shows the latest coverage percent for the SRS project`, /coverage/.test(sauce.text) && /100%/.test(sauce.text), sauce.text.slice(-80));
-  check(`${theme}: a project without SRS runs says so`, /no SRS runs/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? ''));
+  // The requirements row: "<covered> of <total>" from the latest coverage_series entry and a bar whose width is its percent (3 of 3 after the s3 run; the earlier s2 run covered 2 of 3).
+  const sauceCov = await page.evaluate(() => ({ text: document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-latest"]')?.textContent ?? null, percent: document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-bar"]')?.getAttribute('data-percent') ?? null, width: (document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-bar-fill"]') as HTMLElement | null)?.style.width ?? null }));
+  const sauceApi = projects.find((p) => p.id === 'saucedemo-com')!.coverage_series as Array<{ covered: number; total: number; percent: number }>;
+  const sauceLatest = sauceApi[sauceApi.length - 1]!;
+  check(`${theme}: the requirements row reads "${sauceLatest.covered} of ${sauceLatest.total}" from the latest coverage_series entry and the bar width is its percent (${sauceLatest.percent}%)`, /Requirements covered/.test(sauce.text) && sauceCov.text === `${sauceLatest.covered} of ${sauceLatest.total}` && sauceCov.percent === String(sauceLatest.percent) && sauceCov.width === `${sauceLatest.percent}%` && sauceLatest.covered === 3 && sauceLatest.total === 3, JSON.stringify({ sauceCov, sauceLatest }));
+  check(`${theme}: a project without SRS runs says "No requirements document used yet" under the same label`, /Requirements covered/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && /No requirements document used yet/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? '') && !/\d+ of \d+/.test(cards.find((c) => c.id === 'the-internet-herokuapp-com')?.text ?? ''));
+  const cardGeometry = await page.$$eval('[data-testid="project-card"]', (els) => els.map((el) => ({ h: el.getBoundingClientRect().height, footer: el.querySelector('[data-testid="card-footer"]')!.getBoundingClientRect().top })));
+  check(`${theme}: every card has the same height and the footers share one top (within 1px)`, cardGeometry.length > 1 && cardGeometry.every((g) => Math.abs(g.h - cardGeometry[0]!.h) <= 1 && Math.abs(g.footer - cardGeometry[0]!.footer) <= 1), JSON.stringify(cardGeometry));
+  const fonts = await page.evaluate(() => ({ number: getComputedStyle(document.querySelector('[data-testid="latest-shipped"]')!).fontFamily, label: getComputedStyle(document.querySelector('[data-testid="card-tiles"] dt')!).fontFamily }));
+  check(`${theme}: card numbers and tile labels render in Inter, never Geist`, /Inter/.test(fonts.number) && /Inter/.test(fonts.label) && !/Geist/.test(fonts.number + fonts.label), JSON.stringify(fonts));
   const header = await page.evaluate(() => ({
     gateway: document.querySelector('[data-testid="gateway-status"]')?.textContent ?? '',
     session: document.querySelector('[data-testid="session-spend"]')?.textContent ?? '',
@@ -248,7 +263,7 @@ for (const theme of ['dark', 'light'] as const) {
   check(`${theme}: source and duration columns render (mcp source, 4m 14s duration)`, rows.some((r) => /mcp/.test(r.text)) && rows.filter((r) => r.status !== 'legacy').every((r) => /4m 14s/.test(r.text)), JSON.stringify(rows.map((r) => r.text.slice(0, 80))));
   const legacyRow = rows.find((r) => r.status === 'legacy')!;
   check(`${theme}: a pre-v2 record renders the "summary only (pre-v2)" badge, "N explored" instead of shipped/planned, and its duration`, !!legacyRow && /summary only \(pre-v2\)/.test(legacyRow.text) && legacyRow.sp === '1 explored' && /4m 15s/.test(legacyRow.text), JSON.stringify(legacyRow));
-  check(`${theme}: cards with real runs and no pre-v2 record carry no legacy line`, cards.every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
+  check(`${theme}: cards with real runs and no pre-v2 record carry no pre-v2 footer icon`, cards.every((c) => c.legacySub === null), JSON.stringify(cards.map((c) => [c.id, c.legacySub])));
   check(`${theme}: the environment badge is hidden when the environment is unset or "other"`, cards.every((c) => !c.envBadge), JSON.stringify(cards.map((c) => c.envBadge)));
   check(`${theme}: a status badge carries its glossary entry (hover "stopped")`, await (async () => { await page.hover('[data-status="stopped"]'); await page.waitForFunction((t) => document.querySelector('[role="tooltip"]')?.textContent === t, tipText('statusStopped'), { timeout: 5000 }).catch(() => null); return (await page.textContent('[role="tooltip"]')) === tipText('statusStopped'); })(), (await page.textContent('[role="tooltip"]').catch(() => null)) ?? '');
   await page.mouse.move(0, 0);

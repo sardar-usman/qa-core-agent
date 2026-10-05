@@ -1,17 +1,17 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderOpen } from 'lucide-react';
+import { ChevronRight, FolderOpen } from 'lucide-react';
 import { api, ApiError, type ProjectCard } from '@/lib/api';
+import type { GlossaryKey } from '@/lib/glossary';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/EmptyState';
 import { PageHeader } from '@/components/PageHeader';
 import { NewProjectDialog } from '@/components/NewProjectDialog';
 import { ProjectsSkeleton } from '@/components/Skeleton';
-import { Sparkline } from '@/components/Sparkline';
-import { StatusBadge } from '@/components/StatusBadge';
-import { Term, Tip } from '@/components/Term';
-import { exactMoney, fmtDate, hostOf, money } from '@/lib/utils';
+import { StatusWord } from '@/components/StatusBadge';
+import { InfoTerm, InfoTip, Term, Tip } from '@/components/Term';
+import { cn, exactMoney, fmtDate, hostOf, money } from '@/lib/utils';
 
 /**
  * Projects: one card per host with at least one run that has a report.
@@ -51,7 +51,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   }, [refreshKey, reload]);
 
   const header = (
-    <PageHeader title={<Term term="projectsPage" className="decoration-line-strong">Projects</Term>} description="Each card is one website the agent has tested. Hover any underlined label to see what it means.">
+    <PageHeader title={<Term term="projectsPage" className="decoration-line-strong">Projects</Term>} description="Each card is one website the agent has tested. Click a card to see its runs, tests and requirements.">
       <NewProjectDialog onCreated={() => setReload((n) => n + 1)} />
     </PageHeader>
   );
@@ -83,7 +83,7 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
       {earlier.length ? (
         <div className="flex flex-col gap-3" data-testid="earlier-experiments">
           <p className="text-s text-fg-3" data-testid="earlier-note">
-            <span className="tabular-nums" data-testid="earlier-count">{earlier.length}</span> <Term term="earlierExperiments">earlier experiment{earlier.length === 1 ? '' : 's'} (pre-v2 summar{earlier.length === 1 ? 'y' : 'ies'})</Term> {earlier.length === 1 ? 'is' : 'are'} not shown.{' '}
+            <span className="tabular-nums" data-testid="earlier-count">{earlier.length}</span> <Term term="earlierExperiments">earlier experiment{earlier.length === 1 ? '' : 's'}</Term> {earlier.length === 1 ? 'is' : 'are'} hidden.{' '}
             <button type="button" className="rounded-sm font-medium text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setShowEarlier((v) => !v)} aria-expanded={showEarlier} aria-controls="earlier-table" data-testid="earlier-toggle">{showEarlier ? 'Hide' : 'Show'}</button>
           </p>
           {showEarlier ? <EarlierTable projects={earlier} /> : null}
@@ -93,64 +93,93 @@ export function ProjectsPage({ refreshKey }: { refreshKey: number }) {
   );
 }
 
+/**
+ * One project card (docs/ui/redesign-pr1/cards-target.png). The name is the
+ * link; its ::after overlay stretches over the whole card so the card is
+ * clickable without nesting interactive elements. Tooltip triggers (the
+ * info icons, the status word, the date and the exact money value) sit
+ * above the overlay (relative, z-10) so they open without navigating.
+ * Every card has the same structure, so the cards share one height and the
+ * footer is pinned to the bottom.
+ */
 function ProjectCardView({ p }: { p: ProjectCard }) {
   const last = p.last_run;
   const latest = last?.shipped ?? null;
-  const runsWord = p.reported_runs === p.runs ? 'run' : 'reported run';
+  const cov = p.coverage_series.length ? p.coverage_series[p.coverage_series.length - 1]! : null;
+  const href = `/projects/${encodeURIComponent(p.id)}`;
   return (
-    <Link to={`/projects/${encodeURIComponent(p.id)}`} className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card" data-project-id={p.id}>
-      <Card className="card-lift flex h-full flex-col">
-        <CardHeader className="gap-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <CardTitle className="min-w-0 truncate" title={p.name}>{p.name}</CardTitle>
-            {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} data-testid="env-badge">{p.environment}</Badge> : null}
-            <span className="ml-auto flex items-center gap-2 text-s text-fg-2">
-              {last ? (<><StatusBadge status={last.status} /><Tip text={last.started_at ?? 'start time not recorded'}>{fmtDate(last.started_at)}</Tip></>) : <span>No runs yet</span>}
-            </span>
+    <Card className="card-lift relative flex h-full flex-col" data-testid="project-card" data-project-id={p.id} data-href={href}>
+      <CardHeader className="gap-3 pb-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <CardTitle className="min-w-0 truncate" title={p.name}>
+                <Link to={href} className="rounded-sm after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-card-link">{p.name}</Link>
+              </CardTitle>
+              {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} className="shrink-0" data-testid="env-badge">{p.environment}</Badge> : null}
+            </div>
+            {p.base_url
+              ? <Tip text={p.base_url} className="relative z-10 mt-1 block min-w-0"><p className="truncate text-s text-fg-3" data-testid="card-url">{p.base_url}</p></Tip>
+              : <p className="mt-1 text-s text-fg-3" data-testid="card-url">no base URL</p>}
           </div>
-          {p.base_url
-            ? <Tip text={p.base_url} className="block min-w-0"><p className="truncate text-s text-fg-3" data-testid="card-url">{p.base_url}</p></Tip>
-            : <p className="text-s text-fg-3">no base URL</p>}
-        </CardHeader>
-        <CardContent className="flex flex-1 flex-col gap-4">
-          <dl className="grid grid-cols-[1.3fr_1fr_1fr] grid-rows-[auto_auto_auto] gap-x-4 gap-y-0">
-            <Metric col={1} label={<Term term="latestShipped">tests in the latest run</Term>} testid="latest-shipped" value={latest === null ? null : String(latest)} missing="latest run is a pre-v2 summary">
-              {p.shipped === null ? null : (
-                <div className="mt-1 text-xs text-fg-2" data-testid="shipped-line"><span className="tabular-nums text-fg" data-testid="shipped">{p.shipped}</span> <Term term="testsShipped">shipped</Term> across <span className="tabular-nums text-fg" data-testid="reported-runs">{p.reported_runs}</span> {runsWord}{p.reported_runs === 1 ? '' : 's'}</div>
-              )}
-              {p.legacy_runs ? <div className="mt-0.5 text-xs text-fg-3" data-testid="shipped-sub">{p.legacy_runs} pre-v2 run{p.legacy_runs === 1 ? '' : 's'}, {p.legacy_explored} scenario{p.legacy_explored === 1 ? '' : 's'} <Term term="explored">explored</Term></div> : null}
-            </Metric>
-            <Metric col={2} label={<Term term="unresolvedFindings">unresolved findings</Term>} testid="unresolved-findings" value={p.unresolved_findings === null ? null : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : undefined} missing="no reported run" />
-            <Metric col={3} label={<Term term="spendMonth">spend this month</Term>} testid="spend-month" tone="cost" value={<Tip text={`exact: ${exactMoney(p.spend_month)}`}>{money(p.spend_month)}</Tip>} />
-          </dl>
-          <div className="mt-auto flex h-10 items-center justify-between gap-3 border-t border-line pt-3 text-s text-fg-3" data-testid="card-footer">
-            <span><span className="tabular-nums text-fg-2" data-testid="runs-count">{p.runs}</span> <Term term="runs">run{p.runs === 1 ? '' : 's'}</Term></span>
-            {p.coverage_series.length
-              ? (<span className="flex items-center gap-2"><Term term="coverage">coverage</Term><Sparkline values={p.coverage_series.map((c) => c.percent)} /><span className="tabular-nums text-fg-2" data-testid="coverage-latest">{p.coverage_series[p.coverage_series.length - 1]!.percent}%</span></span>)
-              : <Term term="srsRuns">no SRS runs</Term>}
+          <ChevronRight className="h-4 w-4 shrink-0 text-fg-3" aria-hidden="true" />
+        </div>
+        <div className="flex items-center gap-2 text-s text-fg-2" data-testid="card-status-line">
+          {last
+            ? (<>
+                <StatusWord status={last.status} className="relative z-10" prefix="Last run" />
+                <span aria-hidden="true">·</span>
+                <Tip text={last.started_at ?? 'start time not recorded'} className="relative z-10">{fmtDate(last.started_at)}</Tip>
+              </>)
+            : <span>No runs yet</span>}
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col gap-4 pt-0">
+        <dl className="grid grid-cols-3 gap-1.5" data-testid="card-tiles">
+          <CardTile label="Verified tests" term="latestShipped" testid="latest-shipped" value={latest === null ? null : String(latest)} missing="pre-v2 summary" sub="in the latest run" />
+          <CardTile label="To review" term="unresolvedFindings" testid="unresolved-findings" value={p.unresolved_findings === null ? null : String(p.unresolved_findings)} tone={p.unresolved_findings ? 'finding' : 'muted'} missing="no reported run" sub="product behavior" />
+          <CardTile label="Spent" term="spendMonth" testid="spend-month" tone="cost" value={<Tip className="relative z-10" text={`exact: ${exactMoney(p.spend_month)}`}>{money(p.spend_month)}</Tip>} sub="this month" />
+        </dl>
+        <div className="flex flex-col gap-2" data-testid="card-coverage">
+          <div className="flex items-center justify-between gap-2 text-s">
+            <span className="flex items-center gap-1 text-fg-2">Requirements covered <InfoTerm term="coverage" className="relative z-10" /></span>
+            {cov ? <span className="tabular-nums font-medium text-fg" data-testid="coverage-latest">{cov.covered} of {cov.total}</span> : null}
           </div>
-        </CardContent>
-      </Card>
-    </Link>
+          <div className="flex h-8 items-center">
+            {cov
+              ? (<div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-3" role="progressbar" aria-label="Requirements covered" aria-valuemin={0} aria-valuemax={100} aria-valuenow={cov.percent} data-testid="coverage-bar" data-percent={cov.percent}>
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${cov.percent}%` }} data-testid="coverage-bar-fill" />
+                </div>)
+              : <span className="text-s text-fg-3" data-testid="coverage-none">No requirements document used yet</span>}
+          </div>
+        </div>
+        <div className="mt-auto flex items-center gap-1.5 border-t border-line pt-3 text-s text-fg-3" data-testid="card-footer">
+          <span className="font-medium text-fg"><span data-testid="runs-count">{p.runs}</span> run{p.runs === 1 ? '' : 's'}</span>
+          {p.shipped === null ? null : (<>
+            <span aria-hidden="true">·</span>
+            <span><span className="tabular-nums" data-testid="shipped">{p.shipped}</span> verified test{p.shipped === 1 ? '' : 's'} in total</span>
+          </>)}
+          {p.legacy_runs ? <InfoTip testid="legacy-note" label="About pre-v2 runs" className="relative z-10" text={`${p.legacy_runs} pre-v2 run${p.legacy_runs === 1 ? '' : 's'}, ${p.legacy_explored} scenario${p.legacy_explored === 1 ? '' : 's'} explored; pre-v2 runs have no verified-test count.`} /> : null}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 /**
- * Label above value, left aligned. The three metrics share the grid's rows
- * (labels in row 1, values in row 2, the small lines in row 3), so a label
- * that wraps never pushes its value off the common baseline. A null value
- * renders the reason in words, never a number and never n/a.
+ * One metric tile on a card: a label with its glossary icon, the number,
+ * one muted sub-line. A null value renders the reason in words, never a
+ * number and never n/a.
  */
-function Metric({ col, label, value, tone, testid, missing, children }: { col: 1 | 2 | 3; label: ReactNode; value: ReactNode | null; tone?: 'finding' | 'cost'; testid: string; missing?: string; children?: ReactNode }) {
-  const column = { gridColumn: col };
+function CardTile({ label, term, value, sub, tone, testid, missing }: { label: string; term: GlossaryKey; value: ReactNode | null; sub: string; tone?: 'finding' | 'cost' | 'muted'; testid: string; missing?: string }) {
   return (
-    <>
-      <dt className="min-w-0 self-end text-xs text-fg-2" style={{ ...column, gridRow: 1 }}>{label}</dt>
+    <div className="flex min-w-0 flex-col rounded-md border border-line bg-bg-2 px-2.5 py-2.5">
+      <dt className="flex items-center gap-1 whitespace-nowrap text-s text-fg-2"><span>{label}</span><InfoTerm term={term} className="relative z-10 h-3.5 w-3.5 [&>svg]:h-3 [&>svg]:w-3" /></dt>
       {value === null
-        ? <dd className="mt-1 text-s text-fg-3" style={{ ...column, gridRow: 2 }} data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
-        : <dd className={`money mt-1 text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : 'text-fg'}`} style={{ ...column, gridRow: 2 }} data-testid={testid}>{value}</dd>}
-      {children ? <div className="min-w-0" style={{ ...column, gridRow: 3 }}>{children}</div> : null}
-    </>
+        ? <dd className="mt-1.5 text-s text-fg-3" data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
+        : <dd className={cn('money mt-1.5 text-l font-semibold leading-none', tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : tone === 'muted' ? 'text-neutral' : 'text-fg')} data-testid={testid}>{value}</dd>}
+      <dd className="mt-1.5 text-s text-fg-3">{sub}</dd>
+    </div>
   );
 }
 

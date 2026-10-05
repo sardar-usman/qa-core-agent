@@ -4,8 +4,8 @@ import animate from 'tailwindcss-animate';
 // Design tokens (PR F, part 1). Values live as CSS variables in
 // src/index.css so both themes share the same class names. Fonts come from
 // the bundled @fontsource-variable packages (imported in src/main.tsx), never
-// a CDN: Geist Sans for all UI text and all numbers (tabular figures on),
-// Geist Mono only for run ids, commands and code.
+// a CDN: Inter for all UI text and all numbers (tabular figures on), Geist
+// Mono only for run ids, commands and code.
 //
 // Type scale: xs 11, s 12 (labels), m 13 (body and tables), section 15
 // semibold, title 22 semibold (page titles), l 24 semibold (key metrics),
@@ -17,7 +17,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Geist Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
+        sans: ['Inter Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
         mono: ['Geist Mono Variable', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       fontSize: {
