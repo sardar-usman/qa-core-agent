@@ -40,7 +40,7 @@ const dbPath = path.join(root, 'data', 'qa-core.sqlite');
 
 function mkReport(url: string, startedAt: string, o: { shipped: number; planned: number; dropped?: string[]; incomplete?: number; findings?: Array<{ scenario: string; expected: string; page: string }>; skipped?: number; stopped?: boolean; cost?: Partial<RunReport['cost']>; flake?: number; rules?: boolean }): RunReport {
   const scenarios = Array.from({ length: o.shipped }, (_, i) => ({ name: `scenario ${i + 1}`, feature: 'login', category: 'happy' as const, steps: [{ kind: 'navigate' as const, url }] }));
-  const findings = (o.findings ?? []).map((f) => ({ scenario: f.scenario, expected: f.expected, url: f.page, messages: [] as string[] }));
+  const findings = (o.findings ?? []).map((f) => ({ scenario: f.scenario, expected: f.expected, url: f.page, messages: [] as string[], kind: 'product' as const }));
   const dropped = (o.dropped ?? []).map((n) => ({ name: n, stage: 'critic' as const, reason: 'rework -> reject' }));
   const incomplete = Array.from({ length: o.incomplete ?? 0 }, (_, i) => ({ scenario: `incomplete ${i}`, reason: 'budget' }));
   const skipped = Array.from({ length: o.skipped ?? 0 }, (_, i) => ({ scenario: `skipped ${i}`, reason: 'n/a' }));
@@ -122,7 +122,7 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (6: run source nullable, never defaulted)', schemaVersion(db) === 6);
+check('A. schema migrated to the current version (7: finding kind, a plain ADD COLUMN)', schemaVersion(db) === 7);
 const r1 = indexOutput(db, root);
 check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
@@ -259,7 +259,8 @@ const v3Path = path.join(root, 'data', 'qa-core-v3.sqlite');
 let migrated: ReturnType<typeof openDatabase> | null = null;
 let migrateError: string | null = null;
 try { migrated = openDatabase(v3Path); } catch (e) { migrateError = String(e); }
-check('V2. migration reaches the current version (6) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 6, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
+check('V2. migration reaches the current version (7) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 7, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
+if (migrated) check('V2b. v7 added findings.kind (NOT NULL, default product) without a rebuild: the column exists and the index pass can write it', (migrated.prepare('PRAGMA table_info(findings)').all() as Array<{ name: string; notnull: number; dflt_value: string | null }>).some((c) => c.name === 'kind' && c.notnull === 1 && c.dflt_value === "'product'"));
 if (migrated) {
   const runsAfter = migrated.prepare("SELECT id, project_id, status FROM runs ORDER BY id").all() as Array<{ id: string; project_id: string; status: string }>;
   check('V3. every runs row survives with its project_id intact (one reported, one legacy)', runsAfter.length === 2 && runsAfter.every((r) => r.project_id === 'saucedemo-com') && runsAfter.some((r) => r.status === 'legacy') && runsAfter.some((r) => r.id === sauce1), JSON.stringify(runsAfter));
@@ -275,7 +276,7 @@ if (migrated) {
   indexOutput(reopened, root);
   const proj = reopened.prepare("SELECT name, environment FROM projects WHERE id = 'saucedemo-com'").get() as { name: string; environment: string | null };
   const fnd = reopened.prepare('SELECT status, notes FROM findings').get() as { status: string; notes: string | null };
-  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 6 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
+  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 7 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
   check('V8. finding status and notes survive the reopen and re-index too', fnd.status === 'wont-fix' && fnd.notes === 'by design', JSON.stringify(fnd));
   reopened.close();
 }
@@ -289,6 +290,12 @@ if (migrated) {
     findings: [
       { scenario: 'login shows an error', expected: 'an error banner', url: 'https://msg.example/login', messages: ['Epic sadface: Username is required', 'Please try again'] },
       { scenario: 'checkout redirects', expected: 'the confirmation page', url: 'https://msg.example/cart', messages: [] },
+      // An older report (no kind key) whose locator site wrote both engine prefixes: kind locator (invariant 67).
+      { scenario: 'searched for a term', expected: 'locate element: search input', url: 'https://msg.example/category/other', messages: ['Selector could not be resolved or recovered after 2 attempts (testid=search-query).'] },
+      // The expected prefix alone (a model could phrase an assertion that way) is not enough: kind product.
+      { scenario: 'prefix only', expected: 'locate element: a banner', url: 'https://msg.example/', messages: ['no banner appeared'] },
+      // A new report writes the kind; it is kept as written.
+      { scenario: 'recorded kind', expected: 'the cart badge reads 1', url: 'https://msg.example/cart', messages: [], kind: 'product' },
     ],
     reconciliation: { planned: 3, generated: 1, dropped: [], incomplete: [], findings: [{ name: 'a', expected: 'b', url: 'u', messages: [] }, { name: 'c', expected: 'd', url: 'u', messages: [] }], skipped: [], accountedFor: 3, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0 } }));
   const odb = openDatabase(path.join(oroot, 'db.sqlite'));
@@ -297,6 +304,12 @@ if (migrated) {
   check('W1. observed is the page\'s messages verbatim, joined, when there are any', observed.find((o) => o.scenario === 'login shows an error')?.observed === 'Epic sadface: Username is required | Please try again', JSON.stringify(observed));
   check('W2. without messages, observed says so and gives the URL at the time', observed.find((o) => o.scenario === 'checkout redirects')?.observed === 'no message recorded; URL at the time: https://msg.example/cart');
   check('W3. no inference about navigation anywhere in observed', observed.every((o) => !/stayed|navigat|redirect/i.test(o.observed.replace(o.scenario, ''))), JSON.stringify(observed));
+  const kinds = () => Object.fromEntries((odb.prepare('SELECT scenario, kind FROM findings ORDER BY scenario').all() as Array<{ scenario: string; kind: string }>).map((k) => [k.scenario, k.kind]));
+  check('W4. kind is derived per row: both engine prefixes read locator; a message-less finding, a prefix-only expected and a recorded kind read product', JSON.stringify(kinds()) === JSON.stringify({ 'checkout redirects': 'product', 'login shows an error': 'product', 'prefix only': 'product', 'recorded kind': 'product', 'searched for a term': 'locator' }), JSON.stringify(kinds()));
+  odb.prepare("UPDATE findings SET status = 'triaged', notes = 'by hand' WHERE scenario = 'searched for a term'").run();
+  indexOutput(odb, oroot);
+  const after = odb.prepare("SELECT kind, status, notes FROM findings WHERE scenario = 'searched for a term'").get() as { kind: string; status: string; notes: string };
+  check('W5. a re-index rewrites kind (derived, like observed) and leaves status and notes alone', after.kind === 'locator' && after.status === 'triaged' && after.notes === 'by hand' && (odb.prepare('SELECT COUNT(*) AS n FROM findings').get() as { n: number }).n === 5, JSON.stringify(after));
   odb.close();
   fs.rmSync(oroot, { recursive: true, force: true });
 }

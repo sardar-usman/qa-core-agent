@@ -522,8 +522,12 @@ export interface RunReport {
    * page actually stayed on, and any visible messages. Counted in reconciliation
    * (planned === generated + dropped + incomplete + findings) so a wrong success
    * signal fails loudly rather than vanishing or shipping as a green test.
+   * `kind` says what could not happen: `product` (the outcome never occurred,
+   * product behavior to review) or `locator` (the element could not be found,
+   * a limit of the run). Required on every new finding; a report written
+   * before the field existed is read through findingKindOf (finding-kind.ts).
    */
-  findings?: Array<{ scenario: string; category?: string; expected: string; url: string; messages: string[] }>;
+  findings?: Array<import('./finding-kind.js').Finding>;
   /**
    * In-run selector recoveries applied during exploration: a locator that
    * failed to resolve was automatically re-resolved against the live page by

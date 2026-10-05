@@ -14,6 +14,7 @@ import { parseNumber, noNumberMessage } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
+import { LOCATOR_EXPECTED_PREFIX, LOCATOR_MESSAGE_PREFIX, type Finding } from './finding-kind.js';
 import {
   chooseStateAssertion,
   SEMANTIC_STATE_ATTRS,
@@ -204,7 +205,7 @@ export interface ToolContext {
    * the page stayed somewhere else. Surfaced in the run report and reconciliation
    * so a wrong success signal fails loudly instead of vanishing or shipping green.
    */
-  findings: Array<{ scenario: string; category?: string; expected: string; url: string; messages: string[] }>;
+  findings: Finding[];
   /**
    * Recovery attempts: how many times each selector (by signature) has failed to
    * resolve AND failed to recover in a row. A selector that recovers
@@ -869,9 +870,11 @@ async function recoverOrFinding(
   recordFinding(ctx, {
     scenario: scenarioName,
     category: ctx.current?.category,
-    expected: `locate element: ${input.intent}`,
+    expected: `${LOCATOR_EXPECTED_PREFIX}${input.intent}`,
     url,
-    messages: [`Selector could not be resolved or recovered after ${RECOVERY_CAP} attempts (${from}).`],
+    messages: [`${LOCATOR_MESSAGE_PREFIX} after ${RECOVERY_CAP} attempts (${from}).`],
+    // A locator failure is a limit of the run, never product behavior.
+    kind: 'locator',
   });
   ctx.current = null;
   ctx.captures.clear();
@@ -2426,6 +2429,8 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
       expected,
       url: actual.url,
       messages: actual.messages,
+      // The element was found and the outcome never occurred: product behavior to review.
+      kind: 'product',
     });
     // This scenario produced a finding, not a passing test. Drop the half-built
     // trace (its outcome never held) and block further actions until the model

@@ -7,6 +7,7 @@ import { hostOf } from './db/indexer.js';
 import { assignVerdicts, verdictMatchesScenario, type ScenarioVerdict } from '../agent/critic.js';
 import { EVENTS_FILE } from './events.js';
 import { findingsOf } from '../agent/reconcile.js';
+import { findingKindOf, type FindingKind } from '../agent/finding-kind.js';
 import { hasRequirementsCost } from '../agent/cost-total.js';
 
 /**
@@ -98,7 +99,11 @@ export interface RunDetailStages {
   };
   explore: {
     status: StageStatus; stat: string;
-    /** recorded = reconciliation.generated + dropped at critic, replay and stability; shipped = report.scenarios.length. */
+    /**
+     * recorded = reconciliation.generated + dropped at critic, repair, replay and stability + emitted_failed
+     * (a scenario the emitted-spec check dropped was recorded, replayed and then failed; run 44cb3d: 16 recorded, 12 shipped);
+     * shipped = report.scenarios.length.
+     */
     steps: number; scenarios_recorded: number; scenarios_shipped: number;
     /** cost.usd: the Explorer loop including the repair pass. */
     explorer_usd: number; repair_usd: number;
@@ -148,8 +153,10 @@ export interface RunDetailStages {
   summary: {
     status: StageStatus; stat: string;
     shipped: number; total_usd: number;
-    findings_count: number; uncovered_count: number; attention: number;
-    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; emitted_failed: number; balanced: boolean; added: number } | null;
+    /** findings_count is product findings only; locator_count is the elements the agent could not find (invariant 67). attention = findings_count + uncovered_count; a locator failure never makes a run read attention. */
+    findings_count: number; locator_count: number; uncovered_count: number; attention: number;
+    /** findings_product and findings_locator split the findings bucket by kind (invariant 67), counted here from the report, never in the UI. */
+    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; findings_product: number; findings_locator: number; skipped: number; emitted_failed: number; balanced: boolean; added: number } | null;
     /** report.emittedRun: the written framework run once with Playwright before the zip. null on a report from before the stage existed. */
     emitted_check: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
     /** requirements: the map cost read off the report (cost.requirementsUsd); null on a report written before the field existed. */
@@ -172,8 +179,8 @@ export interface RunDetailBody {
   scenarios: RunDetailScenario[];
   /** Stored counts, copied from the index row (which copied them from the report). */
   counts: { planned: number; shipped: number | null; generated: number; dropped: number; incomplete: number; findings: number; skipped: number; stable: number; flaky: number; broken: number };
-  /** A Critic verdict whose name matched the finding is attached here, never discarded. */
-  findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[]; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }>;
+  /** A Critic verdict whose name matched the finding is attached here, never discarded. `kind` is the recorded kind, or derived by findingKindOf on an older report. */
+  findings: Array<{ scenario: string; category: string | null; expected: string; url: string; messages: string[]; kind: FindingKind; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }>;
   replay: RunReport['replay'] | null;
   stages: RunDetailStages;
   stability: { iterations: number; passed: number; flaked: number; flakeRate: number; recovered: number | null; stabilizerCostUsd: number | null } | null;
@@ -357,7 +364,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
         dropped: Number(run.dropped) || 0, incomplete: Number(run.incomplete) || 0, findings: Number(run.findings) || 0, skipped: Number(run.skipped) || 0,
         stable: Number(run.stable) || 0, flaky: Number(run.flaky) || 0, broken: Number(run.broken) || 0,
       },
-      findings: findings.map((f) => { const v = findingVerdict.get(f.scenario); return { scenario: f.scenario, category: f.category ?? null, expected: f.expected, url: f.url, messages: f.messages ?? [], verdict: v ? { verdict: v.verdict, reasons: v.reasons } : null }; }),
+      findings: findings.map((f) => { const v = findingVerdict.get(f.scenario); return { scenario: f.scenario, category: f.category ?? null, expected: f.expected, url: f.url, messages: f.messages ?? [], kind: findingKindOf(f), verdict: v ? { verdict: v.verdict, reasons: v.reasons } : null }; }),
       replay: report.replay && !report.replay.skipped ? report.replay : null,
       stability: stab ? { iterations: stab.iterations, passed: stab.passed, flaked: stab.flaked, flakeRate: stab.flakeRate, recovered: stab.recovered ?? null, stabilizerCostUsd: stab.stabilizerCostUsd ?? null } : null,
       review_summary: report.review?.summary ?? null,
@@ -400,11 +407,14 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const skipped = (report.skipped ?? []).map((s) => ({ scenario: s.scenario, reason: s.reason }));
   const gateBroken = (report.gate?.broken ?? []).map((b) => ({ scenario: b.scenario, reason: b.reason, attempts: b.attempts }));
   // What the Explorer recorded: the shipped ones plus everything a later
-  // stage dropped. The stat used to read the shipped count under "recorded"
-  // (run f3b41e: "1 recorded" for 15 recorded).
+  // stage dropped, the emitted-spec check included (such a scenario was
+  // recorded, replayed and then failed the written framework; run 44cb3d
+  // recorded 16 and shipped 12, and the stat read 15 without that bucket).
+  // The stat used to read the shipped count under "recorded" (run f3b41e:
+  // "1 recorded" for 15 recorded).
   const recAll = report.reconciliation;
   const recordedCount = recAll
-    ? (recAll.generated ?? 0) + (recAll.dropped ?? []).filter((d) => d.stage === 'critic' || d.stage === 'repair' || d.stage === 'replay' || d.stage === 'stability').length
+    ? (recAll.generated ?? 0) + (recAll.dropped ?? []).filter((d) => d.stage === 'critic' || d.stage === 'repair' || d.stage === 'replay' || d.stage === 'stability').length + (recAll.emitted_failed ?? []).length
     : shipped.length;
   const explore: RunDetailStages['explore'] = {
     status: stopped || incomplete.length > 0 || gateBroken.length > 0 ? 'warning' : 'done',
@@ -458,16 +468,19 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const rec = report.reconciliation;
   const droppedByStage: Record<string, number> = {};
   for (const d of rec?.dropped ?? []) droppedByStage[d.stage] = (droppedByStage[d.stage] ?? 0) + 1;
-  const findingsCount = findingsOf(report).length;
+  // The hero counts product behavior only (invariant 67): a locator failure is a limit of the run and never makes a run read attention.
+  const findingsProduct = findingsOf(report).filter((f) => findingKindOf(f) === 'product').length;
+  const findingsLocator = findingsOf(report).filter((f) => findingKindOf(f) === 'locator').length;
   const rc = report.ruleCoverage;
   const uncoveredCount = rc ? (rc.uncovered ?? []).length : 0;
+  const attention = findingsProduct + uncoveredCount;
   const stabilizer = usd(report.stability?.stabilizerCostUsd);
   const summary: RunDetailStages['summary'] = {
-    status: stopped || (rec && rec.balanced === false) || unmatchedVerdicts > 0 ? 'warning' : findingsCount + uncoveredCount > 0 ? 'attention' : 'done',
+    status: stopped || (rec && rec.balanced === false) || unmatchedVerdicts > 0 ? 'warning' : attention > 0 ? 'attention' : 'done',
     stat: `${shipped.length} shipped`,
     shipped: shipped.length, total_usd: totalUsd,
-    findings_count: findingsCount, uncovered_count: uncoveredCount, attention: findingsCount + uncoveredCount,
-    funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, skipped: (rec.skipped ?? []).length, emitted_failed: (rec.emitted_failed ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
+    findings_count: findingsProduct, locator_count: findingsLocator, uncovered_count: uncoveredCount, attention,
+    funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, findings_product: findingsProduct, findings_locator: findingsLocator, skipped: (rec.skipped ?? []).length, emitted_failed: (rec.emitted_failed ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
     emitted_check: report.emittedRun
       ? {
         inconclusive: report.emittedRun.inconclusive === true, reason: report.emittedRun.reason ?? null,

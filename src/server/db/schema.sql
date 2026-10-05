@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS findings (
   status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'triaged', 'fixed', 'wont-fix')),
   first_seen_run_id TEXT NOT NULL,
   last_seen_run_id  TEXT NOT NULL,
-  notes             TEXT
+  notes             TEXT,
+  -- product: the expected outcome never occurred (product behavior to review); locator: the element could not be found (a limit of the run).
+  -- Derived by findingKindOf on every index pass, never set by a person (schema v7).
+  kind              TEXT NOT NULL DEFAULT 'product' CHECK (kind IN ('product', 'locator'))
 );
 CREATE INDEX IF NOT EXISTS findings_project_status ON findings(project_id, status);
 

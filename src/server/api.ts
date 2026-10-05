@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { FindingKind } from '../agent/finding-kind.js';
 import path from 'node:path';
 import type http from 'node:http';
 import type Database from 'better-sqlite3';
@@ -113,7 +114,9 @@ export function createApiHandler(ctx: ApiContext): ApiHandler {
         json(res, 200, parts[3] === 'coverage' ? projectCoverage(db, id) : projectTrends(db, id)); return true;
       }
       if (method === 'GET' && parts.length === 2 && parts[1] === 'findings') {
-        json(res, 200, { findings: listFindings(db, { projectId: url.searchParams.get('project_id'), status: url.searchParams.get('status') }) }); return true;
+        const kind = url.searchParams.get('kind');
+        if (kind !== null && !(FINDING_KINDS as readonly string[]).includes(kind)) { json(res, 400, { error: `kind must be one of ${FINDING_KINDS.join(', ')}` }); return true; }
+        json(res, 200, { findings: listFindings(db, { projectId: url.searchParams.get('project_id'), status: url.searchParams.get('status'), kind }) }); return true;
       }
       if (method === 'PATCH' && parts.length === 3 && parts[1] === 'findings') {
         const id = decodeURIComponent(parts[2]!);
@@ -250,8 +253,10 @@ export interface ProjectCard {
   /** First and last start times over the pre-v2 records; null without any. */
   legacy_first_at: string | null;
   legacy_last_at: string | null;
-  /** Findings with status open or triaged (fixed and wont-fix excluded). NULL when the project has no reported run. */
+  /** Product findings (kind product) with status open or triaged (fixed and wont-fix excluded). NULL when the project has no reported run. Locator failures are never counted here (invariant 67). */
   unresolved_findings: number | null;
+  /** Locator findings (kind locator: the element could not be found) with status open or triaged. NULL when the project has no reported run. */
+  locator_failures: number | null;
   spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   /** Rule coverage per SRS run (oldest first): covered rules, all rules, and the percent computed from the same two counts; empty without SRS runs. */
@@ -278,7 +283,9 @@ function projectCard(db: Database.Database, p: Record<string, unknown>, root?: s
                           COALESCE(SUM(cost_total), 0) AS spend_total,
                           COALESCE(SUM(CASE WHEN started_at >= ? THEN cost_total ELSE 0 END), 0) AS spend_month
                           FROM runs WHERE project_id = ?`).get(monthStart(), id) as { runs: number; reported_runs: number | null; shipped: number; legacy_runs: number | null; legacy_explored: number; legacy_first_at: string | null; legacy_last_at: string | null; spend_total: number; spend_month: number };
-  const open = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE project_id = ? AND status IN ('open', 'triaged')").get(id) as { n: number };
+  // To review counts product behavior only; an element the agent could not find is a limit of the run and is counted apart (invariant 67).
+  const open = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE project_id = ? AND status IN ('open', 'triaged') AND kind = 'product'").get(id) as { n: number };
+  const locator = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE project_id = ? AND status IN ('open', 'triaged') AND kind = 'locator'").get(id) as { n: number };
   const reported = agg.reported_runs ?? 0;
   const last = db.prepare('SELECT id, status, started_at, shipped, generated, cost_total FROM runs WHERE project_id = ? ORDER BY started_at DESC, id DESC LIMIT 1').get(id) as ProjectCard['last_run'] | undefined;
   const coverage = db.prepare(`SELECT r.id AS run_id, r.started_at,
@@ -291,7 +298,7 @@ function projectCard(db: Database.Database, p: Record<string, unknown>, root?: s
     srs: srs ? { name: srs.original_name, uploaded_at: srs.uploaded_at, path: srs.path } : null,
     runs: agg.runs, reported_runs: reported, shipped: reported > 0 ? agg.shipped : null, legacy_runs: agg.legacy_runs ?? 0, legacy_explored: agg.legacy_explored,
     legacy_first_at: agg.legacy_first_at ?? null, legacy_last_at: agg.legacy_last_at ?? null,
-    unresolved_findings: reported > 0 ? open.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
+    unresolved_findings: reported > 0 ? open.n : null, locator_failures: reported > 0 ? locator.n : null, spend_month: agg.spend_month, spend_total: agg.spend_total,
     last_run: last ?? null,
     coverage_series: coverage.map((c) => ({ run_id: c.run_id, started_at: c.started_at, covered: c.covered, total: c.total, percent: c.total ? Math.round((c.covered / c.total) * 100) : 0 })),
   };
@@ -307,7 +314,7 @@ export function projectDetail(db: Database.Database, id: string, root?: string):
   return {
     project: p,
     srs: root ? readProjectSrs(root, id) : { current: null, previous: [] },
-    summary: { runs: card.runs, reported_runs: card.reported_runs, shipped: card.shipped, legacy_runs: card.legacy_runs, legacy_explored: card.legacy_explored, unresolved_findings: card.unresolved_findings, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
+    summary: { runs: card.runs, reported_runs: card.reported_runs, shipped: card.shipped, legacy_runs: card.legacy_runs, legacy_explored: card.legacy_explored, unresolved_findings: card.unresolved_findings, locator_failures: card.locator_failures, spend_total: card.spend_total, spend_month: card.spend_month, last_run: card.last_run },
     trend: trend.map((t) => ({ ...t, coverage_percent: coverageByRun.get(String(t.run_id)) ?? null })),
     unresolved_findings: unresolved,
   };
@@ -328,8 +335,12 @@ export function listRuns(db: Database.Database, f: { projectId: string | null; s
 export const FINDING_STATUSES = ['open', 'triaged', 'fixed', 'wont-fix'] as const;
 export type FindingStatus = typeof FINDING_STATUSES[number];
 
+export const FINDING_KINDS = ['product', 'locator'] as const;
+
 export interface FindingRow {
   id: string; project_id: string; project_name: string; scenario: string; expected: string; observed: string | null; page_url: string | null;
+  /** product: the expected outcome never occurred; locator: the element could not be found (invariant 67). Derived by the indexer from the report. */
+  kind: FindingKind;
   status: FindingStatus; notes: string | null;
   first_seen_run_id: string; last_seen_run_id: string; first_seen_at: string | null; last_seen_at: string | null;
   /** Runs this finding was seen in (finding_runs rows), newest first. */
@@ -340,14 +351,16 @@ export interface FindingRow {
 /**
  * Deduped findings (one row per project + normalized scenario + expected,
  * the indexer's key), each with every run that saw it. `status` accepts a
- * single value or a comma-separated set.
+ * single value or a comma-separated set. `kind` narrows to product or
+ * locator; without it both kinds are returned, so no caller loses rows.
  */
-export function listFindings(db: Database.Database, f: { projectId: string | null; status: string | null }): FindingRow[] {
+export function listFindings(db: Database.Database, f: { projectId: string | null; status: string | null; kind?: string | null }): FindingRow[] {
   const where: string[] = [];
   const args: unknown[] = [];
   if (f.projectId) { where.push('f.project_id = ?'); args.push(f.projectId); }
   const statuses = (f.status ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (statuses.length) { where.push(`f.status IN (${statuses.map(() => '?').join(', ')})`); args.push(...statuses); }
+  if (f.kind) { where.push('f.kind = ?'); args.push(f.kind); }
   const rows = db.prepare(`SELECT f.*, p.name AS project_name, r1.started_at AS first_seen_at, r2.started_at AS last_seen_at
                            FROM findings f JOIN projects p ON p.id = f.project_id
                            LEFT JOIN runs r1 ON r1.id = f.first_seen_run_id LEFT JOIN runs r2 ON r2.id = f.last_seen_run_id
@@ -359,6 +372,7 @@ export function listFindings(db: Database.Database, f: { projectId: string | nul
     return {
       id: String(r.id), project_id: String(r.project_id), project_name: String(r.project_name), scenario: String(r.scenario), expected: String(r.expected),
       observed: (r.observed as string | null) ?? null, page_url: (r.page_url as string | null) ?? null,
+      kind: r.kind === 'locator' ? 'locator' : 'product',
       status: (r.status as FindingStatus) ?? 'open', notes: (r.notes as string | null) ?? null,
       first_seen_run_id: String(r.first_seen_run_id), last_seen_run_id: String(r.last_seen_run_id),
       first_seen_at: (r.first_seen_at as string | null) ?? null, last_seen_at: (r.last_seen_at as string | null) ?? null,
