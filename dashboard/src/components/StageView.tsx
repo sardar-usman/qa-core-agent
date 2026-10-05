@@ -4,7 +4,7 @@ import { api, type RunDetailFinding, type RunDetailStages, type StageKey, type S
 import { Badge } from '@/components/ui/badge';
 import { Term } from '@/components/Term';
 import { Button } from '@/components/ui/button';
-import { usd } from '@/lib/utils';
+import { exactMoney, formatCount, formatMoney, formatSize, pct } from '@/lib/format';
 
 /**
  * The six-stage run view (dashboard v2 plan, PR B, deferred part), ported
@@ -49,9 +49,9 @@ export function StageView({ stages, findings, unmatched, live = false }: { stage
         {STAGES.map((s) => {
           const st = stages[s.key];
           return (
-            <button key={s.key} type="button" onClick={() => scrollToStage(s.key)} className="flex flex-col items-start gap-1 rounded-lg border border-line bg-bg-1 px-3 py-2 text-left hover:border-line-strong" data-testid="rail-item" data-stage={s.key} data-status={st.status} title={`Jump to ${s.name}`}>
-              <span className="flex w-full items-center gap-2 text-s"><span className="mono text-fg-2">{s.num}</span><span className="font-semibold text-fg">{s.name}</span><span className={`ml-auto ${STATUS_CLASS[st.status]} ${st.status === 'running' ? 'animate-pulse' : ''}`} data-testid="rail-status">{STATUS_LABEL[st.status]}</span></span>
-              <span className="mono whitespace-normal break-words text-s leading-snug text-fg-2" data-testid="rail-stat">{st.stat}</span>
+            <button key={s.key} type="button" onClick={() => scrollToStage(s.key)} className="flex flex-col items-start gap-1 rounded-lg border border-line bg-bg-1 px-4 py-3 text-left hover:border-line-strong" data-testid="rail-item" data-stage={s.key} data-status={st.status} title={`Jump to ${s.name}`}>
+              <span className="flex w-full items-center gap-2 text-small"><span className="mono text-fg-2">{s.num}</span><span className="font-medium text-fg">{s.name}</span><span className={`ml-auto ${STATUS_CLASS[st.status]} ${st.status === 'running' ? 'animate-pulse' : ''}`} data-testid="rail-status">{STATUS_LABEL[st.status]}</span></span>
+              <span className="mono whitespace-normal break-words text-fg-2" data-testid="rail-stat">{st.stat}</span>
             </button>
           );
         })}
@@ -70,12 +70,12 @@ export function StageView({ stages, findings, unmatched, live = false }: { stage
 function Panel({ k, s, children }: { k: StageKey; s: StageStatus; children: React.ReactNode }) {
   const meta = STAGES.find((x) => x.key === k)!;
   return (
-    <section id={`stage-${k}`} className="scroll-mt-4 rounded-lg border border-line bg-bg-1 p-4" data-testid="stage-panel" data-stage={k} data-status={s}>
-      <header className="mb-3 flex flex-wrap items-baseline gap-2">
-        <span className="mono text-s text-fg-2">{meta.num}</span>
-        <h2 className="text-m font-semibold">{meta.name}</h2>
-        <span className="text-s text-fg-2">{meta.sub}</span>
-        <span className={`ml-auto text-s ${STATUS_CLASS[s]}`} data-testid="panel-status">{STATUS_LABEL[s]}</span>
+    <section id={`stage-${k}`} className="scroll-mt-4 rounded-lg border border-line bg-bg-1 p-6" data-testid="stage-panel" data-stage={k} data-status={s}>
+      <header className="mb-4 flex flex-wrap items-baseline gap-2">
+        <span className="mono text-fg-2">{meta.num}</span>
+        <h2 className="text-heading font-semibold">{meta.name}</h2>
+        <span className="text-small text-fg-2">{meta.sub}</span>
+        <span className={`ml-auto text-caption font-medium ${STATUS_CLASS[s]}`} data-testid="panel-status">{STATUS_LABEL[s]}</span>
       </header>
       {children}
     </section>
@@ -83,22 +83,22 @@ function Panel({ k, s, children }: { k: StageKey; s: StageStatus; children: Reac
 }
 
 function KV({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-wrap gap-x-4 gap-y-1 text-s text-fg-2">{children}</div>;
+  return <div className="flex flex-wrap gap-x-4 gap-y-1 text-small text-fg-2">{children}</div>;
 }
 function K({ label, value, mono, cost, testid }: { label: string; value: React.ReactNode; mono?: boolean; cost?: boolean; testid?: string }) {
-  return <span>{label} <b className={`${mono || cost ? 'mono' : ''} ${cost ? 'text-cost' : 'text-fg'}`} data-testid={testid}>{value}</b></span>;
+  return <span>{label} <span className={`font-medium ${mono ? 'mono' : ''} ${cost ? 'money' : ''} text-fg`} data-testid={testid}>{value}</span></span>;
 }
 function SubLabel({ children }: { children: React.ReactNode }) {
-  return <div className="mt-3 mb-1 text-s font-semibold uppercase tracking-wide text-fg-2">{children}</div>;
+  return <div className="mt-4 mb-1 text-caption font-medium text-fg-3">{children}</div>;
 }
 function Empty({ children, testid }: { children: React.ReactNode; testid?: string }) {
-  return <div className="rounded-md border border-dashed border-line-strong px-3 py-2 text-s text-fg-2" data-testid={testid}>{children}</div>;
+  return <div className="rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-fg-2" data-testid={testid}>{children}</div>;
 }
 function Row({ tag, tagVariant, name, why, mono }: { tag?: string; tagVariant?: 'pass' | 'rework' | 'reject' | 'finding' | 'neutral' | 'accent' | 'outline'; name: string; why?: string | null; mono?: boolean }) {
   return (
-    <li className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0">
+    <li className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0">
       {tag ? <Badge variant={tagVariant ?? 'neutral'}>{tag}</Badge> : null}
-      <span className={`text-fg ${mono ? 'mono' : ''}`} title={name}>{name}</span>
+      <span className={`min-w-0 text-fg ${mono ? 'mono break-all' : ''}`} title={name}>{name}</span>
       {why ? <span className="text-fg-2">{why}</span> : null}
     </li>
   );
@@ -117,8 +117,8 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
       </KV>
       <ul className="mt-2" data-testid="discovery-page-list">
         {d.pages.map((p) => (
-          <li key={p.url} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="discovery-page">
-            <span className="mono truncate text-fg" title={p.url}>{p.url}</span>
+          <li key={p.url} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="discovery-page">
+            <span className="mono min-w-0 break-all text-fg" title={p.url}>{p.url}</span>
             <Badge variant="outline">{p.source}</Badge>
             {p.feature ? <Badge variant="accent">{p.feature}</Badge> : null}
             {p.volatile ? <Badge variant="neutral">volatile</Badge> : null}
@@ -126,12 +126,12 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
         ))}
       </ul>
       {d.candidates.length ? (
-        <details className="mt-2 text-s" data-testid="discovery-candidates">
-          <summary className="cursor-pointer text-fg-2">candidates found before the filter: <b data-testid="discovery-candidates-count">{d.candidates.length}</b> (also in discovery.json)</summary>
+        <details className="mt-2 text-small" data-testid="discovery-candidates">
+          <summary className="cursor-pointer text-fg-2">candidates found before the filter: <span className="font-medium text-fg" data-testid="discovery-candidates-count">{d.candidates.length}</span> (also in discovery.json)</summary>
           <ul className="mt-1">
             {d.candidates.map((p) => (
               <li key={`c-${p.url}`} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 first:border-t-0" data-testid="discovery-candidate">
-                <span className="mono truncate text-fg-2" title={p.url}>{p.url}</span>
+                <span className="mono min-w-0 break-all text-fg-2" title={p.url}>{p.url}</span>
                 {d.pages.some((k) => k.url === p.url) ? <Badge variant="pass">kept</Badge> : p.same_template_as ? <Badge variant="neutral" data-testid="discovery-same-template" title={p.same_template_as}>same template as {shortPath(p.same_template_as)}</Badge> : <Badge variant="neutral">not picked</Badge>}
                 {p.volatile ? <Badge variant="neutral">volatile</Badge> : null}
               </li>
@@ -144,7 +144,7 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
           <SubLabel>Robots and rung warnings</SubLabel>
           <ul>{d.warnings.map((w, i) => <Row key={i} tag="warning" tagVariant="rework" name={w} />)}</ul>
         </>
-      ) : <div className="mt-2 text-s text-fg-2">No robots or rung warnings recorded.</div>}
+      ) : <div className="mt-2 text-small text-fg-2">No robots or rung warnings recorded.</div>}
     </>
   );
 }
@@ -156,19 +156,19 @@ function Plan({ p }: { p: RunDetailStages['plan'] }) {
     <>
       <KV>
         <K label="scenarios" value={p.scenarios.length} testid="plan-count" />
-        <K label="planner" value={usd(p.planner_usd)} cost testid="plan-cost" />
+        <K label="planner" value={<span title={`exact: ${exactMoney(p.planner_usd)}`}>{formatMoney(p.planner_usd)}</span>} cost testid="plan-cost" />
       </KV>
       {multiPage ? (
         <>
           <SubLabel>Pages planned</SubLabel>
-          <ul data-testid="plan-pages">{p.pages.map((pg, i) => <Row key={i} name={pg.url ?? '(entry page)'} why={`${pg.count} scenario${pg.count === 1 ? '' : 's'}`} mono />)}</ul>
-          <div className="mt-1 text-s text-fg-2">Per-page planner cost is not recorded in run-report.json; the planner total above is.</div>
+          <ul data-testid="plan-pages">{p.pages.map((pg, i) => <Row key={i} name={pg.url ?? '(entry page)'} why={formatCount(pg.count, 'scenario', 'scenarios')} mono />)}</ul>
+          <div className="mt-1 text-small text-fg-2">Per-page planner cost is not recorded in run-report.json; the planner total above is.</div>
         </>
       ) : null}
       <SubLabel>Scenarios</SubLabel>
       <ul data-testid="plan-list">
         {p.scenarios.map((s) => (
-          <li key={s.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="plan-scenario">
+          <li key={s.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="plan-scenario">
             {s.feature ? <Badge variant="accent">{s.feature}</Badge> : null}
             {s.category ? <Badge variant={CATEGORY_VARIANT[s.category] ?? 'neutral'}>{s.category}</Badge> : null}
             {s.rule_ids.length ? <Badge variant="outline" data-testid="rule-tag">{s.rule_ids.join(',')}</Badge> : null}
@@ -192,24 +192,24 @@ function Explore({ e }: { e: RunDetailStages['explore'] }) {
         <K label="steps" value={e.steps} testid="explore-steps" />
         <K label="scenarios recorded" value={e.scenarios_recorded} testid="explore-recorded" />
         <K label="shipped" value={e.scenarios_shipped} testid="explore-shipped" />
-        <K label="explorer" value={usd(e.explorer_usd)} cost testid="explore-cost" />
-        {e.repair_usd ? <K label="of which repair pass" value={usd(e.repair_usd)} cost /> : null}
-        {e.cache ? <K label="prompt tokens from cache" value={`${(e.cache.cached_share * 100).toFixed(1)}% over ${e.cache.calls} call${e.cache.calls === 1 ? '' : 's'}`} testid="explore-cache-share" /> : null}
+        <K label="explorer" value={<span title={`exact: ${exactMoney(e.explorer_usd)}`}>{formatMoney(e.explorer_usd)}</span>} cost testid="explore-cost" />
+        {e.repair_usd ? <K label="of which repair pass" value={<span title={`exact: ${exactMoney(e.repair_usd)}`}>{formatMoney(e.repair_usd)}</span>} cost /> : null}
+        {e.cache ? <K label="prompt tokens from cache" value={`${pct(e.cache.cached_share)} over ${formatCount(e.cache.calls, 'call', 'calls')}`} testid="explore-cache-share" /> : null}
         {e.heals.length ? <K label="recovered selectors" value={e.heals.length} testid="explore-heals-count" /> : null}
       </KV>
-      {e.closeout ? <div className="mt-2 text-s text-fg-2" data-testid="explore-closeout"><b>closeout grace</b> {e.closeout.closed ? 'closed' : 'did not close'} "{e.closeout.scenario}" for {usd(e.closeout.usd)} past the ceiling</div> : null}
-      <div className="mt-1 text-s text-fg-2">The step budget and the explorer sub-ceiling are console settings, not recorded in run-report.json; steps and cost above are the report's own.</div>
-      {e.stopped ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-s text-rework" data-testid="explore-stopped"><b>stopped</b> {e.stopped.reason}</div> : null}
+      {e.closeout ? <div className="mt-2 text-small text-fg-2" data-testid="explore-closeout"><span className="font-medium text-fg">closeout grace</span> {e.closeout.closed ? 'closed' : 'did not close'} "{e.closeout.scenario}" for {formatMoney(e.closeout.usd)} past the ceiling</div> : null}
+      <div className="mt-1 text-small text-fg-2">The step budget and the explorer sub-ceiling are console settings, not recorded in run-report.json; steps and cost above are the report's own.</div>
+      {e.stopped ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-small text-rework" data-testid="explore-stopped"><span className="font-medium">stopped</span> {e.stopped.reason}</div> : null}
       {e.gate_injections.length || e.gate_broken.length ? (
         <>
           <SubLabel>Gate</SubLabel>
           <KV>
             <K label="injections" value={e.gate_injections.length} testid="explore-gate-injections" />
-            {e.gate_broken.length ? <span className="text-reject">broken <b>{e.gate_broken.length}</b></span> : null}
+            {e.gate_broken.length ? <span className="text-reject">broken <span className="font-medium">{e.gate_broken.length}</span></span> : null}
           </KV>
           <ul>
             {e.gate_injections.map((g, i) => <Row key={`i${i}`} tag={g.assertion_type} tagVariant="outline" name={g.scenario} why={`step ${g.step_index + 1}: ${g.detail}`} />)}
-            {e.gate_broken.map((b, i) => <Row key={`b${i}`} tag="broken" tagVariant="reject" name={b.scenario} why={`${b.reason} (${b.attempts} attempt${b.attempts === 1 ? '' : 's'})`} />)}
+            {e.gate_broken.map((b, i) => <Row key={`b${i}`} tag="broken" tagVariant="reject" name={b.scenario} why={`${b.reason} (${formatCount(b.attempts, 'attempt', 'attempts')})`} />)}
           </ul>
         </>
       ) : null}
@@ -220,19 +220,19 @@ function Explore({ e }: { e: RunDetailStages['explore'] }) {
           <SubLabel>Selector recoveries</SubLabel>
           <ul data-testid="explore-heals">
             {e.heals.map((h, i) => (
-              <li key={i} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="explore-heal">
+              <li key={i} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="explore-heal">
                 <Badge variant="pass">recovered</Badge>
                 {h.scenario ? <span className="text-fg">{h.scenario}</span> : null}
                 <span className="text-fg-2">{h.intent}:</span>
-                <span className="mono text-fg-2 line-through">{h.from}</span>
+                <span className="mono break-all text-fg-2 line-through">{h.from}</span>
                 <span className="text-fg-2">to</span>
-                <span className="mono text-fg">{h.to}</span>
+                <span className="mono break-all text-fg">{h.to}</span>
               </li>
             ))}
           </ul>
         </>
       ) : null}
-      {!e.gate_injections.length && !e.gate_broken.length && !e.skipped.length && !e.incomplete.length && !e.heals.length && !e.stopped ? <div className="mt-2 text-s text-fg-2">No gate injections, skips, incomplete scenarios or selector recoveries recorded.</div> : null}
+      {!e.gate_injections.length && !e.gate_broken.length && !e.skipped.length && !e.incomplete.length && !e.heals.length && !e.stopped ? <div className="mt-2 text-small text-fg-2">No gate injections, skips, incomplete scenarios or selector recoveries recorded.</div> : null}
     </>
   );
 }
@@ -242,23 +242,23 @@ function Review({ r, unmatched }: { r: RunDetailStages['review']; unmatched: Unm
   return (
     <>
       <KV>
-        <span className="text-pass">pass <b data-testid="review-pass">{r.counts.pass}</b></span>
-        <span className="text-rework">rework <b data-testid="review-rework">{r.counts.rework}</b></span>
-        <span className="text-reject">reject <b data-testid="review-reject">{r.counts.reject}</b></span>
-        <K label="critic" value={usd(r.critic_usd)} cost testid="review-cost" />
+        <span className="text-pass">pass <span className="font-medium" data-testid="review-pass">{r.counts.pass}</span></span>
+        <span className="text-rework">rework <span className="font-medium" data-testid="review-rework">{r.counts.rework}</span></span>
+        <span className="text-reject">reject <span className="font-medium" data-testid="review-reject">{r.counts.reject}</span></span>
+        <K label="critic" value={<span title={`exact: ${exactMoney(r.critic_usd)}`}>{formatMoney(r.critic_usd)}</span>} cost testid="review-cost" />
       </KV>
       {r.repair ? (
-        <div className="mt-2 rounded-md bg-accent-soft px-3 py-2 text-s text-fg" data-testid="repair-banner"><b>repair pass</b> {r.repair.count} scenario{r.repair.count === 1 ? '' : 's'} re-explored · spent <span className="mono text-cost">{usd(r.repair.spent_usd)}</span> <span className="text-fg-2">(the repair budget is a console setting, not recorded in run-report.json)</span></div>
+        <div className="mt-2 rounded-md bg-accent-soft px-3 py-2 text-small text-fg" data-testid="repair-banner"><span className="font-medium">repair pass</span> {formatCount(r.repair.count, 'scenario', 'scenarios')} re-explored · spent <span className="money font-medium" title={`exact: ${exactMoney(r.repair.spent_usd)}`}>{formatMoney(r.repair.spent_usd)}</span> <span className="text-fg-2">(the repair budget is a console setting, not recorded in run-report.json)</span></div>
       ) : (
-        <div className="mt-2 text-s text-fg-2" data-testid="repair-banner">{r.counts.rework + r.counts.reject === 0 ? 'Nothing gated: every scenario passed review, so no repair pass was needed.' : 'No repair pass recorded.'}</div>
+        <div className="mt-2 text-small text-fg-2" data-testid="repair-banner">{r.counts.rework + r.counts.reject === 0 ? 'Nothing gated: every scenario passed review, so no repair pass was needed.' : 'No repair pass recorded.'}</div>
       )}
       <SubLabel>Final verdicts</SubLabel>
       <div className="grid gap-2 md:grid-cols-2" data-testid="verdict-cards">
         {r.verdicts.map((v) => (
-          <article key={v.scenario} className="rounded-md border border-line bg-bg-2 p-3" data-testid="verdict-card" data-verdict={v.verdict}>
-            <div className="flex items-baseline gap-2"><Badge variant={VERDICT_VARIANT[v.verdict]}>{v.verdict}</Badge><span className="text-s font-semibold text-fg">{v.scenario}</span></div>
-            {v.reasons.length ? <ul className="mt-1 list-disc pl-5 text-s text-fg-2">{v.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul> : null}
-            {v.verdict !== 'pass' && v.required_fixes.length ? <div className="mt-1 text-s text-fg-2"><b className="text-fg">Why it matters:</b> {v.required_fixes.join(' ')}</div> : null}
+          <article key={v.scenario} className="rounded-md border border-line bg-bg-2 p-4" data-testid="verdict-card" data-verdict={v.verdict}>
+            <div className="flex items-baseline gap-2"><Badge variant={VERDICT_VARIANT[v.verdict]}>{v.verdict}</Badge><span className="text-body font-medium text-fg">{v.scenario}</span></div>
+            {v.reasons.length ? <ul className="mt-1 list-disc pl-5 text-small text-fg-2">{v.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul> : null}
+            {v.verdict !== 'pass' && v.required_fixes.length ? <div className="mt-1 text-small text-fg-2"><span className="font-medium text-fg">Why it matters:</span> {v.required_fixes.join(' ')}</div> : null}
           </article>
         ))}
       </div>
@@ -267,7 +267,7 @@ function Review({ r, unmatched }: { r: RunDetailStages['review']; unmatched: Unm
           <SubLabel>Verdict journeys</SubLabel>
           <ul data-testid="journeys">
             {r.journeys.map((j) => (
-              <li key={j.scenario} className="flex flex-wrap items-center gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="journey" data-outcome={j.outcome}>
+              <li key={j.scenario} className="flex flex-wrap items-center gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="journey" data-outcome={j.outcome}>
                 <span className="text-fg">{j.scenario}</span>
                 <Badge variant="rework">{j.first}</Badge>
                 <span className="text-fg-2">to</span>
@@ -279,15 +279,15 @@ function Review({ r, unmatched }: { r: RunDetailStages['review']; unmatched: Unm
         </>
       ) : null}
       {unmatched.length ? (
-        <div className="mt-3 rounded-lg bg-rework-soft p-3" data-testid="unmatched-verdicts">
-          <h3 className="text-s font-semibold text-rework">Critic verdicts that matched no scenario <span className="mono font-normal">{unmatched.length}</span></h3>
-          <p className="mt-1 text-s text-fg-2">These verdicts came back with names that matched no planned or recorded scenario, even after tolerant matching. They are not scenario rows; nothing is dropped silently.</p>
+        <div className="mt-4 rounded-lg bg-rework-soft p-4" data-testid="unmatched-verdicts">
+          <h3 className="text-subheading font-semibold text-rework">Critic verdicts that matched no scenario <span className="text-small font-normal">{unmatched.length}</span></h3>
+          <p className="mt-1 text-small text-fg-2">These verdicts came back with names that matched no planned or recorded scenario, even after tolerant matching. They are not scenario rows; nothing is dropped silently.</p>
           <ul className="mt-2 flex flex-col gap-1">
-            {unmatched.map((v) => <li key={v.scenario} className="text-s" data-testid="unmatched-verdict"><Badge variant={VERDICT_VARIANT[v.verdict as keyof typeof VERDICT_VARIANT] ?? 'neutral'}>{v.verdict}</Badge> <span className="ml-2 text-fg">{v.scenario}</span>{v.reasons.length ? <span className="text-fg-2"> · {v.reasons.join(' · ')}</span> : null}</li>)}
+            {unmatched.map((v) => <li key={v.scenario} className="text-small" data-testid="unmatched-verdict"><Badge variant={VERDICT_VARIANT[v.verdict as keyof typeof VERDICT_VARIANT] ?? 'neutral'}>{v.verdict}</Badge> <span className="ml-2 text-fg">{v.scenario}</span>{v.reasons.length ? <span className="text-fg-2"> · {v.reasons.join(' · ')}</span> : null}</li>)}
           </ul>
         </div>
       ) : null}
-      {r.summary ? (<><SubLabel>Critic summary</SubLabel><p className="text-s text-fg-2" data-testid="critic-summary">{r.summary}</p></>) : null}
+      {r.summary ? (<><SubLabel>Critic summary</SubLabel><p className="text-small text-fg-2" data-testid="critic-summary">{r.summary}</p></>) : null}
     </>
   );
 }
@@ -298,10 +298,10 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
     <>
       {v.replay ? (
         <>
-          <SubLabel>Reality check <span className="mono font-normal normal-case text-fg-2">{v.replay.passed} passed · {v.replay.failed} dropped</span></SubLabel>
+          <SubLabel>Reality check <span className="mono font-normal text-fg-2">{v.replay.passed} passed · {v.replay.failed} dropped</span></SubLabel>
           <ul data-testid="replay-list">
             {v.replay.verdicts.map((x) => (
-              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="replay-row" data-passed={x.passed ? 'yes' : 'no'}>
+              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="replay-row" data-passed={x.passed ? 'yes' : 'no'}>
                 <span className={x.passed ? 'text-pass' : 'text-reject'}>{x.passed ? 'pass' : 'fail'}</span>
                 <span className="text-fg">{x.name}</span>
                 {!x.passed ? <span className="text-fg-2">step {(x.failed_step ?? 0) + 1} {x.step_kind ?? ''}{x.error ? `: ${x.error}` : ''}</span> : null}
@@ -314,11 +314,11 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
       {v.stability ? (
         <>
           <SubLabel>
-            Stability <span className="mono font-normal normal-case text-fg-2"><span data-testid="stability-iterations">{v.stability.iterations}</span>x re-run · <span data-testid="stability-passed">{v.stability.passed}</span> stable · <span data-testid="stability-flaked">{v.stability.flaked}</span> flaked · <span data-testid="stability-recovered">{v.stability.recovered ?? 0}</span> recovered · flake rate {(v.stability.flake_rate * 100).toFixed(1)}%</span>
+            Stability <span className="mono font-normal text-fg-2"><span data-testid="stability-iterations">{v.stability.iterations}</span>x re-run · <span data-testid="stability-passed">{v.stability.passed}</span> stable · <span data-testid="stability-flaked">{v.stability.flaked}</span> flaked · <span data-testid="stability-recovered">{v.stability.recovered ?? 0}</span> recovered · flake rate {pct(v.stability.flake_rate)}</span>
           </SubLabel>
           <ul data-testid="stability-list">
             {v.stability.verdicts.map((x) => (
-              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-s first:border-t-0" data-testid="stability-row">
+              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="stability-row">
                 <span className="text-fg">{x.name}</span>
                 <span className={`mono ${x.gave_up ? 'text-reject' : x.recovered ? 'text-pass' : x.classification === 'flaky' ? 'text-rework' : 'text-fg-2'}`} data-testid="stability-pattern">{x.pattern ?? `${x.passes}/${x.iterations}`}</span>
                 <Badge variant={x.gave_up ? 'reject' : x.recovered ? 'pass' : x.classification === 'stable' ? 'pass' : x.classification === 'flaky' ? 'rework' : 'neutral'}>{x.gave_up ? 'broken' : x.recovered ? 'recovered' : x.classification ?? 'unknown'}</Badge>
@@ -332,10 +332,10 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
             ))}
           </ul>
           <KV>
-            <K label="stabilizer attempts" value={v.stability.attempts_total > 0 ? `${v.stability.attempts_total} across ${v.stability.verdicts.filter((x) => x.attempts.length > 0).length} scenario${v.stability.verdicts.filter((x) => x.attempts.length > 0).length === 1 ? '' : 's'}, ${v.stability.recovered ?? 0} recovered, ${v.stability.verdicts.filter((x) => x.gave_up).length} broken` : (v.stability.stabilizer_cost_usd ?? 0) > 0 ? 'NONE RECORDED despite spend' : 'none recorded'} testid="stabilizer-attempts" />
-            <K label="stabilizer cost" value={usd(v.stability.stabilizer_cost_usd ?? 0)} cost testid="stabilizer-cost" />
+            <K label="stabilizer attempts" value={v.stability.attempts_total > 0 ? `${v.stability.attempts_total} across ${formatCount(v.stability.verdicts.filter((x) => x.attempts.length > 0).length, 'scenario', 'scenarios')}, ${v.stability.recovered ?? 0} recovered, ${v.stability.verdicts.filter((x) => x.gave_up).length} broken` : (v.stability.stabilizer_cost_usd ?? 0) > 0 ? 'none recorded despite spend' : 'none recorded'} testid="stabilizer-attempts" />
+            <K label="stabilizer cost" value={<span title={`exact: ${exactMoney(v.stability.stabilizer_cost_usd)}`}>{formatMoney(v.stability.stabilizer_cost_usd)}</span>} cost testid="stabilizer-cost" />
           </KV>
-          {v.stability.warning ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-s text-rework" data-testid="stabilizer-warning"><b>warning</b> {v.stability.warning}</div> : null}
+          {v.stability.warning ? <div className="mt-2 rounded-md bg-rework-soft px-3 py-2 text-small text-rework" data-testid="stabilizer-warning"><span className="font-medium">warning</span> {v.stability.warning}</div> : null}
         </>
       ) : <Empty>Stability did not run on this run.</Empty>}
     </>
@@ -363,7 +363,7 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
       <div data-testid="summary-live">
         <KV>
           <K label="recorded so far" value={sm.shipped} />
-          <K label="cost so far" value={usd(sm.total_usd)} cost />
+          <K label="cost so far" value={formatMoney(sm.total_usd)} cost />
         </KV>
         <Empty>The funnel, cost split, coverage, findings and download appear when the run finishes and its report is written.</Empty>
       </div>
@@ -386,25 +386,25 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
     <>
       <div className="grid gap-3 sm:grid-cols-3" data-testid="hero">
         <Hero n={String(sm.shipped)} label="tests shipped" testid="hero-shipped" />
-        <Hero n={usd(sm.total_usd)} label="total cost" cost testid="hero-cost" />
-        <Hero n={String(sm.attention)} label={`need${sm.attention === 1 ? 's' : ''} attention`} sub={`${sm.findings_count} finding${sm.findings_count === 1 ? '' : 's'} · ${sm.uncovered_count} uncovered rule${sm.uncovered_count === 1 ? '' : 's'}`} subExtra={sm.locator_count ? `${sm.locator_count} element${sm.locator_count === 1 ? '' : 's'} not found` : undefined} attention={sm.attention > 0} testid="hero-attention" />
+        <Hero n={formatMoney(sm.total_usd)} label="total cost" title={`exact: ${exactMoney(sm.total_usd)}`} testid="hero-cost" />
+        <Hero n={String(sm.attention)} label={`need${sm.attention === 1 ? 's' : ''} attention`} sub={`${formatCount(sm.findings_count, 'finding', 'findings')} · ${formatCount(sm.uncovered_count, 'uncovered rule', 'uncovered rules')}`} subExtra={sm.locator_count ? `${formatCount(sm.locator_count, 'element', 'elements')} not found` : undefined} attention={sm.attention > 0} testid="hero-attention" />
       </div>
-      {sm.stopped ? <div className="mt-3 rounded-md bg-rework-soft px-3 py-2 text-s text-rework"><b>stopped early</b> {sm.stopped.reason}</div> : null}
+      {sm.stopped ? <div className="mt-4 rounded-md bg-rework-soft px-3 py-2 text-small text-rework"><span className="font-medium">stopped early</span> {sm.stopped.reason}</div> : null}
 
       <SubLabel>Reconciliation funnel</SubLabel>
       {!f ? <Empty>No reconciliation on this report.</Empty> : (
         <div data-testid="funnel">
           {shown.map((r) => (
-            <div key={r.key} className="grid grid-cols-[88px_1fr_40px] items-center gap-2 py-0.5 text-s" data-testid="funnel-row" data-key={r.key} data-n={f[r.key]}>
-              <span className={r.key === 'planned' ? 'font-semibold text-fg' : 'text-fg-2'}>{r.label}</span>
+            <div key={r.key} className="grid grid-cols-[88px_1fr_40px] items-center gap-2 py-1 text-small" data-testid="funnel-row" data-key={r.key} data-n={f[r.key]}>
+              <span className={r.key === 'planned' ? 'font-medium text-fg' : 'text-fg-2'}>{r.label}</span>
               <div className="h-2 rounded-sm bg-bg-3"><i className={`block h-2 rounded-sm ${r.cls}`} style={{ width: `${((f[r.key] / denom) * 100).toFixed(1)}%` }} /></div>
-              <span className="mono text-right text-fg">{f[r.key]}</span>
-              {r.key === 'dropped' && Object.keys(f.dropped_by_stage).length ? <span className="col-span-3 pl-[96px] text-s text-fg-2">{Object.entries(f.dropped_by_stage).map(([s, n]) => `${s} ${n}`).join(' · ')}</span> : null}
-              {r.key === 'findings' && f.findings_product !== undefined && f.findings_locator !== undefined ? <span className="col-span-3 pl-[96px] text-s text-fg-2" data-testid="funnel-findings-kinds">{f.findings} ({f.findings_product} product behavior, {f.findings_locator} element not found)</span> : null}
+              <span className="money text-right text-fg">{f[r.key]}</span>
+              {r.key === 'dropped' && Object.keys(f.dropped_by_stage).length ? <span className="col-span-3 pl-24 text-small text-fg-2">{Object.entries(f.dropped_by_stage).map(([s, n]) => `${s} ${n}`).join(' · ')}</span> : null}
+              {r.key === 'findings' && f.findings_product !== undefined && f.findings_locator !== undefined ? <span className="col-span-3 pl-24 text-small text-fg-2" data-testid="funnel-findings-kinds">{f.findings} ({f.findings_product} product behavior, {f.findings_locator} element not found)</span> : null}
             </div>
           ))}
-          {zero.length ? <div className="mt-1 text-s text-fg-2" data-testid="funnel-zero">{zero.map((r) => `${r.label} 0`).join(' · ')}</div> : null}
-          <div className="mt-2 flex flex-wrap gap-3 text-s">
+          {zero.length ? <div className="mt-1 text-small text-fg-2" data-testid="funnel-zero">{zero.map((r) => `${r.label} 0`).join(' · ')}</div> : null}
+          <div className="mt-2 flex flex-wrap gap-3 text-small">
             <span className="mono text-fg-2" data-testid="funnel-eq">{f.planned} = {f.generated} + {f.dropped} + {f.incomplete} + {f.findings} + {f.skipped}{f.emitted_failed ? ` + ${f.emitted_failed}` : ''}</span>
             <span className={f.balanced ? 'text-pass' : 'text-rework'} data-testid="funnel-balanced">{f.balanced ? 'balanced' : 'not balanced'}</span>
             {f.added ? <span className="text-fg-2">+{f.added} unplanned</span> : null}
@@ -412,7 +412,7 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
         </div>
       )}
       {ec ? (
-        <div className="mt-2 text-s" data-testid="emitted-check">
+        <div className="mt-2 text-small" data-testid="emitted-check">
           <span className="text-fg-2">Emitted-spec check: </span>
           {ec.inconclusive
             ? <span className="text-rework">inconclusive{ec.reason ? `, ${ec.reason}` : ''}</span>
@@ -422,87 +422,81 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
 
       <SubLabel>Cost split</SubLabel>
       <div data-testid="cost-split">
-        <div className="text-s text-fg-2"><span className="mono text-cost" data-testid="cost-total">{usd(cs.total)}</span> total</div>
+        <div className="text-small text-fg-2"><span className="money font-medium text-fg" data-testid="cost-total" title={`exact: ${exactMoney(cs.total)}`}>{formatMoney(cs.total)}</span> total</div>
         <div className="mt-1 flex h-2 overflow-hidden rounded-sm bg-bg-3">
-          {parts.filter((p) => p.usd > 0 && cs.total > 0).map((p) => <i key={p.key} className={`block h-2 bg-cost ${p.opacity}`} style={{ width: `${((p.usd / cs.total) * 100).toFixed(2)}%` }} title={`${p.key} ${usd(p.usd)}`} />)}
+          {parts.filter((p) => p.usd > 0 && cs.total > 0).map((p) => <i key={p.key} className={`block h-2 bg-cost ${p.opacity}`} style={{ width: `${((p.usd / cs.total) * 100).toFixed(2)}%` }} title={`${p.key} ${formatMoney(p.usd)}`} />)}
         </div>
-        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-s text-fg-2">
-          {parts.map((p) => <span key={p.key} data-testid="cost-part" data-part={p.key} data-usd={p.usd}>{p.key} <span className="mono text-cost">{usd(p.usd)}</span></span>)}
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-small text-fg-2">
+          {parts.map((p) => <span key={p.key} data-testid="cost-part" data-part={p.key} data-usd={p.usd}>{p.key} <span className="money font-medium text-fg" title={`exact: ${exactMoney(p.usd)}`}>{formatMoney(p.usd)}</span></span>)}
         </div>
       </div>
 
       <SubLabel>Requirements coverage</SubLabel>
       {!sm.rule_coverage ? <Empty testid="coverage-na">No SRS on this run. Add one with --srs to get requirements coverage.</Empty> : (
         <div data-testid="coverage">
-          <div className="text-s text-fg-2"><span className="mono text-fg" data-testid="coverage-covered">{sm.rule_coverage.covered.length}</span> of <span className="mono text-fg">{sm.rule_coverage.covered.length + sm.rule_coverage.uncovered.length}</span> rules covered</div>
+          <div className="text-small text-fg-2"><span className="money font-medium text-fg" data-testid="coverage-covered">{sm.rule_coverage.covered.length}</span> of <span className="money font-medium text-fg">{sm.rule_coverage.covered.length + sm.rule_coverage.uncovered.length}</span> rules covered</div>
           {sm.rule_coverage.covered.length ? <ul>{sm.rule_coverage.covered.map((c) => <Row key={c.rule_id} tag={c.rule_id} tagVariant="outline" name="covered" why={c.scenarios.join(', ')} />)}</ul> : null}
           {sm.rule_coverage.uncovered.length ? (
             <>
-              <div className="mt-2 text-s font-semibold text-fg">Considered, not automated <span className="mono font-normal text-fg-2" data-testid="coverage-uncovered">{sm.rule_coverage.uncovered.length}</span></div>
+              <div className="mt-2 text-small font-medium text-fg">Considered, not automated <span className="font-normal text-fg-2" data-testid="coverage-uncovered">{sm.rule_coverage.uncovered.length}</span></div>
               <ul data-testid="uncovered-list">{sm.rule_coverage.uncovered.map((u) => <Row key={u.rule_id} tag={u.rule_id} tagVariant="outline" name={u.text} why={u.reason} />)}</ul>
             </>
           ) : null}
         </div>
       )}
 
-      <section className="mt-4 rounded-lg border border-finding/40 bg-finding-soft p-4" data-testid="findings-section">
-        <h3 className="text-m font-semibold text-finding" data-testid="findings-heading">Product behavior to review <span className="mono text-s font-normal">{productFindings.length}</span></h3>
-        <p className="mt-1 text-s text-fg-2">A finding is product behavior the agent observed that differed from what the scenario expected. It is not a test failure and is not a scenario row.</p>
-        {productFindings.length === 0 ? <div className="mt-3 text-s text-fg-2" data-testid="no-findings">No findings recorded</div> : (
-          <ul className="mt-3 flex flex-col gap-2">
+      <section className="mt-6 rounded-lg border border-finding/40 bg-finding-soft p-6" data-testid="findings-section">
+        <h3 className="text-subheading font-semibold text-finding" data-testid="findings-heading">Product behavior to review <span className="text-small font-normal">{productFindings.length}</span></h3>
+        <p className="mt-1 text-small text-fg-2">A finding is product behavior the agent observed that differed from what the scenario expected. It is not a test failure and is not a scenario row.</p>
+        {productFindings.length === 0 ? <div className="mt-4 text-small text-fg-2" data-testid="no-findings">No findings recorded</div> : (
+          <ul className="mt-4 flex flex-col gap-2">
             {productFindings.map((fd) => (
-              <li key={fd.scenario} className="rounded-md border border-line bg-bg-1 px-3 py-2" data-testid="finding">
+              <li key={fd.scenario} className="rounded-md border border-line bg-bg-1 px-4 py-3" data-testid="finding">
                 <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="font-semibold text-finding">{fd.scenario}</span>
+                  <span className="font-medium text-finding">{fd.scenario}</span>
                   {fd.verdict ? <Badge variant={VERDICT_VARIANT[fd.verdict.verdict]} data-testid="finding-verdict" data-verdict={fd.verdict.verdict} title={fd.verdict.reasons.join(' · ')}>critic: {fd.verdict.verdict}</Badge> : null}
                 </div>
-                <div className="text-s text-fg-2"><span className="font-semibold text-fg">Expected</span> {fd.expected}</div>
-                <div className="text-s text-fg-2"><span className="font-semibold text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; the page said "${fd.messages.join(' | ')}"` : ''}</div>
-                {fd.verdict?.reasons.length ? <div className="mt-1 text-s text-fg-2" data-testid="finding-verdict-reasons">{fd.verdict.reasons.join(' · ')}</div> : null}
+                <div className="text-small text-fg-2"><span className="font-medium text-fg">Expected</span> {fd.expected}</div>
+                <div className="text-small text-fg-2"><span className="font-medium text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; the page said "${fd.messages.join(' | ')}"` : ''}</div>
+                {fd.verdict?.reasons.length ? <div className="mt-1 text-small text-fg-2" data-testid="finding-verdict-reasons">{fd.verdict.reasons.join(' · ')}</div> : null}
               </li>
             ))}
           </ul>
         )}
       </section>
       {/* Elements the agent could not find: a limit of the run (invariant 67), grey, collapsed, never in To review and never a product finding. */}
-      <details className="mt-3 rounded-lg border border-line bg-bg-1 p-4 text-fg-2" data-testid="locator-failures">
-        <summary className="cursor-pointer text-m font-semibold text-neutral" data-testid="locator-failures-heading"><Term term="locatorFailures">Elements the agent could not find</Term> <span className="mono text-s font-normal" data-testid="locator-failures-count">{locatorFindings.length}</span></summary>
-        <p className="mt-1 text-s text-fg-2">The agent could not locate these elements after retrying. This is a limit of the run, not product behavior, and it is not counted in To review.</p>
-        {locatorFindings.length === 0 ? <div className="mt-3 text-s text-fg-3" data-testid="no-locator-failures">None recorded</div> : (
-          <ul className="mt-3 flex flex-col gap-2">
+      <details className="mt-4 rounded-lg border border-line bg-bg-1 p-6 text-fg-2" data-testid="locator-failures">
+        <summary className="cursor-pointer text-subheading font-semibold text-neutral" data-testid="locator-failures-heading"><Term term="locatorFailures">Elements the agent could not find</Term> <span className="text-small font-normal" data-testid="locator-failures-count">{locatorFindings.length}</span></summary>
+        <p className="mt-1 text-small text-fg-2">The agent could not locate these elements after retrying. This is a limit of the run, not product behavior, and it is not counted in To review.</p>
+        {locatorFindings.length === 0 ? <div className="mt-4 text-small text-fg-2" data-testid="no-locator-failures">None recorded</div> : (
+          <ul className="mt-4 flex flex-col gap-2">
             {locatorFindings.map((fd) => (
-              <li key={fd.scenario} className="rounded-md border border-line bg-bg-2 px-3 py-2" data-testid="locator-failure">
-                <div className="font-semibold text-fg" data-testid="locator-failure-scenario">{fd.scenario}</div>
-                <div className="text-s text-fg-2"><span className="font-semibold text-fg">Element looked for</span> <span data-testid="locator-failure-element">{elementLookedFor(fd.expected)}</span></div>
-                <div className="text-s text-fg-2"><span className="font-semibold text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; ${fd.messages.join(' | ')}` : ''}</div>
+              <li key={fd.scenario} className="rounded-md border border-line bg-bg-2 px-4 py-3" data-testid="locator-failure">
+                <div className="font-medium text-fg" data-testid="locator-failure-scenario">{fd.scenario}</div>
+                <div className="text-small text-fg-2"><span className="font-medium text-fg">Element looked for</span> <span data-testid="locator-failure-element">{elementLookedFor(fd.expected)}</span></div>
+                <div className="text-small text-fg-2"><span className="font-medium text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; ${fd.messages.join(' | ')}` : ''}</div>
               </li>
             ))}
           </ul>
         )}
       </details>
 
-      <div className="mt-4" data-testid="summary-download">
+      <div className="mt-6" data-testid="summary-download">
         {sm.zip ? (
-          <Button asChild><a href={api.withToken(sm.zip.href)} data-testid="download-zip"><Download className="mr-1 h-4 w-4" /> Download {sm.zip.name} <span className="ml-1 font-normal opacity-70">{formatSize(sm.zip.size)}</span></a></Button>
-        ) : <div className="text-s text-fg-2" data-testid="no-zip">No framework zip in the run folder.</div>}
+          <Button asChild variant="outline" className="h-auto min-h-9 max-w-full whitespace-normal py-2 text-left"><a href={api.withToken(sm.zip.href)} data-testid="download-zip"><Download className="mr-1 h-4 w-4" /> Download {sm.zip.name} <span className="ml-1 font-normal text-fg-2">{formatSize(sm.zip.size)}</span></a></Button>
+        ) : <div className="text-small text-fg-2" data-testid="no-zip">No framework zip in the run folder.</div>}
       </div>
     </>
   );
 }
 
 /** subExtra: a count outside the big number (the elements the agent could not find, invariant 67), in the neutral token, only when given. */
-function Hero({ n, label, sub, subExtra, cost, attention, testid }: { n: string; label: string; sub?: string; subExtra?: string; cost?: boolean; attention?: boolean; testid: string }) {
+function Hero({ n, label, sub, subExtra, title, attention, testid }: { n: string; label: string; sub?: string; subExtra?: string; title?: string; attention?: boolean; testid: string }) {
   return (
-    <div className={`rounded-lg border p-3 ${attention ? 'border-finding/40 bg-finding-soft' : 'border-line bg-bg-2'}`}>
-      <div className={`text-l font-semibold leading-none ${cost ? 'mono text-cost' : attention ? 'text-finding' : 'text-fg'}`} data-testid={testid}>{n}</div>
-      <div className="mt-1 text-s text-fg-2">{label}</div>
-      {sub ? <div className="text-s text-fg-2" data-testid={`${testid}-sub`}>{sub}{subExtra ? <> · <span className="text-neutral" data-testid={`${testid}-locator`}>{subExtra}</span></> : null}</div> : null}
+    <div className={`rounded-lg border p-4 ${attention ? 'border-finding/40 bg-finding-soft' : 'border-line bg-bg-2'}`} title={title}>
+      <div className={`money text-title font-semibold ${attention ? 'text-finding' : 'text-fg'}`} data-testid={testid}>{n}</div>
+      <div className="mt-1 text-caption font-medium text-fg-2">{label}</div>
+      {sub ? <div className="text-small text-fg-2" data-testid={`${testid}-sub`}>{sub}{subExtra ? <> · <span className="text-neutral" data-testid={`${testid}-locator`}>{subExtra}</span></> : null}</div> : null}
     </div>
   );
-}
-
-export function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }

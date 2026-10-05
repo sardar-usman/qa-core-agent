@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import type { ProjectTrends } from '@/lib/api';
 import { Tip } from '@/components/Term';
-import { exactMoney, fmtDate, money } from '@/lib/utils';
+import { exactMoney, formatDate, formatDateTime, formatMoney } from '@/lib/format';
 
 /**
  * Three small charts over a project's completed runs, in run order, from
@@ -30,14 +30,14 @@ export function Trends({ trends }: { trends: ProjectTrends }) {
   if (noShipped) excluded.push(`${noShipped} run${noShipped === 1 ? '' : 's'} with no shipped count recorded`);
   const caption = `${pts.length} completed run${pts.length === 1 ? '' : 's'}${excluded.length ? '; ' + excluded.join('; ') : ''}`;
   if (pts.length === 0) {
-    return <div className="rounded-lg border border-dashed border-line-strong bg-bg-1 px-4 py-3 text-s text-fg-2" data-testid="trends-empty">No completed runs to chart. <span data-testid="trends-caption">{caption}</span></div>;
+    return <div className="rounded-lg border border-dashed border-line-strong bg-bg-1 px-4 py-3 text-small text-fg-2" data-testid="trends-empty">No completed runs to chart. <span data-testid="trends-caption">{caption}</span></div>;
   }
   return (
     <div className="flex flex-col gap-2" data-testid="trends">
-      <div className="text-s text-fg-2" data-testid="trends-caption">{caption}{pts.length === 1 ? '. A trend needs two runs; this is the single point.' : ''}</div>
+      <div className="text-small text-fg-2" data-testid="trends-caption">{caption}{pts.length === 1 ? '. A trend needs two runs; this is the single point.' : ''}</div>
       <div className="grid gap-3 md:grid-cols-3">
         <Chart title="tests shipped" metric="shipped" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.shipped, label: p.shipped == null ? 'not recorded' : String(p.shipped), exact: p.shipped == null ? 'no shipped count recorded on this report' : `${p.shipped} shipped` }))} color="hsl(var(--pass))" />
-        <Chart title="total cost" metric="cost" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.cost_total, label: money(p.cost_total), exact: `exact: ${exactMoney(p.cost_total)}` }))} color="hsl(var(--cost))" />
+        <Chart title="total cost" metric="cost" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.cost_total, label: formatMoney(p.cost_total), exact: `exact: ${exactMoney(p.cost_total)}` }))} color="hsl(var(--cost))" />
         <Chart title="flake rate" metric="flake" points={pts.map((p) => ({ run_id: p.run_id, at: p.started_at, value: p.flake_rate, label: p.flake_rate == null ? 'not recorded' : `${(p.flake_rate * 100).toFixed(1)}%`, exact: p.flake_rate == null ? 'no flake rate recorded on this report' : `flake rate ${p.flake_rate}` }))} color="hsl(var(--rework))" fixedMax={1} />
       </div>
     </div>
@@ -71,25 +71,25 @@ function Chart({ title, metric, points, color, fixedMax }: { title: string; metr
   const x = (i: number) => points.length === 1 ? w / 2 : padX + (i / (points.length - 1)) * (w - padX * 2);
   const y = (v: number) => max === 0 ? h - padBottom : h - padBottom - ((v - min) / max) * (h - padTop - padBottom);
   return (
-    <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="trend-chart" data-metric={metric} data-axis-min={min} data-axis-max={max}>
-      <div className="text-s font-semibold text-fg">{title}</div>
+    <div className="rounded-lg border border-line bg-bg-1 p-4" data-testid="trend-chart" data-metric={metric} data-axis-min={min} data-axis-max={max}>
+      <div className="text-caption font-medium text-fg-3">{title}</div>
       <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img" aria-label={`${title} per completed run`} className="mt-1 overflow-visible" style={{ fontVariantNumeric: 'tabular-nums' }}>
         <line x1={padX} x2={w - padX} y1={h - padBottom} y2={h - padBottom} stroke="hsl(var(--line-strong))" strokeWidth="1" />
         {segments(points).map((seg) => <polyline key={seg.join('-')} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" points={seg.map((i) => `${x(i)},${y(points[i]!.value as number)}`).join(' ')} data-testid="trend-line" data-points={seg.length} />)}
         {points.map((p, i) => p.value == null ? (
           // No point and no value: a placeholder at the run's position, so the gap is explained, never drawn as 0.
-          <Tip key={p.run_id} asChild text={`${p.run_id}, ${fmtDate(p.at)}, ${p.exact}`}>
-            <a href={`/runs/${encodeURIComponent(p.run_id)}`} onClick={(e) => { e.preventDefault(); navigate(`/runs/${encodeURIComponent(p.run_id)}`); }} className="cursor-pointer focus:outline-none" aria-label={`${title} ${p.label}, ${fmtDate(p.at)}, run ${p.run_id}`} data-testid="trend-missing" data-run-id={p.run_id} data-label={p.label}>
-              <text x={x(i)} y={h - padBottom - 8} textAnchor="middle" fontSize="11" fill="hsl(var(--text-3))">{p.label}</text>
-              <text x={x(i)} y={h - padBottom + 14} textAnchor="middle" fontSize="11" fill="hsl(var(--text-2))">{fmtDate(p.at)}</text>
+          <Tip key={p.run_id} asChild text={`${p.run_id}, ${formatDateTime(p.at)}, ${p.exact}`}>
+            <a href={`/runs/${encodeURIComponent(p.run_id)}`} onClick={(e) => { e.preventDefault(); navigate(`/runs/${encodeURIComponent(p.run_id)}`); }} className="cursor-pointer focus:outline-none" aria-label={`${title} ${p.label}, ${formatDate(p.at)}, run ${p.run_id}`} data-testid="trend-missing" data-run-id={p.run_id} data-label={p.label}>
+              <text x={x(i)} y={h - padBottom - 8} textAnchor="middle" className="text-caption" fill="hsl(var(--text-3))">{p.label}</text>
+              <text x={x(i)} y={h - padBottom + 14} textAnchor="middle" className="text-caption" fill="hsl(var(--text-2))">{formatDate(p.at)}</text>
             </a>
           </Tip>
         ) : (
-          <Tip key={p.run_id} asChild text={`${p.run_id}, ${fmtDate(p.at)}, ${p.exact}`}>
-            <a href={`/runs/${encodeURIComponent(p.run_id)}`} onClick={(e) => { e.preventDefault(); navigate(`/runs/${encodeURIComponent(p.run_id)}`); }} className="cursor-pointer focus:outline-none [&:focus-visible>circle]:stroke-[hsl(var(--accent))] [&:focus-visible>circle]:stroke-2" aria-label={`${title} ${p.label}, ${fmtDate(p.at)}, run ${p.run_id}`} data-testid="trend-point" data-run-id={p.run_id} data-value={p.value} data-label={p.label}>
+          <Tip key={p.run_id} asChild text={`${p.run_id}, ${formatDateTime(p.at)}, ${p.exact}`}>
+            <a href={`/runs/${encodeURIComponent(p.run_id)}`} onClick={(e) => { e.preventDefault(); navigate(`/runs/${encodeURIComponent(p.run_id)}`); }} className="cursor-pointer focus:outline-none [&:focus-visible>circle]:stroke-[hsl(var(--accent))] [&:focus-visible>circle]:stroke-2" aria-label={`${title} ${p.label}, ${formatDate(p.at)}, run ${p.run_id}`} data-testid="trend-point" data-run-id={p.run_id} data-value={p.value} data-label={p.label}>
               <circle cx={x(i)} cy={y(p.value)} r="4" fill={color} />
-              <text x={x(i)} y={y(p.value) - 8} textAnchor="middle" fontSize="11" fill="hsl(var(--text))">{p.label}</text>
-              <text x={x(i)} y={h - padBottom + 14} textAnchor="middle" fontSize="11" fill="hsl(var(--text-2))">{fmtDate(p.at)}</text>
+              <text x={x(i)} y={y(p.value) - 8} textAnchor="middle" className="text-caption" fill="hsl(var(--text))">{p.label}</text>
+              <text x={x(i)} y={h - padBottom + 14} textAnchor="middle" className="text-caption" fill="hsl(var(--text-2))">{formatDate(p.at)}</text>
             </a>
           </Tip>
         ))}

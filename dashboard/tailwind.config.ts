@@ -7,27 +7,29 @@ import animate from 'tailwindcss-animate';
 // a CDN: Plus Jakarta Sans for all UI text and all numbers (tabular figures
 // on), Geist Mono only for run ids, commands and code.
 //
-// Type scale: xs 11, s 12 (labels), m 13 (body and tables), section 15
-// semibold, title 22 semibold (page titles), l 24 semibold (key metrics),
-// xl 28. The s / m / l names predate this pass and every page uses them, so
-// the other pages inherit the scale without a layout change.
+// Type scale (design system, invariant 68): exactly seven sizes, replacing
+// Tailwind's defaults entirely (theme.fontSize, not extend), so no page can
+// reach for text-sm or text-xl. Weights are 400, 500 and 600 only. The
+// role map in docs/ui/design-system.md says which size each element takes.
 export default {
   darkMode: ['class'],
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
+    fontSize: {
+      display: ['32px', { lineHeight: '40px', letterSpacing: '-0.02em' }],
+      title: ['24px', { lineHeight: '32px', letterSpacing: '-0.02em' }],
+      heading: ['18px', { lineHeight: '26px', letterSpacing: '-0.01em' }],
+      subheading: ['16px', { lineHeight: '24px', letterSpacing: '0' }],
+      body: ['14px', { lineHeight: '22px', letterSpacing: '0' }],
+      small: ['13px', { lineHeight: '20px', letterSpacing: '0' }],
+      caption: ['12px', { lineHeight: '16px', letterSpacing: '0' }],
+    },
+    // Radius tokens: lg 12 (cards), md 8 (buttons, inputs), sm 6 (badges), full for pills. No xl.
+    borderRadius: { none: '0', sm: '6px', DEFAULT: '8px', md: '8px', lg: '12px', full: '9999px' },
     extend: {
       fontFamily: {
         sans: ['Plus Jakarta Sans Variable', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'Segoe UI', 'Roboto', 'sans-serif'],
         mono: ['Geist Mono Variable', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
-      },
-      fontSize: {
-        xs: ['11px', '1.35'],
-        s: ['12px', '1.4'],
-        m: ['13px', '1.45'],
-        section: ['15px', '1.3'],
-        title: ['22px', '1.2'],
-        l: ['24px', '1.1'],
-        xl: ['28px', '1.05'],
       },
       colors: {
         bg: { 0: 'hsl(var(--bg-0))', 1: 'hsl(var(--bg-1))', 2: 'hsl(var(--bg-2))', 3: 'hsl(var(--bg-3))' },
@@ -43,7 +45,6 @@ export default {
         neutral: { DEFAULT: 'hsl(var(--neutral))', soft: 'hsl(var(--neutral) / 0.12)' },
         cost: { DEFAULT: 'hsl(var(--cost))', soft: 'hsl(var(--cost) / 0.12)' },
       },
-      borderRadius: { xl: '18px', lg: '12px', md: '9px', sm: '6px' },
       boxShadow: { lift: 'var(--shadow-lift)' },
       maxWidth: { content: '1280px' },
     },

@@ -74,10 +74,10 @@
   html, body, #root { height: 100%; }
   /* Every number on the dashboard lines up: tabular figures everywhere, in both families. */
   html { font-variant-numeric: tabular-nums; }
-  body { @apply bg-bg-0 text-fg font-sans text-m antialiased; }
-  /* Numbers, money included, are Plus Jakarta Sans with tabular figures; .mono is for run ids, commands and code only. */
+  body { @apply bg-bg-0 text-fg font-sans text-body antialiased; }
+  /* Numbers, money included, are Plus Jakarta Sans with tabular figures; .mono is Geist Mono at 13px for run ids, commands and code only. */
   .money { @apply font-sans tabular-nums; }
-  .mono { @apply font-mono; }
+  .mono { @apply font-mono text-small; }
   /* A visible focus ring on anything focusable that does not draw its own. */
   :focus-visible { outline: 2px solid hsl(var(--accent)); outline-offset: 2px; }
 }

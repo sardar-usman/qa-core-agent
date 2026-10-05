@@ -21,14 +21,14 @@ export function CoveragePage({ refreshKey }: { refreshKey: number }) {
     return () => { live = false; };
   }, [refreshKey]);
   if (error) return <EmptyState title="Could not load coverage">{error}</EmptyState>;
-  if (items === null) return <div className="text-s text-fg-2">Loading…</div>;
+  if (items === null) return <div className="text-small text-fg-2">Loading…</div>;
   if (items.length === 0) return <EmptyState title="No projects yet">A project appears for every host you explore.</EmptyState>;
   return (
-    <div className="flex flex-col gap-6" data-testid="coverage-page">
+    <div className="flex flex-col gap-8" data-testid="coverage-page">
       <PageHeader title="Requirements" description="Requirements coverage per project, from each SRS run's rule-coverage.json: every rule seen, its latest classification, and the considered-not-automated list with reasons." />
       {items.map(({ project, coverage }) => (
         <section key={project.id} className="flex flex-col gap-2" data-testid="coverage-project" data-project-id={project.id}>
-          <h2 className="text-m font-semibold"><Link to={`/projects/${encodeURIComponent(project.id)}`} className="hover:underline">{project.name}</Link></h2>
+          <h2 className="text-heading font-semibold"><Link to={`/projects/${encodeURIComponent(project.id)}`} className="hover:underline">{project.name}</Link></h2>
           <CoverageTable coverage={coverage} />
         </section>
       ))}

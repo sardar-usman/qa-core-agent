@@ -23,7 +23,7 @@ export default function App() {
       <TooltipProvider delayDuration={300} skipDelayDuration={200}>
         <div className="flex min-h-full flex-wrap md:flex-nowrap">
           <Sidebar refreshKey={refreshKey} onReindexed={() => setRefreshKey((k) => k + 1)} />
-          <main className="min-w-0 flex-1 px-4 py-6 md:px-12 md:py-10">
+          <main className="min-w-0 flex-1 p-4 md:p-8">
             <PageTransition>
               <Routes>
                 <Route path="/" element={<ProjectsPage refreshKey={refreshKey} />} />
