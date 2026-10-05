@@ -3,7 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import fs from 'node:fs';
 import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
-import type { Finding } from './finding-kind.js';
+import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
@@ -1298,6 +1298,14 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // Surface findings loudly: the expected success signal never appeared, so the
   // scenario is a real finding, not a green test and not a silent drop.
   for (const f of findings) {
+    if (findingKindOf(f) === 'locator') {
+      // A limit of the run, not product behavior (invariant 67): say so, never "the page stayed at".
+      opts.onEvent?.({
+        type: 'message',
+        text: `Element not found: "${f.scenario}" — could not locate ${elementLookedFor(f.expected)} on ${f.url}. ${f.messages.join(' | ')} Recorded apart from product findings; a limit of the run, not product behavior.`,
+      });
+      continue;
+    }
     const where = f.messages.length ? ` Page said: ${f.messages.join(' | ')}.` : ' No visible message on the page.';
     opts.onEvent?.({
       type: 'message',

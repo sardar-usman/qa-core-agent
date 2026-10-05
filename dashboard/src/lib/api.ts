@@ -119,7 +119,8 @@ export interface RunDetailStages {
     } | null;
   };
   summary: {
-    status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; uncovered_count: number; attention: number;
+    /** findings_count: product findings only; locator_count: elements the agent could not find, never in attention (invariant 67). */
+    status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; locator_count?: number; uncovered_count: number; attention: number;
     /** findings_product and findings_locator split the findings bucket by kind, counted by the server (invariant 67). */
     funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; findings_product?: number; findings_locator?: number; skipped: number; emitted_failed?: number; balanced: boolean; added: number } | null;
     emitted_check?: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;

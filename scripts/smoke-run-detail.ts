@@ -149,6 +149,7 @@ shapePlan[7] = 'browsed products in the "Other" category and saw name, image, an
 const shapeRecorded = shapePlan.slice(0, 16);
 const shapeSkipped = shapePlan.slice(16, 19);
 const shapeFinding = shapePlan[19]!;
+const shapeAddedFinding = 'sorted products by price low to high and the visible list reordered';
 const shapeVerdicts = shapeRecorded.map((n, i) => ({ scenario: n, verdict: i === 0 ? 'pass' : i === 15 ? 'reject' : 'rework', reasons: ['weak'], required_fixes: [] }));
 const shapeReport = {
   url: 'https://practicesoftwaretesting.com/', language: 'ts', startedAt: '2026-09-18T16:39:02.000Z', finishedAt: '2026-09-18T17:03:06.000Z', steps: 274,
@@ -159,14 +160,19 @@ const shapeReport = {
   replay: { passed: 1, failed: 0, durationMs: 4066, verdicts: [{ name: shapeRecorded[0], passed: true, durationMs: 3957 }] },
   stability: { iterations: 3, passed: 1, flaked: 0, flakeRate: 0, durationMs: 14117, recovered: 0, stabilizerCostUsd: 0, verdicts: [{ name: shapeRecorded[0], iterations: 3, passes: 3, stable: true, classification: 'stable', pattern: 'P-P-P', durationMs: 14026 }] },
   // Written before the kind existed: no `kind` key, the engine's two locator prefixes together, so findingKindOf reads locator (invariant 67).
-  findings: [{ scenario: shapeFinding, category: 'edge', expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: ['Selector could not be resolved or recovered after 2 attempts (testid=search-query).'] }],
+  // The real run recorded two: the search input, and a sort scenario the Explorer added beyond the plan (reconciliation added 1, accountedFor 21).
+  findings: [
+    { scenario: shapeFinding, category: 'edge', expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: ['Selector could not be resolved or recovered after 2 attempts (testid=search-query).'] },
+    { scenario: shapeAddedFinding, category: 'happy', expected: 'locate element: element', url: 'https://practicesoftwaretesting.com/category/special-tools', messages: ['Selector could not be resolved or recovered after 2 attempts (css=a.card:first-of-type h5).'] },
+  ],
   skipped: shapeSkipped.map((scenario) => ({ scenario, reason: 'no products on this page' })),
+  ruleCoverage: { covered: [{ ruleId: 'R13', scenarios: [shapeRecorded[0]] }], uncovered: Array.from({ length: 13 }, (_, i) => ({ ruleId: `R${i + 1 + (i >= 12 ? 1 : 0)}`, text: `rule ${i + 1}`, reason: 'not-planned' })) },
   reconciliation: {
     planned: 20, generated: 1,
     dropped: shapeVerdicts.filter((v) => v.verdict !== 'pass').map((v) => ({ name: v.scenario, stage: 'critic', reason: `critic ${v.verdict}: weak` })),
-    incomplete: [], findings: [{ name: shapeFinding, expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: [] }],
+    incomplete: [], findings: [{ name: shapeFinding, expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: [] }, { name: shapeAddedFinding, expected: 'locate element: element', url: 'https://practicesoftwaretesting.com/category/special-tools', messages: [] }],
     skipped: shapeSkipped.map((name) => ({ name, reason: 'no products on this page' })),
-    accountedFor: 20, added: 0, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0,
+    accountedFor: 21, added: 1, balanced: true, stable: 1, recovered: 0, flaky: 0, broken: 0,
   },
 };
 fs.writeFileSync(path.join(shapeDir, 'run-report.json'), JSON.stringify(shapeReport, null, 2));
@@ -245,7 +251,13 @@ if (d.status === 200 && d.body.legacy === false) {
   {
     // The 5e4394 shape through the whole detail builder: one recorded number everywhere.
     const shape = buildRunDetail(db, root, shapeId);
-    check('SG3b. the 5e4394 shape: its finding (no kind key, both engine prefixes) reads kind locator, the funnel splits 1 finding as 0 product, 1 element not found', shape.status === 200 && shape.body.legacy === false && shape.body.findings[0]?.kind === 'locator' && shape.body.stages.summary.funnel?.findings === 1 && shape.body.stages.summary.funnel?.findings_product === 0 && shape.body.stages.summary.funnel?.findings_locator === 1, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ kind: shape.body.findings[0]?.kind, funnel: shape.body.stages.summary.funnel }) : String(shape.status));
+    check('SG3b. the 5e4394 shape: both findings (no kind key, both engine prefixes) read kind locator, the funnel splits 2 findings as 0 product, 2 element not found', shape.status === 200 && shape.body.legacy === false && shape.body.findings.length === 2 && shape.body.findings.every((f) => f.kind === 'locator') && shape.body.stages.summary.funnel?.findings === 2 && shape.body.stages.summary.funnel?.findings_product === 0 && shape.body.stages.summary.funnel?.findings_locator === 2, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ kinds: shape.body.findings.map((f) => f.kind), funnel: shape.body.stages.summary.funnel }) : String(shape.status));
+    if (shape.status === 200 && shape.body.legacy === false) {
+      const sm = shape.body.stages.summary;
+      check('SG3c. the 5e4394 hero counts product behavior only: findings_count 0, locator_count 2, attention 13 = 0 product findings + 13 uncovered rules (the hero used to read 15), status attention for the rules alone', sm.findings_count === 0 && sm.locator_count === 2 && sm.uncovered_count === 13 && sm.attention === 13 && sm.status === 'attention', JSON.stringify({ findings_count: sm.findings_count, locator_count: sm.locator_count, uncovered: sm.uncovered_count, attention: sm.attention, status: sm.status }));
+      const noRules = buildStages({ ...shapeReport, ruleCoverage: undefined } as never, [], 6.0888, 0).summary;
+      check('SG3d. with no uncovered rule the same two locator failures leave attention at 0 and the summary status done, never attention', noRules.findings_count === 0 && noRules.locator_count === 2 && noRules.attention === 0 && noRules.status === 'done', JSON.stringify({ attention: noRules.attention, status: noRules.status }));
+    }
     check('SG3. the 5e4394 shape: 19 rows (16 recorded + 3 skipped), the Explore stat reads "16 recorded · 3 skipped", no extra row for the quoted name', shape.status === 200 && shape.body.legacy === false && shape.body.scenarios.length === 19 && shape.body.stages.explore.scenarios_recorded === 16 && shape.body.stages.explore.skipped.length === 3 && shape.body.stages.explore.stat.startsWith('16 recorded · 3 skipped · 1 shipped ·') && shape.body.scenarios.filter((r) => r.name.includes('"Other"')).length === 1 && shape.body.unmatched_verdicts.length === 0, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ rows: shape.body.scenarios.length, stat: shape.body.stages.explore.stat, unmatched: shape.body.unmatched_verdicts }) : JSON.stringify(shape.body));
   }
   check('SG. explore panel: steps, recorded (generated + dropped at critic), shipped, explorer cost, gate injection, skip with reason, heal from report.heals', st.explore.steps === report.steps && st.explore.scenarios_recorded === 3 && st.explore.scenarios_shipped === 2 && st.explore.explorer_usd === report.cost.usd && st.explore.gate_injections.length === 1 && st.explore.gate_injections[0]?.assertion_type === 'toBeVisible' && st.explore.skipped[0]?.reason === 'opens an external site, out of scope' && st.explore.heals[0]?.to === report.heals[0]?.to && st.explore.incomplete.length === 0, JSON.stringify(st.explore));
@@ -462,9 +474,14 @@ const shapeKinds = await page.evaluate(() => {
     locatorCount: document.querySelector('[data-testid="locator-failures-count"]')?.textContent ?? '', locatorOpen: details?.open ?? null, locatorRows: document.querySelectorAll('[data-testid="locator-failure"]').length,
     element: document.querySelector('[data-testid="locator-failure-element"]')?.textContent ?? '', funnelKinds: document.querySelector('[data-testid="funnel-findings-kinds"]')?.textContent ?? '',
     headingColor: heading ? getComputedStyle(heading).color : '', neutral, finding,
+    hero: document.querySelector('[data-testid="hero-attention"]')?.textContent ?? '', heroSub: document.querySelector('[data-testid="hero-attention-sub"]')?.textContent ?? '', heroLocator: document.querySelector('[data-testid="hero-attention-locator"]')?.textContent ?? '',
+    heroLocatorColor: (() => { const el = document.querySelector('[data-testid="hero-attention-locator"]'); return el ? getComputedStyle(el).color : ''; })(),
+    heroColor: (() => { const el = document.querySelector('[data-testid="hero-attention"]'); return el ? getComputedStyle(el).color : ''; })(),
   };
 });
-check('SG4b. page: the 5e4394 locator finding is under the grey collapsed "Elements the agent could not find (1)" with the element looked for (prefix stripped), the violet section reads 0 with "No findings recorded", and the funnel row reads "1 (0 product behavior, 1 element not found)"', /^Product behavior to review\s*0$/.test(shapeKinds.productHeading.trim()) && shapeKinds.noFindings && shapeKinds.productCards === 0 && shapeKinds.locatorCount === '1' && shapeKinds.locatorOpen === false && shapeKinds.locatorRows === 1 && shapeKinds.element === 'search input' && shapeKinds.funnelKinds === '1 (0 product behavior, 1 element not found)', JSON.stringify(shapeKinds));
+const rgbOf = (hsl: string): string => { const [h, s, l] = hsl.split(/\s+/).map((v) => parseFloat(v)) as [number, number, number]; const S = s / 100, L = l / 100; const k = (n: number) => (n + h / 30) % 12; const a = S * Math.min(L, 1 - L); const f = (n: number) => L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return `rgb(${[f(0), f(8), f(4)].map((v) => Math.round(v * 255)).join(', ')})`; };
+check('SG4d. page: the 5e4394 hero reads 13 (0 findings · 13 uncovered rules · 2 elements not found): the big number excludes the two locator failures, the extra count is in the neutral token and the number in the finding token', shapeKinds.hero === '13' && shapeKinds.heroSub === '0 findings · 13 uncovered rules · 2 elements not found' && shapeKinds.heroLocator === '2 elements not found' && shapeKinds.heroLocatorColor === rgbOf(shapeKinds.neutral) && shapeKinds.heroColor === rgbOf(shapeKinds.finding), JSON.stringify({ hero: shapeKinds.hero, sub: shapeKinds.heroSub, locator: shapeKinds.heroLocator, locatorColor: shapeKinds.heroLocatorColor, neutral: rgbOf(shapeKinds.neutral) }));
+check('SG4b. page: the 5e4394 locator findings are under the grey collapsed "Elements the agent could not find (2)" with the element looked for (prefix stripped), the violet section reads 0 with "No findings recorded", and the funnel row reads "2 (0 product behavior, 2 element not found)"', /^Product behavior to review\s*0$/.test(shapeKinds.productHeading.trim()) && shapeKinds.noFindings && shapeKinds.productCards === 0 && shapeKinds.locatorCount === '2' && shapeKinds.locatorOpen === false && shapeKinds.locatorRows === 2 && shapeKinds.element === 'search input' && shapeKinds.funnelKinds === '2 (0 product behavior, 2 element not found)', JSON.stringify(shapeKinds));
 check('SG4c. page: the locator heading is the neutral token, never the finding (violet) token', shapeKinds.headingColor !== '' && shapeKinds.neutral !== '' && shapeKinds.neutral !== shapeKinds.finding && shapeKinds.headingColor === `rgb(${(() => { const [h, s, l] = shapeKinds.neutral.split(/\s+/).map((v) => parseFloat(v)) as [number, number, number]; const S = s / 100, L = l / 100; const k = (n: number) => (n + h / 30) % 12; const a = S * Math.min(L, 1 - L); const f = (n: number) => L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return [f(0), f(8), f(4)].map((v) => Math.round(v * 255)).join(', '); })()})`, JSON.stringify({ color: shapeKinds.headingColor, neutral: shapeKinds.neutral }));
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });

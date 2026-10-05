@@ -1,4 +1,5 @@
 import type { RunReport } from './trace.js';
+import { elementLookedFor, findingKindOf } from './finding-kind.js';
 import { scenarioNameKey } from './rule-coverage.js';
 
 /**
@@ -354,7 +355,11 @@ export function diagnoseEmptyRun(report: RunReport): { cause: EmptyRunCause; lin
       `The Explorer recorded 0 of ${planned} planned scenario(s).`,
     ];
     if (gateDrops.length > 0) lines.push(`  ${gateDrops.length} broke at the gate: ${gateDrops.map((d) => `"${d.name}" (${d.reason})`).join('; ')}`);
-    if (rec.findings.length > 0) lines.push(`  ${rec.findings.length} became finding(s): the expected outcome never occurred (see the findings above).`);
+    if (rec.findings.length > 0) {
+      const locator = rec.findings.filter((f) => findingKindOf(f) === 'locator').length;
+      const product = rec.findings.length - locator;
+      lines.push(`  ${rec.findings.length} became finding(s): ${product} product (the expected outcome never occurred), ${locator} element(s) the agent could not find (a limit of the run, not product behavior); see the findings above.`);
+    }
     if (rec.incomplete.length > 0) lines.push(`  ${rec.incomplete.length} left incomplete: ${rec.incomplete.map((i) => `"${i.name}" (${i.reason})`).join('; ')}`);
     if (rec.skipped.length > 0) lines.push(`  ${rec.skipped.length} skipped by the Explorer: ${rec.skipped.map((s) => `"${s.name}" (${s.reason})`).join('; ')}`);
     lines.push('The page was reached; the failure happened during exploration, not planning.');
@@ -419,10 +424,19 @@ export function renderReconciliation(rec: Reconciliation): string[] {
     }
   }
   if (rec.findings.length > 0) {
-    lines.push('  findings (expected outcome did not occur):');
-    for (const f of rec.findings) {
-      const msg = f.messages.length > 0 ? ` Page said: ${f.messages.join(' | ')}.` : ' No visible message.';
-      lines.push(`    • "${f.name}" — expected ${f.expected}, page stayed at ${f.url}.${msg}`);
+    // Two kinds share the bucket (invariant 67): product behavior, and an element the agent could not find.
+    const product = rec.findings.filter((f) => findingKindOf(f) === 'product');
+    const locator = rec.findings.filter((f) => findingKindOf(f) === 'locator');
+    if (product.length > 0) {
+      lines.push('  findings (expected outcome did not occur):');
+      for (const f of product) {
+        const msg = f.messages.length > 0 ? ` Page said: ${f.messages.join(' | ')}.` : ' No visible message.';
+        lines.push(`    • "${f.name}" — expected ${f.expected}, page stayed at ${f.url}.${msg}`);
+      }
+    }
+    if (locator.length > 0) {
+      lines.push('  elements the agent could not find (a limit of the run, not product behavior):');
+      for (const f of locator) lines.push(`    • "${f.name}" — could not locate ${elementLookedFor(f.expected)} on ${f.url}. ${f.messages.join(' | ')}`);
     }
   }
   if (rec.skipped.length > 0) {

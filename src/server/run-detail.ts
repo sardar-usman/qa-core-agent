@@ -153,7 +153,8 @@ export interface RunDetailStages {
   summary: {
     status: StageStatus; stat: string;
     shipped: number; total_usd: number;
-    findings_count: number; uncovered_count: number; attention: number;
+    /** findings_count is product findings only; locator_count is the elements the agent could not find (invariant 67). attention = findings_count + uncovered_count; a locator failure never makes a run read attention. */
+    findings_count: number; locator_count: number; uncovered_count: number; attention: number;
     /** findings_product and findings_locator split the findings bucket by kind (invariant 67), counted here from the report, never in the UI. */
     funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; findings_product: number; findings_locator: number; skipped: number; emitted_failed: number; balanced: boolean; added: number } | null;
     /** report.emittedRun: the written framework run once with Playwright before the zip. null on a report from before the stage existed. */
@@ -467,17 +468,18 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const rec = report.reconciliation;
   const droppedByStage: Record<string, number> = {};
   for (const d of rec?.dropped ?? []) droppedByStage[d.stage] = (droppedByStage[d.stage] ?? 0) + 1;
-  const findingsCount = findingsOf(report).length;
+  // The hero counts product behavior only (invariant 67): a locator failure is a limit of the run and never makes a run read attention.
   const findingsProduct = findingsOf(report).filter((f) => findingKindOf(f) === 'product').length;
   const findingsLocator = findingsOf(report).filter((f) => findingKindOf(f) === 'locator').length;
   const rc = report.ruleCoverage;
   const uncoveredCount = rc ? (rc.uncovered ?? []).length : 0;
+  const attention = findingsProduct + uncoveredCount;
   const stabilizer = usd(report.stability?.stabilizerCostUsd);
   const summary: RunDetailStages['summary'] = {
-    status: stopped || (rec && rec.balanced === false) || unmatchedVerdicts > 0 ? 'warning' : findingsCount + uncoveredCount > 0 ? 'attention' : 'done',
+    status: stopped || (rec && rec.balanced === false) || unmatchedVerdicts > 0 ? 'warning' : attention > 0 ? 'attention' : 'done',
     stat: `${shipped.length} shipped`,
     shipped: shipped.length, total_usd: totalUsd,
-    findings_count: findingsCount, uncovered_count: uncoveredCount, attention: findingsCount + uncoveredCount,
+    findings_count: findingsProduct, locator_count: findingsLocator, uncovered_count: uncoveredCount, attention,
     funnel: rec ? { planned: rec.planned, generated: rec.generated, dropped: (rec.dropped ?? []).length, dropped_by_stage: droppedByStage, incomplete: (rec.incomplete ?? []).length, findings: (rec.findings ?? []).length, findings_product: findingsProduct, findings_locator: findingsLocator, skipped: (rec.skipped ?? []).length, emitted_failed: (rec.emitted_failed ?? []).length, balanced: rec.balanced, added: rec.added ?? 0 } : null,
     emitted_check: report.emittedRun
       ? {

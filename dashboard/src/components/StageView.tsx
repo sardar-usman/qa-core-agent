@@ -387,7 +387,7 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
       <div className="grid gap-3 sm:grid-cols-3" data-testid="hero">
         <Hero n={String(sm.shipped)} label="tests shipped" testid="hero-shipped" />
         <Hero n={usd(sm.total_usd)} label="total cost" cost testid="hero-cost" />
-        <Hero n={String(sm.attention)} label={`need${sm.attention === 1 ? 's' : ''} attention`} sub={`${sm.findings_count} finding${sm.findings_count === 1 ? '' : 's'} · ${sm.uncovered_count} uncovered rule${sm.uncovered_count === 1 ? '' : 's'}`} attention={sm.attention > 0} testid="hero-attention" />
+        <Hero n={String(sm.attention)} label={`need${sm.attention === 1 ? 's' : ''} attention`} sub={`${sm.findings_count} finding${sm.findings_count === 1 ? '' : 's'} · ${sm.uncovered_count} uncovered rule${sm.uncovered_count === 1 ? '' : 's'}`} subExtra={sm.locator_count ? `${sm.locator_count} element${sm.locator_count === 1 ? '' : 's'} not found` : undefined} attention={sm.attention > 0} testid="hero-attention" />
       </div>
       {sm.stopped ? <div className="mt-3 rounded-md bg-rework-soft px-3 py-2 text-s text-rework"><b>stopped early</b> {sm.stopped.reason}</div> : null}
 
@@ -490,12 +490,13 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
   );
 }
 
-function Hero({ n, label, sub, cost, attention, testid }: { n: string; label: string; sub?: string; cost?: boolean; attention?: boolean; testid: string }) {
+/** subExtra: a count outside the big number (the elements the agent could not find, invariant 67), in the neutral token, only when given. */
+function Hero({ n, label, sub, subExtra, cost, attention, testid }: { n: string; label: string; sub?: string; subExtra?: string; cost?: boolean; attention?: boolean; testid: string }) {
   return (
     <div className={`rounded-lg border p-3 ${attention ? 'border-finding/40 bg-finding-soft' : 'border-line bg-bg-2'}`}>
       <div className={`text-l font-semibold leading-none ${cost ? 'mono text-cost' : attention ? 'text-finding' : 'text-fg'}`} data-testid={testid}>{n}</div>
       <div className="mt-1 text-s text-fg-2">{label}</div>
-      {sub ? <div className="text-s text-fg-2" data-testid={`${testid}-sub`}>{sub}</div> : null}
+      {sub ? <div className="text-s text-fg-2" data-testid={`${testid}-sub`}>{sub}{subExtra ? <> · <span className="text-neutral" data-testid={`${testid}-locator`}>{subExtra}</span></> : null}</div> : null}
     </div>
   );
 }
