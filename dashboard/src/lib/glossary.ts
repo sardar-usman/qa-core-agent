@@ -58,8 +58,11 @@ export const GLOSSARY = {
   // Source: src/server/db/indexer.ts runRowFromLegacyRecord (the record\'s scenarios count is what the run explored, stored as generated; shipped stays null); STATE.md standing decisions (legacy runs show explored counts, never shipped counts).
   explored: { term: 'Explored', text: 'Scenarios the Explorer recorded in the browser. A pre-v2 record kept only this count, written before replay and stability dropped anything, so it is never a shipped count.' },
 
-  // Source: src/server/api.ts projectCard (COUNT of findings WHERE status IN open, triaged); CLAUDE.md invariant 50 (finding statuses) and invariant 13 (a finding is product behavior, never a test failure).
-  unresolvedFindings: { term: 'To review', text: 'Findings with status open or triaged, waiting for a person to look at them. A finding is product behavior the agent saw that differed from what the scenario expected; it is never a test failure.' },
+  // Source: src/server/api.ts projectCard (COUNT of findings WHERE status IN open, triaged AND kind = product); CLAUDE.md invariant 67 (locator failures are counted apart) and invariant 13 (a finding is product behavior, never a test failure).
+  unresolvedFindings: { term: 'To review', text: 'Product findings with status open or triaged, waiting for a person to look at them: behavior the agent saw that differed from what the scenario expected, never a test failure. An element the agent could not find is a limit of the run and is not counted here.' },
+
+  // Source: src/agent/finding-kind.ts findingKindOf (kind locator: the selector recovery cap of invariant 24 tripped); CLAUDE.md invariant 67 (listed apart, never in To review); src/server/api.ts projectCard locator_failures.
+  locatorFailures: { term: 'Elements the agent could not find', text: 'Scenarios the agent dropped because an element could not be located after retrying. This is a limit of the run, not product behavior, so it is listed apart and never counted in To review.' },
 
   // Source: src/server/api.ts projectCard and monthStart (SUM of cost_total over runs started since the first day of the current UTC month); src/agent/cost-total.ts totalCost (API cost only).
   spendMonth: { term: 'Spent', text: 'Model spend this month, API cost only, summed over this project\'s runs started since the first day of the current month (UTC). The number is rounded to cents and its tooltip holds the exact stored value.' },

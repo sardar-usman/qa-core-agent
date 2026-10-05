@@ -1,6 +1,8 @@
 import { Download } from 'lucide-react';
+import { elementLookedFor } from '@/lib/finding-kind';
 import { api, type RunDetailFinding, type RunDetailStages, type StageKey, type StageStatus } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
+import { Term } from '@/components/Term';
 import { Button } from '@/components/ui/button';
 import { usd } from '@/lib/utils';
 
@@ -353,6 +355,9 @@ const FUNNEL_ROWS: Array<{ key: 'planned' | 'generated' | 'dropped' | 'incomplet
 ];
 
 function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findings: RunDetailFinding[]; live: boolean }) {
+  // Split by the server-derived kind: product behavior is reviewed in violet, a locator failure is listed apart in grey (invariant 67).
+  const productFindings = findings.filter((fd) => fd.kind !== 'locator');
+  const locatorFindings = findings.filter((fd) => fd.kind === 'locator');
   if (live) {
     return (
       <div data-testid="summary-live">
@@ -395,6 +400,7 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
               <div className="h-2 rounded-sm bg-bg-3"><i className={`block h-2 rounded-sm ${r.cls}`} style={{ width: `${((f[r.key] / denom) * 100).toFixed(1)}%` }} /></div>
               <span className="mono text-right text-fg">{f[r.key]}</span>
               {r.key === 'dropped' && Object.keys(f.dropped_by_stage).length ? <span className="col-span-3 pl-[96px] text-s text-fg-2">{Object.entries(f.dropped_by_stage).map(([s, n]) => `${s} ${n}`).join(' · ')}</span> : null}
+              {r.key === 'findings' && f.findings_product !== undefined && f.findings_locator !== undefined ? <span className="col-span-3 pl-[96px] text-s text-fg-2" data-testid="funnel-findings-kinds">{f.findings} ({f.findings_product} product behavior, {f.findings_locator} element not found)</span> : null}
             </div>
           ))}
           {zero.length ? <div className="mt-1 text-s text-fg-2" data-testid="funnel-zero">{zero.map((r) => `${r.label} 0`).join(' · ')}</div> : null}
@@ -440,11 +446,11 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
       )}
 
       <section className="mt-4 rounded-lg border border-finding/40 bg-finding-soft p-4" data-testid="findings-section">
-        <h3 className="text-m font-semibold text-finding" data-testid="findings-heading">Product behavior to review <span className="mono text-s font-normal">{findings.length}</span></h3>
+        <h3 className="text-m font-semibold text-finding" data-testid="findings-heading">Product behavior to review <span className="mono text-s font-normal">{productFindings.length}</span></h3>
         <p className="mt-1 text-s text-fg-2">A finding is product behavior the agent observed that differed from what the scenario expected. It is not a test failure and is not a scenario row.</p>
-        {findings.length === 0 ? <div className="mt-3 text-s text-fg-2" data-testid="no-findings">No findings recorded</div> : (
+        {productFindings.length === 0 ? <div className="mt-3 text-s text-fg-2" data-testid="no-findings">No findings recorded</div> : (
           <ul className="mt-3 flex flex-col gap-2">
-            {findings.map((fd) => (
+            {productFindings.map((fd) => (
               <li key={fd.scenario} className="rounded-md border border-line bg-bg-1 px-3 py-2" data-testid="finding">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <span className="font-semibold text-finding">{fd.scenario}</span>
@@ -458,6 +464,22 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
           </ul>
         )}
       </section>
+      {/* Elements the agent could not find: a limit of the run (invariant 67), grey, collapsed, never in To review and never a product finding. */}
+      <details className="mt-3 rounded-lg border border-line bg-bg-1 p-4 text-fg-2" data-testid="locator-failures">
+        <summary className="cursor-pointer text-m font-semibold text-neutral" data-testid="locator-failures-heading"><Term term="locatorFailures">Elements the agent could not find</Term> <span className="mono text-s font-normal" data-testid="locator-failures-count">{locatorFindings.length}</span></summary>
+        <p className="mt-1 text-s text-fg-2">The agent could not locate these elements after retrying. This is a limit of the run, not product behavior, and it is not counted in To review.</p>
+        {locatorFindings.length === 0 ? <div className="mt-3 text-s text-fg-3" data-testid="no-locator-failures">None recorded</div> : (
+          <ul className="mt-3 flex flex-col gap-2">
+            {locatorFindings.map((fd) => (
+              <li key={fd.scenario} className="rounded-md border border-line bg-bg-2 px-3 py-2" data-testid="locator-failure">
+                <div className="font-semibold text-fg" data-testid="locator-failure-scenario">{fd.scenario}</div>
+                <div className="text-s text-fg-2"><span className="font-semibold text-fg">Element looked for</span> <span data-testid="locator-failure-element">{elementLookedFor(fd.expected)}</span></div>
+                <div className="text-s text-fg-2"><span className="font-semibold text-fg">URL at the time</span> <span className="mono">{fd.url}</span>{fd.messages.length ? `; ${fd.messages.join(' | ')}` : ''}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
 
       <div className="mt-4" data-testid="summary-download">
         {sm.zip ? (

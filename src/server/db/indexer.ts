@@ -7,6 +7,7 @@ import type { RequirementsMap } from '../../agent/requirements.js';
 import { brandSlug } from '../../agent/scaffold.js';
 import { totalCost } from '../../agent/cost-total.js';
 import { findingsOf } from '../../agent/reconcile.js';
+import { findingKindOf } from '../../agent/finding-kind.js';
 import { listRunDirs, projectSlug, readRunMeta, runIdTime, compactTimestamp, shortHash, type RunDirEntry } from '../../agent/output-layout.js';
 
 /**
@@ -244,15 +245,17 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
       const id = findingKey(projectId, f.scenario, f.expected);
       // Report data only, no inference: the page's messages verbatim, or the URL at the time when it said nothing.
       const observed = f.messages && f.messages.length ? f.messages.join(' | ') : `no message recorded; URL at the time: ${f.url}`;
+      // Derived like observed, rewritten on every pass: the recorded kind, or the engine constants on an older report (invariant 67).
+      const kind = findingKindOf(f);
       const existing = db.prepare('SELECT first_seen_run_id, last_seen_run_id FROM findings WHERE id = ?').get(id) as { first_seen_run_id: string; last_seen_run_id: string } | undefined;
       if (!existing) {
-        db.prepare(`INSERT INTO findings (id, run_id, project_id, scenario, expected, observed, page_url, status, first_seen_run_id, last_seen_run_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(id, row.id, projectId, f.scenario, f.expected, observed, f.url, row.id, row.id);
+        db.prepare(`INSERT INTO findings (id, run_id, project_id, scenario, expected, observed, page_url, status, first_seen_run_id, last_seen_run_id, kind)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`).run(id, row.id, projectId, f.scenario, f.expected, observed, f.url, row.id, row.id, kind);
       } else {
         const first = runOrder(existing.first_seen_run_id, db) <= runOrder(row.id, db) ? existing.first_seen_run_id : row.id;
         const last = runOrder(existing.last_seen_run_id, db) >= runOrder(row.id, db) ? existing.last_seen_run_id : row.id;
-        db.prepare('UPDATE findings SET run_id = ?, observed = ?, page_url = ?, first_seen_run_id = ?, last_seen_run_id = ? WHERE id = ?')
-          .run(last, observed, f.url, first, last, id);
+        db.prepare('UPDATE findings SET run_id = ?, observed = ?, page_url = ?, first_seen_run_id = ?, last_seen_run_id = ?, kind = ? WHERE id = ?')
+          .run(last, observed, f.url, first, last, kind, id);
       }
       db.prepare('INSERT OR IGNORE INTO finding_runs (finding_id, run_id) VALUES (?, ?)').run(id, row.id);
     }

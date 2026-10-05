@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RunReport } from '../agent/trace.js';
 import { findingsOf, type Reconciliation } from '../agent/reconcile.js';
+import { findingKindOf } from '../agent/finding-kind.js';
 import { totalCost } from '../agent/cost-total.js';
 import { listRunDirs } from '../agent/output-layout.js';
 
@@ -42,6 +43,8 @@ export interface DiskRun {
   reconciliation: Reconciliation | null;
   ruleCoverage: { covered: number; total: number } | null;
   findings: number;
+  /** The same findings by kind (invariant 67): product behavior to review, and elements the agent could not find. */
+  findingKinds: { product: number; locator: number };
   discovery: { method: string; pages: number } | null;
   /** The verdict journeys of the repair pass, when one ran. */
   repair: NonNullable<RunReport['review']>['repair'] | null;
@@ -138,6 +141,7 @@ export function parseRunReport(root: string, dir: string, reportPath: string): D
       reconciliation: r.reconciliation ?? null,
       ruleCoverage: rc ? { covered: rc.covered.length, total: rc.covered.length + rc.uncovered.length } : null,
       findings: findingsOf(r).length,
+      findingKinds: { product: findingsOf(r).filter((f) => findingKindOf(f) === 'product').length, locator: findingsOf(r).filter((f) => findingKindOf(f) === 'locator').length },
       discovery: r.discovery ? { method: r.discovery.method, pages: r.discovery.pages.length } : null,
       repair: r.review?.repair ?? null,
     };

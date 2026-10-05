@@ -1,3 +1,4 @@
+import type { FindingKind } from '@/lib/finding-kind';
 /**
  * REST client. The token lives in memory only (plan section 6.4): it comes
  * from the page hash (#token=...) or the Connect box and is never persisted.
@@ -6,7 +7,9 @@ export interface ProjectCard {
   id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null;
   runs: number; reported_runs: number;
   /** null when the project has no reported run (pre-v2 records only): unknown, never 0. */
-  shipped: number | null; legacy_runs: number; legacy_explored: number; legacy_first_at: string | null; legacy_last_at: string | null; unresolved_findings: number | null; spend_month: number; spend_total: number;
+  shipped: number | null; legacy_runs: number; legacy_explored: number; legacy_first_at: string | null; legacy_last_at: string | null;
+  /** unresolved_findings counts product findings only (open or triaged); locator_failures counts elements the agent could not find, apart. Both null without a reported run. */
+  unresolved_findings: number | null; locator_failures: number | null; spend_month: number; spend_total: number;
   last_run: { id: string; status: string; started_at: string | null; shipped: number | null; generated: number; cost_total: number } | null;
   /** Per SRS run, oldest first: covered rules, all rules, and the percent the API computed from those two counts. */
   coverage_series: Array<{ run_id: string; started_at: string | null; covered: number; total: number; percent: number }>;
@@ -28,6 +31,8 @@ export type FindingStatus = 'open' | 'triaged' | 'fixed' | 'wont-fix';
 export const FINDING_STATUSES: FindingStatus[] = ['open', 'triaged', 'fixed', 'wont-fix'];
 export interface FindingRow {
   id: string; project_id: string; project_name: string; scenario: string; expected: string; observed: string | null; page_url: string | null;
+  /** product: the expected outcome never occurred; locator: the element could not be found (invariant 67). */
+  kind: FindingKind;
   status: FindingStatus; notes: string | null;
   first_seen_run_id: string; last_seen_run_id: string; first_seen_at: string | null; last_seen_at: string | null;
   run_ids: string[]; times_seen: number;
@@ -45,7 +50,7 @@ export interface ProjectTrends {
 }
 export interface ProjectDetail {
   project: { id: string; name: string; base_url: string | null; environment: string | null; srs_path: string | null; notes: string | null };
-  summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
+  summary: { runs: number; reported_runs: number; shipped: number | null; legacy_runs: number; legacy_explored: number; unresolved_findings: number | null; locator_failures: number | null; spend_total: number; spend_month: number; last_run: ProjectCard['last_run'] };
   trend: Array<Record<string, unknown>>;
   unresolved_findings: FindingRow[];
   srs: ProjectSrsState;
@@ -115,7 +120,8 @@ export interface RunDetailStages {
   };
   summary: {
     status: StageStatus; stat: string; shipped: number; total_usd: number; findings_count: number; uncovered_count: number; attention: number;
-    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; skipped: number; emitted_failed?: number; balanced: boolean; added: number } | null;
+    /** findings_product and findings_locator split the findings bucket by kind, counted by the server (invariant 67). */
+    funnel: { planned: number; generated: number; dropped: number; dropped_by_stage: Record<string, number>; incomplete: number; findings: number; findings_product?: number; findings_locator?: number; skipped: number; emitted_failed?: number; balanced: boolean; added: number } | null;
     emitted_check?: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
     /** requirements: the map cost from the report; null on a report written before the field existed. */
     cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; requirements: number | null; total: number };
@@ -123,7 +129,7 @@ export interface RunDetailStages {
     zip: RunDetailArtifact | null; stopped: { kind: string; reason: string } | null;
   };
 }
-export interface RunDetailFinding { scenario: string; category: string | null; expected: string; url: string; messages: string[]; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }
+export interface RunDetailFinding { scenario: string; category: string | null; expected: string; url: string; messages: string[]; kind: FindingKind; verdict: { verdict: 'pass' | 'rework' | 'reject'; reasons: string[] } | null }
 export interface StoredEvent { t: string; type: string; [k: string]: unknown }
 export type RunDetail =
   | {
@@ -176,10 +182,11 @@ export const api = {
   project: (id: string) => get<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
   projectCoverage: (id: string) => get<ProjectCoverage>(`/api/projects/${encodeURIComponent(id)}/coverage`),
   projectTrends: (id: string) => get<ProjectTrends>(`/api/projects/${encodeURIComponent(id)}/trends`),
-  findings: (q: { project_id?: string; status?: string } = {}) => {
+  findings: (q: { project_id?: string; status?: string; kind?: FindingKind } = {}) => {
     const p = new URLSearchParams();
     if (q.project_id) p.set('project_id', q.project_id);
     if (q.status) p.set('status', q.status);
+    if (q.kind) p.set('kind', q.kind);
     return get<{ findings: FindingRow[] }>(`/api/findings${p.toString() ? '?' + p : ''}`).then((r) => r.findings);
   },
   /** Triage a finding: status and/or notes. Token-guarded like every /api route. */

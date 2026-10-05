@@ -264,7 +264,7 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
       { name: 'C', category: 'happy', rationale: '' },
     ],
     stability: undefined,
-    findings: [{ scenario: 'searched for a term that matches no products and the list became empty', category: 'edge', expected: 'locate element: search input', url: 'https://example.com/category/other', messages: [] }],
+    findings: [{ scenario: 'searched for a term that matches no products and the list became empty', category: 'edge', expected: 'locate element: search input', url: 'https://example.com/category/other', messages: [], kind: 'locator' }],
     skipped: [
       { scenario: 'searched for a term that matches no products and the list became empty', reason: 'the search input is covered by an overlay' },
       { scenario: 'C', reason: 'no rental products exist' },
@@ -309,7 +309,7 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
   const noKey = { ...clean };
   delete (noKey as Partial<RunReport>).findings;
   check('AF. findingsOf on a report with no findings key returns [] (an older report, never "not recorded")', Array.isArray(findingsOf(noKey)) && findingsOf(noKey).length === 0 && !('findings' in noKey), JSON.stringify(findingsOf(noKey)));
-  const withKey: RunReport = { ...clean, findings: [{ scenario: 'X', expected: 'a message', url: 'https://example.com/x', messages: ['nope'] }] };
+  const withKey: RunReport = { ...clean, findings: [{ scenario: 'X', expected: 'a message', url: 'https://example.com/x', messages: ['nope'], kind: 'product' }] };
   check('AG. findingsOf on a report with the key returns that array unchanged', findingsOf(withKey) === withKey.findings && findingsOf(withKey).length === 1);
   const emptyKey: RunReport = { ...clean, findings: [] };
   check('AH. findingsOf on a report whose key is [] returns [] and reconcile counts 0 findings', findingsOf(emptyKey).length === 0 && reconcile(emptyKey).findings.length === 0 && reconcile(noKey).findings.length === 0);
@@ -341,7 +341,7 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
   const rendered = renderReconciliation(re).join('\n');
   check('AH. the renderer states the term and names the drop', /planned 2 = generated 1 \+ dropped 0 \+ emitted_failed 1 \[OK\]/.test(rendered) && /emitted_failed \(the written framework failed the test twice/.test(rendered) && /"B" — expect\(locator\)/.test(rendered), rendered);
   check('AI. a run without the stage keeps the bare line (no emitted term)', !/emitted_failed/.test(renderReconciliation(reconcile(clean)).join('\n')) && (reconcile(clean).emitted_failed ?? []).length === 0);
-  const both: RunReport = { ...emitted, findings: [{ scenario: 'B', category: 'happy', expected: 'x', url: 'u', messages: [] }] };
+  const both: RunReport = { ...emitted, findings: [{ scenario: 'B', category: 'happy', expected: 'x', url: 'u', messages: [], kind: 'product' }] };
   const warned: string[] = [];
   const rb = reconcile(both, { onDuplicate: (m) => warned.push(m) });
   check('AJ. a name recorded as both a finding and emitted_failed is counted once, in the earlier bucket', rb.findings.length === 1 && (rb.emitted_failed ?? []).length === 0 && warned.length === 1 && rb.balanced, JSON.stringify({ warned, accountedFor: rb.accountedFor }));

@@ -45,6 +45,7 @@ import { createHash } from 'node:crypto';
 import type { RunReport } from '../src/agent/trace.js';
 import { totalCost, hasRequirementsCost } from '../src/agent/cost-total.js';
 import { findingsOf } from '../src/agent/reconcile.js';
+import { findingKindOf } from '../src/agent/finding-kind.js';
 import { scenarioNameKey } from '../src/agent/rule-coverage.js';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -162,7 +163,11 @@ function rowFor(label: string, report: RunReport): Row {
     if (report.emittedRun.inconclusive) emitted += ` (inconclusive: ${report.emittedRun.reason ?? 'no reason'})`;
   }
 
-  const findings = String(findingsOf(report).length);
+  // Product findings, with the locator failures (an element the agent could not find, a limit of the run) named apart: the Oct 5 erratum of the audit report.
+  const findingList = findingsOf(report);
+  const locatorCount = findingList.filter((f) => findingKindOf(f) === 'locator').length;
+  // A run with no finding of either kind prints 0, as the table does; a run with any prints both counts.
+  const findings = findingList.length === 0 ? '0' : `${findingList.length - locatorCount} (+${locatorCount} element not found)`;
   const cost = `$${raw.cost.toFixed(4)}`;
   const mapCost = hasRequirementsCost(report) ? `$${(report.cost.requirementsUsd as number).toFixed(4)}` : NR;
   const perShipped = shipped > 0 ? `$${(raw.cost / shipped).toFixed(2)}` : 'n/a (0 shipped)';

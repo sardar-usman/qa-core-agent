@@ -219,6 +219,18 @@ for (const theme of ['dark', 'light'] as const) {
   // Radix restores focus to the trigger as its focus scope unmounts, a beat after the content detaches.
   await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'new-project-open', null, { timeout: 3000 }).catch(() => null);
   check(`${theme}: Escape closes the dialog, focus returns to the button, and no project was created`, (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'new-project-open' && ((await authGet('/api/projects')).projects as unknown[]).length === projectsBefore);
+  // A 409 WITHOUT body.existing (an API that names no project): the message lands in the reject box and no conflict box renders. The answer is stubbed at the network layer; the gateway is not touched.
+  await page.route('**/api/projects', (route) => route.request().method() === 'POST' ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'This host already has a project.' }) }) : route.continue());
+  await page.click('[data-testid="new-project-open"]');
+  await page.waitForSelector('[data-testid="new-project-dialog"]');
+  await page.fill('[data-testid="new-project-url"]', 'https://www.saucedemo.com/');
+  await page.click('[data-testid="new-project-submit"]');
+  await page.waitForSelector('[data-testid="new-project-error"]', { timeout: 10_000 });
+  const bare409 = await page.evaluate(() => ({ error: document.querySelector('[data-testid="new-project-error"]')?.textContent ?? '', conflict: !!document.querySelector('[data-testid="new-project-conflict"]') }));
+  check(`${theme}: a 409 without body.existing shows the API message in the reject box and no conflict box`, bare409.error === 'This host already has a project.' && !bare409.conflict, JSON.stringify(bare409));
+  await page.unroute('**/api/projects');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[data-testid="new-project-dialog"]', { state: 'detached' });
   const sauce = cards.find((c) => c.id === 'saucedemo-com')!;
   // The requirements row: "<covered> of <total>" from the latest coverage_series entry and a bar whose width is its percent (3 of 3 after the s3 run; the earlier s2 run covered 2 of 3).
   const sauceCov = await page.evaluate(() => ({ text: document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-latest"]')?.textContent ?? null, percent: document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-bar"]')?.getAttribute('data-percent') ?? null, width: (document.querySelector('[data-project-id="saucedemo-com"] [data-testid="coverage-bar-fill"]') as HTMLElement | null)?.style.width ?? null }));

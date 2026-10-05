@@ -5,6 +5,7 @@ import { api, FINDING_STATUSES, type FindingRow, type FindingStatus } from '@/li
 import { Term, TermTip, Tip } from '@/components/Term';
 import type { GlossaryKey } from '@/lib/glossary';
 import { fmtDate, pathOf } from '@/lib/utils';
+import { elementLookedFor } from '@/lib/finding-kind';
 
 /**
  * Findings are product behavior the agent observed that differed from what
@@ -25,6 +26,66 @@ const STATUS_CLASS: Record<FindingStatus, string> = {
   open: 'bg-finding-soft text-finding', triaged: 'bg-accent-soft text-accent', fixed: 'bg-pass-soft text-pass', 'wont-fix': 'bg-neutral-soft text-neutral',
 };
 const STATUS_TERM: Record<FindingStatus, GlossaryKey> = { open: 'findingStatusOpen', triaged: 'findingStatusTriaged', fixed: 'findingStatusFixed', 'wont-fix': 'findingStatusWontFix' };
+
+/**
+ * Elements the agent could not find: locator findings (kind locator,
+ * invariant 67). A limit of the run, never product behavior, so the section
+ * is neutral grey (never violet, never the reject colour), collapsed by
+ * default, read only (no status control), and its count is not in To review.
+ * Columns: scenario, the element looked for (expected without the engine
+ * prefix), the page path, seen.
+ */
+export function LocatorFailuresSection({ findings, showProject = true, open = false }: { findings: FindingRow[]; showProject?: boolean; open?: boolean }) {
+  return (
+    <details className="rounded-lg border border-line bg-bg-1 text-fg-2" data-testid="locator-failures" open={open}>
+      <summary className="cursor-pointer px-4 py-3 text-section font-semibold text-neutral" data-testid="locator-failures-heading">
+        <Term term="locatorFailures">Elements the agent could not find</Term> <span className="tabular-nums text-s font-normal" data-testid="locator-failures-count">{findings.length}</span>
+      </summary>
+      <div className="flex flex-col gap-2 px-4 pb-4">
+        <p className="text-s text-fg-2">The agent could not locate these elements after retrying. This is a limit of the run, not product behavior, and it is not counted in To review.</p>
+        {findings.length === 0 ? <div className="text-s text-fg-3" data-testid="no-locator-failures">None recorded</div> : (
+          <div className="overflow-hidden rounded-md border border-line bg-bg-1">
+            <table className="w-full table-fixed text-m" data-testid="locator-failures-table">
+              <colgroup>
+                {showProject ? <col className="w-[14%]" /> : null}
+                <col className={showProject ? 'w-[36%]' : 'w-[42%]'} />
+                <col className="w-[22%]" />
+                <col className="w-[16%]" />
+                <col className={showProject ? 'w-[12%]' : 'w-[20%]'} />
+              </colgroup>
+              <thead className="bg-bg-2 text-left text-xs font-semibold uppercase tracking-wide text-fg-2">
+                <tr>
+                  {showProject ? <th className="h-10 px-3">Project</th> : null}
+                  <th className="h-10 px-3">Scenario</th>
+                  <th className="h-10 px-3">Element looked for</th>
+                  <th className="h-10 px-3"><Term term="findingPage">Page</Term></th>
+                  <th className="h-10 px-3"><Term term="findingSeen">Seen</Term></th>
+                </tr>
+              </thead>
+              <tbody>
+                {findings.map((f) => {
+                  const last = f.last_seen_at ? fmtDate(f.last_seen_at) : f.last_seen_run_id;
+                  return (
+                    <tr key={f.id} className="border-t border-line align-top" data-testid="locator-failure-row" data-finding-id={f.id}>
+                      {showProject ? <td className="px-3 py-3"><Link to={`/projects/${encodeURIComponent(f.project_id)}`} className="truncate text-fg hover:underline">{f.project_name}</Link></td> : null}
+                      <td className="px-3 py-3">
+                        <div className="font-semibold text-fg" data-testid="locator-failure-scenario">{f.scenario}</div>
+                        {f.observed ? <Tip text={f.observed} className="block"><div className="line-clamp-2 text-s text-fg-3">{f.observed}</div></Tip> : null}
+                      </td>
+                      <td className="px-3 py-3"><Tip text={f.expected} className="block"><div className="line-clamp-2 text-s text-fg-2" data-testid="locator-failure-element">{elementLookedFor(f.expected)}</div></Tip></td>
+                      <td className="px-3 py-3">{f.page_url ? <Tip text={f.page_url} className="block min-w-0"><div className="truncate text-s text-fg-2" data-testid="locator-failure-url">{pathOf(f.page_url)}</div></Tip> : <span className="text-s text-fg-3" data-testid="locator-failure-url">no URL recorded</span>}</td>
+                      <td className="whitespace-nowrap px-3 py-3 text-s text-fg-2"><span className="tabular-nums text-fg">{f.times_seen}</span> time{f.times_seen === 1 ? '' : 's'}, <Link className="text-fg-2 hover:underline" to={`/runs/${encodeURIComponent(f.last_seen_run_id)}`}>{last}</Link></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
 
 export function FindingsHeading({ count }: { count: number }) {
   return (

@@ -8,7 +8,7 @@ import { validateSrsFile } from '@/lib/command';
 import { exactMoney, fmtDate, money } from '@/lib/utils';
 import { EmptyState } from '@/components/EmptyState';
 import { RunsTable } from '@/components/RunsTable';
-import { FindingsHeading, FindingsTable } from '@/components/FindingsTable';
+import { FindingsHeading, FindingsTable, LocatorFailuresSection } from '@/components/FindingsTable';
 import { CoverageTable } from '@/components/CoverageTable';
 import { Trends } from '@/components/Trends';
 import { InfoTerm, InfoTip, Term, Tip } from '@/components/Term';
@@ -54,6 +54,9 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
   const p = detail.project;
   const s = detail.summary;
   const latest = s.last_run?.shipped ?? null;
+  // The API returns both kinds; product behavior is reviewed, a locator failure is listed apart and never in To review (invariant 67).
+  const productFindings = findings.filter((f) => f.kind === 'product');
+  const locatorFindings = findings.filter((f) => f.kind === 'locator');
   return (
     <div className="flex flex-col gap-7" data-testid="project-page" data-project-id={p.id}>
       <Link to="/" className="inline-flex items-center gap-1 text-s text-fg-2 hover:text-fg" data-testid="back-link"><ArrowLeft className="h-3.5 w-3.5" /> Back to projects</Link>
@@ -91,12 +94,13 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
       </section>
 
       <section className="flex flex-col gap-2" data-testid="project-findings">
-        <FindingsHeading count={findings.length} />
-        <FindingsTable findings={findings} showProject={false} onChange={(u) => {
+        <FindingsHeading count={productFindings.length} />
+        <FindingsTable findings={productFindings} showProject={false} onChange={(u) => {
           setFindings((cur) => (cur ?? []).map((f) => (f.id === u.id ? u : f)));
           // The header's unresolved-findings count is an index number; re-read it rather than adjusting it here.
           api.project(id).then((d) => setDetail(d)).catch(() => { /* the next load shows it */ });
         }} />
+        <LocatorFailuresSection findings={locatorFindings} showProject={false} />
       </section>
 
       {p.id !== 'unassigned' ? <RequirementsDocument id={p.id} srs={detail.srs} onChanged={() => setReload((n) => n + 1)} /> : null}

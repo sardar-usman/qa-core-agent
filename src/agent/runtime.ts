@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import fs from 'node:fs';
 import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
+import type { Finding } from './finding-kind.js';
 import type { RunReport, Scenario } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
@@ -1100,7 +1101,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   let incomplete: Array<{ scenario: string; reason: string }> = [];
   // Scenarios where the expected outcome never occurred (retry cap tripped).
   // Real findings, not budget casualties. Surfaced loudly below.
-  let findings: Array<{ scenario: string; category?: string; expected: string; url: string; messages: string[] }> = [];
+  let findings: Finding[] = [];
   // In-run selector recoveries applied during exploration (a failed locator
   // re-resolved a different, stable way). Carried into the report for human
   // visibility. The field keeps its `heals` name for the dashboard.

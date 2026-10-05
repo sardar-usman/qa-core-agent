@@ -138,6 +138,17 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS runs_status ON runs(status)');
     },
   },
+  {
+    // findings.kind: product (the expected outcome never occurred) or locator
+    // (the element could not be found). A plain ADD COLUMN, no rebuild: every
+    // existing row reads product until the next index pass derives the kind
+    // from its report through findingKindOf (status and notes untouched).
+    version: 7,
+    name: 'finding kind: product or locator',
+    up: (db) => {
+      db.exec("ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'product' CHECK (kind IN ('product', 'locator'))");
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */

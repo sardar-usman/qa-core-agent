@@ -158,7 +158,8 @@ const shapeReport = {
   review: { verdicts: shapeVerdicts, summary: 's', repair: shapeVerdicts.filter((v) => v.verdict === 'rework').map((v) => ({ scenario: v.scenario, first: 'rework', outcome: 'dropped' })) },
   replay: { passed: 1, failed: 0, durationMs: 4066, verdicts: [{ name: shapeRecorded[0], passed: true, durationMs: 3957 }] },
   stability: { iterations: 3, passed: 1, flaked: 0, flakeRate: 0, durationMs: 14117, recovered: 0, stabilizerCostUsd: 0, verdicts: [{ name: shapeRecorded[0], iterations: 3, passes: 3, stable: true, classification: 'stable', pattern: 'P-P-P', durationMs: 14026 }] },
-  findings: [{ scenario: shapeFinding, category: 'edge', expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: [] }],
+  // Written before the kind existed: no `kind` key, the engine's two locator prefixes together, so findingKindOf reads locator (invariant 67).
+  findings: [{ scenario: shapeFinding, category: 'edge', expected: 'locate element: search input', url: 'https://practicesoftwaretesting.com/category/other', messages: ['Selector could not be resolved or recovered after 2 attempts (testid=search-query).'] }],
   skipped: shapeSkipped.map((scenario) => ({ scenario, reason: 'no products on this page' })),
   reconciliation: {
     planned: 20, generated: 1,
@@ -189,6 +190,7 @@ if (d.status === 200 && d.body.legacy === false) {
   check('F. replay and stability are the recorded outcomes, per-attempt pattern included', byName.get('add to cart updates the badge')?.replay === 'pass' && byName.get('add to cart updates the badge')?.stability?.passes === 2 && byName.get('add to cart updates the badge')?.stability?.iterations === 3 && byName.get('add to cart updates the badge')?.stability?.pattern === 'PFP' && byName.get('add to cart updates the badge')?.stability?.recovered === true && byName.get('sort by price low to high')?.replay === null && byName.get('sort by price low to high')?.stability === null);
   check('G. the reject carries where it was dropped, from the reconciliation', byName.get('sort by price low to high')?.dropped_at === 'critic' && byName.get('sort by price low to high')?.dropped_reason === 'rework -> reject');
   check('H. findings length 1 with expected, url and messages as stored', b.findings.length === 1 && b.findings[0]?.scenario === 'footer social links open' && b.findings[0]?.expected === 'a new tab with twitter.com' && b.counts.findings === 1);
+  check('H2. a finding with no kind key and no locator prefix reads kind product; the funnel splits it server side as 1 product, 0 locator', b.findings[0]?.kind === 'product' && b.stages.summary.funnel?.findings === 1 && b.stages.summary.funnel?.findings_product === 1 && b.stages.summary.funnel?.findings_locator === 0, JSON.stringify(b.stages.summary.funnel));
   check('I. header: host, run id, timing, status, cost split from the index row, stabilizer cost from the report', b.header.host === 'saucedemo.com' && b.header.run_id === runId && b.header.started_at === report.startedAt && b.header.ended_at === report.finishedAt && b.header.status === 'completed' && Math.abs(b.header.cost.total - 1.4154) < 1e-9 && Math.abs(b.header.cost.repair - 0.31) < 1e-9 && b.header.cost.stabilizer === 0.004 && b.header.environment === null, JSON.stringify(b.header));
   check('I2. the cost total is the sum of every line shown: explorer (usd) + planner + critic + stabilizer', Math.abs(b.header.cost.total - (report.cost.usd + report.cost.plannerUsd + report.cost.criticUsd + report.stability.stabilizerCostUsd)) < 1e-9 && Math.abs(b.header.cost.total - (b.header.cost.explorer + b.header.cost.repair + b.header.cost.planner + b.header.cost.critic + (b.header.cost.stabilizer ?? 0))) < 1e-9, JSON.stringify(b.header.cost));
   const kinds = b.artifacts.map((a) => `${a.kind}:${a.name}`).sort();
@@ -202,7 +204,7 @@ if (d.status === 200 && d.body.legacy === false) {
   check('SA. every rail stat equals the report field it reads',
     st.discovery.stat === `${report.discovery.pages.length} pages found`
     && st.plan.stat === `${report.plan.length} planned`
-    && st.explore.stat === `${report.reconciliation.generated + report.reconciliation.dropped.filter((d) => d.stage === 'critic' || d.stage === 'repair' || d.stage === 'replay' || d.stage === 'stability').length} recorded · ${report.reconciliation.skipped.length} skipped · ${report.scenarios.length} shipped · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
+    && st.explore.stat === `${report.reconciliation.generated + report.reconciliation.dropped.filter((d) => d.stage === 'critic' || d.stage === 'repair' || d.stage === 'replay' || d.stage === 'stability').length + ((report.reconciliation as { emitted_failed?: unknown[] }).emitted_failed ?? []).length} recorded · ${report.reconciliation.skipped.length} skipped · ${report.scenarios.length} shipped · ${report.steps} steps · $${report.cost.usd.toFixed(4)}`
     && st.review.stat === `${vc.pass} pass / ${vc.rework} rework / ${vc.reject} reject`
     && st.verify.stat === `${report.stability.passed} stable / ${report.stability.flaked} flaky`
     && st.summary.stat === `${report.scenarios.length} shipped`,
@@ -227,8 +229,23 @@ if (d.status === 200 && d.body.legacy === false) {
     check('SG2. the f3b41e shape reads "15 recorded · 1 skipped · 1 shipped", never "1 recorded"', f3.explore.scenarios_recorded === 15 && f3.explore.scenarios_shipped === 1 && f3.explore.stat.startsWith('15 recorded · 1 skipped · 1 shipped ·'), f3.explore.stat);
   }
   {
+    // The 44cb3d (run 6) shape: 20 planned, 12 shipped, 2 dropped at the Critic, 1 at replay, 1 dropped by the
+    // emitted-spec check, 4 skipped. The emitted-failed scenario was recorded, replayed and then failed the
+    // written framework, so it counts as recorded: 16 recorded, 12 shipped (the stat read 15 before this lock).
+    const shape = JSON.parse(JSON.stringify(report)) as typeof report;
+    shape.scenarios = Array.from({ length: 12 }, (_, i) => ({ ...report.scenarios[0]!, name: `run6 scenario ${i + 1}` }));
+    shape.reconciliation = { ...report.reconciliation, planned: 20, generated: 12,
+      dropped: [{ name: 'c1', stage: 'critic', reason: 'rework, not repaired' }, { name: 'c2', stage: 'critic', reason: 'reject' }, { name: 'r1', stage: 'replay', reason: 'failed' }],
+      skipped: Array.from({ length: 4 }, (_, i) => ({ name: `sk${i}`, reason: 'no feedback on the page' })),
+      emitted_failed: [{ name: 'toggled the eco-friendly filter and the product list narrowed to only eco-friendly items', reason: 'Expected: < 0 Received: 2' }] } as typeof report.reconciliation;
+    (shape as { skipped: Array<{ scenario: string; reason: string }> }).skipped = Array.from({ length: 4 }, (_, i) => ({ scenario: `sk${i}`, reason: 'no feedback on the page' }));
+    const r6 = buildStages(shape as never, [], 6.0912, 0);
+    check('SG5. the 44cb3d shape reads "16 recorded · 4 skipped · 12 shipped": the emitted-spec drop counts as recorded', r6.explore.scenarios_recorded === 16 && r6.explore.scenarios_shipped === 12 && r6.explore.stat.startsWith('16 recorded · 4 skipped · 12 shipped ·') && r6.summary.funnel?.emitted_failed === 1, r6.explore.stat);
+  }
+  {
     // The 5e4394 shape through the whole detail builder: one recorded number everywhere.
     const shape = buildRunDetail(db, root, shapeId);
+    check('SG3b. the 5e4394 shape: its finding (no kind key, both engine prefixes) reads kind locator, the funnel splits 1 finding as 0 product, 1 element not found', shape.status === 200 && shape.body.legacy === false && shape.body.findings[0]?.kind === 'locator' && shape.body.stages.summary.funnel?.findings === 1 && shape.body.stages.summary.funnel?.findings_product === 0 && shape.body.stages.summary.funnel?.findings_locator === 1, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ kind: shape.body.findings[0]?.kind, funnel: shape.body.stages.summary.funnel }) : String(shape.status));
     check('SG3. the 5e4394 shape: 19 rows (16 recorded + 3 skipped), the Explore stat reads "16 recorded · 3 skipped", no extra row for the quoted name', shape.status === 200 && shape.body.legacy === false && shape.body.scenarios.length === 19 && shape.body.stages.explore.scenarios_recorded === 16 && shape.body.stages.explore.skipped.length === 3 && shape.body.stages.explore.stat.startsWith('16 recorded · 3 skipped · 1 shipped ·') && shape.body.scenarios.filter((r) => r.name.includes('"Other"')).length === 1 && shape.body.unmatched_verdicts.length === 0, shape.status === 200 && shape.body.legacy === false ? JSON.stringify({ rows: shape.body.scenarios.length, stat: shape.body.stages.explore.stat, unmatched: shape.body.unmatched_verdicts }) : JSON.stringify(shape.body));
   }
   check('SG. explore panel: steps, recorded (generated + dropped at critic), shipped, explorer cost, gate injection, skip with reason, heal from report.heals', st.explore.steps === report.steps && st.explore.scenarios_recorded === 3 && st.explore.scenarios_shipped === 2 && st.explore.explorer_usd === report.cost.usd && st.explore.gate_injections.length === 1 && st.explore.gate_injections[0]?.assertion_type === 'toBeVisible' && st.explore.skipped[0]?.reason === 'opens an external site, out of scope' && st.explore.heals[0]?.to === report.heals[0]?.to && st.explore.incomplete.length === 0, JSON.stringify(st.explore));
@@ -434,6 +451,21 @@ const shapeSubtitle = (await page.textContent('[data-testid="scenarios-subtitle"
 const shapeRail = (await page.textContent('[data-testid="rail-item"][data-stage="explore"]')) ?? '';
 const shapeRows = (await page.$$('[data-testid="scenarios-table"] tbody tr')).length;
 check('SG4. page: the table subtitle reads "16 recorded · 3 skipped", the Explore rail carries the same, and the table has 19 rows', shapeSubtitle === '16 recorded · 3 skipped' && /16 recorded · 3 skipped/.test(shapeRail) && shapeRows === 19, JSON.stringify({ shapeSubtitle, shapeRail, shapeRows }));
+// The locator finding on the page: listed only under the grey "Elements the agent could not find" (collapsed), never under the violet section; the funnel row names the split.
+const shapeKinds = await page.evaluate(() => {
+  const details = document.querySelector('[data-testid="locator-failures"]') as HTMLDetailsElement | null;
+  const neutral = getComputedStyle(document.documentElement).getPropertyValue('--neutral').trim();
+  const finding = getComputedStyle(document.documentElement).getPropertyValue('--finding').trim();
+  const heading = document.querySelector('[data-testid="locator-failures-heading"]');
+  return {
+    productHeading: document.querySelector('[data-testid="findings-heading"]')?.textContent ?? '', noFindings: !!document.querySelector('[data-testid="no-findings"]'), productCards: document.querySelectorAll('[data-testid="finding"]').length,
+    locatorCount: document.querySelector('[data-testid="locator-failures-count"]')?.textContent ?? '', locatorOpen: details?.open ?? null, locatorRows: document.querySelectorAll('[data-testid="locator-failure"]').length,
+    element: document.querySelector('[data-testid="locator-failure-element"]')?.textContent ?? '', funnelKinds: document.querySelector('[data-testid="funnel-findings-kinds"]')?.textContent ?? '',
+    headingColor: heading ? getComputedStyle(heading).color : '', neutral, finding,
+  };
+});
+check('SG4b. page: the 5e4394 locator finding is under the grey collapsed "Elements the agent could not find (1)" with the element looked for (prefix stripped), the violet section reads 0 with "No findings recorded", and the funnel row reads "1 (0 product behavior, 1 element not found)"', /^Product behavior to review\s*0$/.test(shapeKinds.productHeading.trim()) && shapeKinds.noFindings && shapeKinds.productCards === 0 && shapeKinds.locatorCount === '1' && shapeKinds.locatorOpen === false && shapeKinds.locatorRows === 1 && shapeKinds.element === 'search input' && shapeKinds.funnelKinds === '1 (0 product behavior, 1 element not found)', JSON.stringify(shapeKinds));
+check('SG4c. page: the locator heading is the neutral token, never the finding (violet) token', shapeKinds.headingColor !== '' && shapeKinds.neutral !== '' && shapeKinds.neutral !== shapeKinds.finding && shapeKinds.headingColor === `rgb(${(() => { const [h, s, l] = shapeKinds.neutral.split(/\s+/).map((v) => parseFloat(v)) as [number, number, number]; const S = s / 100, L = l / 100; const k = (n: number) => (n + h / 30) % 12; const a = S * Math.min(L, 1 - L); const f = (n: number) => L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return [f(0), f(8), f(4)].map((v) => Math.round(v * 255)).join(', '); })()})`, JSON.stringify({ color: shapeKinds.headingColor, neutral: shapeKinds.neutral }));
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-detail"][data-legacy="true"]');
