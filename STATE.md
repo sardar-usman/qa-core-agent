@@ -207,7 +207,7 @@ using the qa-core-heal evaluation report as the template.
   with no finding recorded. docs/audit/run-44cb3d-diagnosis.md. Locked by
   smoke-planned-page; whether the Explorer records the empty page as a
   finding is untested live.
-- D3 (run 6): ADDRESSED (branch engine/rework-rate, Oct 6, not merged):
+- D3 (run 6): ADDRESSED (PR #42, engine/rework-rate, Oct 6, not merged):
   two unjustified Critic reworks (a success message the site never shows; a
   timeout already at the gate floor) and cart verdicts that took a badge
   element count for the badge's value. docs/audit/run-44cb3d-diagnosis.md.
