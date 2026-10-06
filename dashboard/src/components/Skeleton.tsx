@@ -10,7 +10,7 @@ export function ProjectsSkeleton({ cards = 6 }: { cards?: number }) {
   return (
     <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3" role="status" aria-live="polite" aria-busy="true" aria-label="Loading projects" data-testid="projects-skeleton">
       {Array.from({ length: cards }, (_, i) => (
-        <div key={i} className="rounded-lg border border-line bg-bg-1 p-5">
+        <div key={i} className="rounded-lg border border-line bg-bg-1 p-6">
           <Skeleton className="h-4 w-2/5" />
           <Skeleton className="mt-2 h-3 w-3/5" />
           <Skeleton className="mt-6 h-8 w-16" />

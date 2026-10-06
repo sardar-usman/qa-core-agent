@@ -84,7 +84,7 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await page.goto(`${base}/settings#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-setting"]');
 const shown = await page.evaluate(() => ({
-  rows: Array.from(document.querySelectorAll('[data-testid="run-setting"]')).map((r) => ({ name: r.getAttribute('data-name'), def: r.querySelector('[data-testid="setting-default"]')?.textContent, help: r.querySelector('[data-testid="setting-help"]')?.textContent ?? '', label: r.querySelector('.font-semibold')?.textContent ?? '' })),
+  rows: Array.from(document.querySelectorAll('[data-testid="run-setting"]')).map((r) => ({ name: r.getAttribute('data-name'), def: r.querySelector('[data-testid="setting-default"]')?.textContent, help: r.querySelector('[data-testid="setting-help"]')?.textContent ?? '', label: r.querySelector('.font-medium')?.textContent ?? '' })),
   token: document.querySelector('[data-testid="setting-token"]')?.textContent, key: document.querySelector('[data-testid="setting-api-key"]')?.textContent,
   gateway: document.querySelector('[data-testid="setting-gateway"]')?.textContent, body: document.body.textContent ?? '',
 }));

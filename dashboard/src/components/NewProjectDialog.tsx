@@ -50,7 +50,7 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
   return (
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" className="h-auto rounded-lg border-line-strong bg-bg-1 px-4 py-[11px] text-[14px] font-bold text-fg hover:bg-bg-2" data-testid="new-project-open">New project</Button>
+        <Button type="button" variant="outline" data-testid="new-project-open">New project</Button>
       </DialogTrigger>
       <DialogContent data-testid="new-project-dialog" onOpenAutoFocus={(e) => { e.preventDefault(); urlRef.current?.focus(); }}>
         <DialogHeader>
@@ -71,11 +71,11 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
             </select>
           </Field>
           {conflict ? (
-            <div role="status" className="rounded-md border border-line-strong bg-bg-2 px-3 py-2 text-s text-fg" data-testid="new-project-conflict">
-              This site already has a project: <span className="font-semibold">{conflict.name}</span>. <Link to={`/projects/${encodeURIComponent(conflict.id)}`} className="font-semibold text-accent underline-offset-2 hover:underline" data-testid="new-project-existing" onClick={() => setOpen(false)}>Open project</Link>
+            <div role="status" className="rounded-md border border-line-strong bg-bg-2 px-3 py-2 text-small text-fg" data-testid="new-project-conflict">
+              This site already has a project: <span className="font-medium">{conflict.name}</span>. <Link to={`/projects/${encodeURIComponent(conflict.id)}`} className="font-medium text-accent underline-offset-2 hover:underline" data-testid="new-project-existing" onClick={() => setOpen(false)}>Open project</Link>
             </div>
           ) : null}
-          {error ? <div role="alert" className="rounded-md border border-reject/30 bg-reject-soft px-3 py-2 text-s text-reject" data-testid="new-project-error">{error}</div> : null}
+          {error ? <div role="alert" className="rounded-md border border-reject/30 bg-reject-soft px-3 py-2 text-small text-reject" data-testid="new-project-error">{error}</div> : null}
           <DialogFooter>
             <DialogClose asChild><Button type="button" variant="outline" size="sm" data-testid="new-project-cancel">Cancel</Button></DialogClose>
             <TermTip term="createProject"><Button type="submit" size="sm" disabled={saving} data-testid="new-project-submit">{saving ? 'Creating…' : 'Create'}</Button></TermTip>
@@ -88,15 +88,15 @@ export function NewProjectDialog({ onCreated }: { onCreated: () => void }) {
 
 function Field({ id, label, term, help, required, children }: { id: string; label: string; term: 'projectBaseUrl' | 'projectName' | 'projectEnvironment'; help: string; required?: boolean; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="flex items-center gap-1.5 text-s font-semibold text-fg">
-        {label}{required ? <span className="text-reject" aria-hidden="true">*</span> : <span className="font-normal text-fg-3">optional</span>}
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="flex items-center gap-1 text-caption font-medium text-fg">
+        {label}{required ? <span className="text-reject" aria-hidden="true">*</span> : <span className="font-normal text-fg-2">optional</span>}
         <InfoTerm term={term} />
       </label>
       {children}
-      <p className="text-xs text-fg-3">{help}</p>
+      <p className="text-caption text-fg-2">{help}</p>
     </div>
   );
 }
 
-const inputCls = 'h-9 w-full rounded-md border border-line-strong bg-bg-2 px-2.5 text-m text-fg placeholder:text-fg-3 focus:outline-none focus:ring-2 focus:ring-accent';
+const inputCls = 'h-9 w-full rounded-md border border-line-strong bg-bg-2 px-3 text-body text-fg placeholder:text-fg-3 focus:outline-none focus:ring-2 focus:ring-accent';

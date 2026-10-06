@@ -33,28 +33,28 @@ export function FindingsPage({ refreshKey }: { refreshKey: number }) {
   };
 
   return (
-    <div className="flex flex-col gap-6" data-testid="findings-page">
+    <div className="flex flex-col gap-8" data-testid="findings-page">
       <PageHeader title="To review" description="Every deduped finding across projects, with the runs that saw it. Status and notes are yours to set and survive every re-index." />
       <FindingsHeading count={productFindings.length} />
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-s text-fg-2">Project
-          <select className="h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg" value={projectId} onChange={(e) => setFilter('project_id', e.target.value)} data-testid="filter-project">
+        <label className="flex items-center gap-2 text-small text-fg-2">Project
+          <select className="h-9 rounded-md border border-line-strong bg-bg-2 px-2 text-body text-fg" value={projectId} onChange={(e) => setFilter('project_id', e.target.value)} data-testid="filter-project">
             <option value="">All projects</option>
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
-        <label className="flex items-center gap-2 text-s text-fg-2">Status
-          <select className="h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg" value={status} onChange={(e) => setFilter('status', e.target.value)} data-testid="filter-status">
+        <label className="flex items-center gap-2 text-small text-fg-2">Status
+          <select className="h-9 rounded-md border border-line-strong bg-bg-2 px-2 text-body text-fg" value={status} onChange={(e) => setFilter('status', e.target.value)} data-testid="filter-status">
             <option value="">Any</option>
             {FINDING_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
       </div>
-      {error ? <EmptyState title="Could not load findings">{error}</EmptyState> : findings === null ? <div className="text-s text-fg-2">Loading…</div> : (
+      {error ? <EmptyState title="Could not load findings">{error}</EmptyState> : findings === null ? <div className="text-small text-fg-2">Loading…</div> : (
         <>
           <FindingsTable findings={productFindings} onChange={(u) => setFindings((cur) => (cur ?? []).map((f) => (f.id === u.id ? u : f)))} />
           <div>
-            <button type="button" className="rounded-sm text-s text-fg-2 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setShowLocator((v) => !v)} aria-expanded={showLocator} data-testid="locator-toggle">
+            <button type="button" className="rounded-sm text-small font-medium text-fg-2 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => setShowLocator((v) => !v)} aria-expanded={showLocator} data-testid="locator-toggle">
               {showLocator ? 'Hide elements not found' : 'Show elements not found'} (<span className="tabular-nums" data-testid="locator-toggle-count">{locatorFindings.length}</span>)
             </button>
           </div>

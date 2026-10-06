@@ -5,7 +5,7 @@ import { api, ApiError, PROJECT_ENVIRONMENTS, type FindingRow, type ProjectCover
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { validateSrsFile } from '@/lib/command';
-import { exactMoney, fmtDate, money } from '@/lib/utils';
+import { exactMoney, formatCount, formatDate, formatDateTime, formatMoney } from '@/lib/format';
 import { EmptyState } from '@/components/EmptyState';
 import { RunsTable } from '@/components/RunsTable';
 import { FindingsHeading, FindingsTable, LocatorFailuresSection } from '@/components/FindingsTable';
@@ -45,12 +45,12 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
   if (error) {
     return (
       <div className="flex flex-col gap-4">
-        <Link to="/" className="inline-flex items-center gap-1 text-s text-fg-2 hover:text-fg"><ArrowLeft className="h-3.5 w-3.5" /> Back to projects</Link>
+        <Link to="/" className="inline-flex items-center gap-1 text-small text-fg-2 hover:text-fg"><ArrowLeft className="h-4 w-4" /> Back to projects</Link>
         <EmptyState title={error.status === 404 ? 'Project not found' : error.status === 401 ? 'Unauthorized' : 'Could not load this project'}><span className="mono" data-testid="project-error">{error.message}</span></EmptyState>
       </div>
     );
   }
-  if (!detail || !runs || !findings || !coverage || !trends) return <div className="text-s text-fg-2">Loading…</div>;
+  if (!detail || !runs || !findings || !coverage || !trends) return <div className="text-small text-fg-2">Loading…</div>;
   const p = detail.project;
   const s = detail.summary;
   const latest = s.last_run?.shipped ?? null;
@@ -58,38 +58,38 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
   const productFindings = findings.filter((f) => f.kind === 'product');
   const locatorFindings = findings.filter((f) => f.kind === 'locator');
   return (
-    <div className="flex flex-col gap-7" data-testid="project-page" data-project-id={p.id}>
-      <Link to="/" className="inline-flex items-center gap-1 text-s text-fg-2 hover:text-fg" data-testid="back-link"><ArrowLeft className="h-3.5 w-3.5" /> Back to projects</Link>
+    <div className="flex flex-col gap-8" data-testid="project-page" data-project-id={p.id}>
+      <Link to="/" className="inline-flex items-center gap-1 text-small text-fg-2 hover:text-fg" data-testid="back-link"><ArrowLeft className="h-4 w-4" /> Back to projects</Link>
       <header className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-title font-semibold tracking-tight" data-testid="project-name">{p.name}</h1>
+          <h1 className="text-title font-semibold" data-testid="project-name">{p.name}</h1>
           {p.base_url ? (
             <Tip asChild text={p.base_url}>
-              <a href={p.base_url} target="_blank" rel="noreferrer" className="inline-flex min-w-0 max-w-[36rem] items-center gap-1 rounded-sm text-s text-fg-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-url"><span className="truncate">{p.base_url}</span> <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" /></a>
+              <a href={p.base_url} target="_blank" rel="noreferrer" className="inline-flex min-w-0 max-w-[36rem] items-center gap-1 rounded-sm text-small text-fg-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="project-url"><span className="truncate">{p.base_url}</span> <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /></a>
             </Tip>
-          ) : <span className="text-s text-fg-3">no base URL</span>}
+          ) : <span className="text-small text-fg-2">no base URL</span>}
           {p.environment && p.environment !== 'other' ? <Badge variant={ENV_VARIANT[p.environment] ?? 'neutral'} data-testid="env-badge">{p.environment}</Badge> : null}
           {p.id !== 'unassigned' ? <div className="ml-auto"><EditProject id={p.id} name={p.name} environment={p.environment} onSaved={() => setReload((n) => n + 1)} /></div> : null}
         </div>
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Tile label="Verified tests" term="latestShipped" value={latest === null ? null : String(latest)} missing={s.last_run ? 'latest run is a pre-v2 summary' : 'no runs yet'} testid="project-latest-shipped" sub="in the latest run">
             {s.shipped === null ? null : (
-              <div className="mt-1.5 flex items-center gap-1 text-xs text-fg-2" data-testid="project-shipped-line">
-                <span><span className="tabular-nums text-fg" data-testid="project-shipped">{s.shipped}</span> in total across <span className="tabular-nums text-fg" data-testid="project-runs-total">{s.runs}</span> run{s.runs === 1 ? '' : 's'}</span>
-                {s.legacy_runs ? <InfoTip testid="project-legacy-note" label="About pre-v2 runs" text={`${s.legacy_runs} pre-v2 run${s.legacy_runs === 1 ? '' : 's'}, ${s.legacy_explored} scenario${s.legacy_explored === 1 ? '' : 's'} explored; pre-v2 runs have no verified-test count.`} /> : null}
+              <div className="mt-1 flex items-center gap-1 text-caption text-fg-2" data-testid="project-shipped-line">
+                <span><span className="tabular-nums text-fg" data-testid="project-shipped">{s.shipped}</span> in total across <span className="tabular-nums text-fg" data-testid="project-runs-total">{formatCount(s.runs, 'run', 'runs')}</span></span>
+                {s.legacy_runs ? <InfoTip testid="project-legacy-note" label="About pre-v2 runs" text={`${formatCount(s.legacy_runs, 'pre-v2 run', 'pre-v2 runs')}, ${formatCount(s.legacy_explored, 'scenario', 'scenarios')} explored; pre-v2 runs have no verified-test count.`} /> : null}
               </div>
             )}
           </Tile>
           <Tile label="To review" term="unresolvedFindings" value={s.unresolved_findings === null ? null : String(s.unresolved_findings)} tone={s.unresolved_findings ? 'finding' : 'muted'} missing="no run with a report" testid="project-unresolved-findings" sub="product behavior" />
-          <Tile label="Spent" term="spendMonth" value={<Tip text={`exact: ${exactMoney(s.spend_month)}`}>{money(s.spend_month)}</Tip>} tone="cost" testid="project-spend-month" sub="this month" />
+          <Tile label="Spent" term="spendMonth" value={<Tip text={`exact: ${exactMoney(s.spend_month)}`}>{formatMoney(s.spend_month)}</Tip>} testid="project-spend-month" sub="this month" />
           <Tile label="Runs" term="runs" value={String(s.runs)} testid="project-runs" sub="reported and pre-v2">
-            <div className="mt-1.5 flex items-center gap-1 text-xs text-fg-2"><span><span className="tabular-nums text-fg" data-testid="project-runs-reported">{s.reported_runs}</span> with a report</span><InfoTerm term="reportedRuns" /></div>
+            <div className="mt-1 flex items-center gap-1 text-caption text-fg-2"><span><span className="tabular-nums text-fg" data-testid="project-runs-reported">{s.reported_runs}</span> with a report</span><InfoTerm term="reportedRuns" /></div>
           </Tile>
         </dl>
       </header>
 
       <section className="flex flex-col gap-2" data-testid="project-runs">
-        <h2 className="text-section font-semibold">Runs <span className="tabular-nums text-s font-normal text-fg-3">{runs.length}</span></h2>
+        <h2 className="text-heading font-semibold">Runs <span className="tabular-nums text-small font-normal text-fg-2">{runs.length}</span></h2>
         {runs.length === 0 ? <EmptyState title="No runs yet" /> : <RunsTable runs={runs} hideProject />}
       </section>
 
@@ -106,12 +106,12 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
       {p.id !== 'unassigned' ? <RequirementsDocument id={p.id} srs={detail.srs} onChanged={() => setReload((n) => n + 1)} /> : null}
 
       <section className="flex flex-col gap-2" data-testid="project-coverage">
-        <h2 className="text-section font-semibold">Requirements coverage</h2>
+        <h2 className="text-heading font-semibold">Requirements coverage</h2>
         <CoverageTable coverage={coverage} />
       </section>
 
       <section className="flex flex-col gap-2" data-testid="project-trends">
-        <h2 className="text-section font-semibold">Trends</h2>
+        <h2 className="text-heading font-semibold">Trends</h2>
         <Trends trends={trends} />
       </section>
     </div>
@@ -123,14 +123,14 @@ export function ProjectPage({ refreshKey }: { refreshKey: number }) {
  * glossary icon, the number, one muted sub-line, then any extra line. A
  * null value renders its reason in words, never a number and never n/a.
  */
-function Tile({ label, term, value, sub, tone, testid, missing, children }: { label: string; term: GlossaryKey; value: ReactNode | null; sub: string; tone?: 'finding' | 'cost' | 'muted'; testid: string; missing?: string; children?: ReactNode }) {
+function Tile({ label, term, value, sub, tone, testid, missing, children }: { label: string; term: GlossaryKey; value: ReactNode | null; sub: string; tone?: 'finding' | 'muted'; testid: string; missing?: string; children?: ReactNode }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1 px-4 py-3">
-      <dt className="flex items-center gap-1 text-s text-fg-2"><span>{label}</span><InfoTerm term={term} /></dt>
+      <dt className="flex items-center gap-1 text-caption font-medium text-fg-2"><span>{label}</span><InfoTerm term={term} /></dt>
       {value === null
-        ? <dd className="mt-1.5 text-s text-fg-3" data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
-        : <dd className={`money mt-1.5 text-l font-semibold leading-none ${tone === 'finding' ? 'text-finding' : tone === 'cost' ? 'text-cost' : tone === 'muted' ? 'text-neutral' : 'text-fg'}`} data-testid={testid}>{value}</dd>}
-      <dd className="mt-1.5 text-s text-fg-3">{sub}</dd>
+        ? <dd className="mt-1 text-small text-fg-2" data-testid={`${testid}-missing`}>{missing ?? 'not recorded'}</dd>
+        : <dd className={`money mt-1 text-title font-semibold ${tone === 'finding' ? 'text-finding' : tone === 'muted' ? 'text-neutral' : 'text-fg'}`} data-testid={testid}>{value}</dd>}
+      <dd className="mt-1 text-small text-fg-2">{sub}</dd>
       {children}
     </div>
   );
@@ -151,22 +151,22 @@ function EditProject({ id, name, environment, onSaved }: { id: string; name: str
       try { await api.patchProject(id, { name: n.trim(), environment: env || null }); setOpen(false); onSaved(); }
       catch (err) { setError((err as Error).message); } finally { setSaving(false); }
     }}>
-      <label className="flex flex-col text-s text-fg-2">name<input className={editInput} value={n} onChange={(e) => setN(e.target.value)} data-testid="edit-project-name" /></label>
-      <label className="flex flex-col text-s text-fg-2">environment
+      <label className="flex flex-col text-caption font-medium text-fg-2">name<input className={editInput} value={n} onChange={(e) => setN(e.target.value)} data-testid="edit-project-name" /></label>
+      <label className="flex flex-col text-caption font-medium text-fg-2">environment
         <select className={editInput} value={env} onChange={(e) => setEnv(e.target.value)} data-testid="edit-project-env">
           <option value="">unset</option>
           {PROJECT_ENVIRONMENTS.map((v) => <option key={v} value={v}>{v}</option>)}
         </select>
       </label>
-      <Tip text="The base URL is the project identity and cannot be edited"><span className="text-s text-fg-3">base URL is read-only</span></Tip>
+      <Tip text="The base URL is the project identity and cannot be edited"><span className="text-small text-fg-2">base URL is read-only</span></Tip>
       <Button type="submit" size="sm" disabled={saving || !n.trim()} data-testid="edit-project-save">Save</Button>
       <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-      {error ? <span className="text-s text-reject" data-testid="edit-project-error">{error}</span> : null}
+      {error ? <span className="text-small text-reject" data-testid="edit-project-error">{error}</span> : null}
     </form>
   );
 }
 
-const editInput = 'h-8 rounded-md border border-line-strong bg-bg-2 px-2 text-s text-fg';
+const editInput = 'h-9 rounded-md border border-line-strong bg-bg-2 px-3 text-body text-fg';
 
 /**
  * The project-level requirements document: one current SRS under
@@ -193,24 +193,24 @@ function RequirementsDocument({ id, srs, onChanged }: { id: string; srs: Project
     reader.readAsDataURL(file);
   };
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-line bg-bg-1 p-4" data-testid="project-srs">
+    <section className="flex flex-col gap-2 rounded-lg border border-line bg-bg-1 p-6" data-testid="project-srs">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-section font-semibold"><Term term="requirementsDocument">Requirements document (SRS)</Term></h2>
+        <h2 className="text-heading font-semibold"><Term term="requirementsDocument">Requirements document (SRS)</Term></h2>
         <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx" hidden data-testid="project-srs-file" onChange={(e) => pick(e.target.files?.[0])} />
         <Button type="button" variant="outline" size="sm" className="ml-auto" disabled={busy} onClick={() => fileRef.current?.click()} data-testid="project-srs-upload">{srs.current ? 'Replace document' : 'Upload document'}</Button>
       </div>
-      {error ? <div className="text-s text-reject" data-testid="project-srs-error">{error}</div> : null}
+      {error ? <div className="text-small text-reject" data-testid="project-srs-error">{error}</div> : null}
       {srs.current ? (
-        <div className="text-s text-fg-2" data-testid="project-srs-current">
-          <Tip text={`Stored at ${srs.current.path}. Accepted: .md, .txt, .pdf or .docx, 2 MB cap. The Terminal offers it by default for runs against this host; each run keeps its own copy.`}><span className="font-semibold text-fg">{srs.current.original_name}</span></Tip>
-          {' '}uploaded <Tip text={srs.current.uploaded_at}>{fmtDate(srs.current.uploaded_at)}</Tip> · <span className="tabular-nums">{(srs.current.size / 1024).toFixed(1)} KB</span>
+        <div className="text-small text-fg-2" data-testid="project-srs-current">
+          <Tip text={`Stored at ${srs.current.path}. Accepted: .md, .txt, .pdf or .docx, 2 MB cap. The Terminal offers it by default for runs against this host; each run keeps its own copy.`}><span className="font-medium text-fg">{srs.current.original_name}</span></Tip>
+          {' '}uploaded <Tip text={formatDateTime(srs.current.uploaded_at)}>{formatDate(srs.current.uploaded_at)}</Tip> · <span className="tabular-nums">{(srs.current.size / 1024).toFixed(1)} KB</span>
         </div>
-      ) : <div className="text-s text-fg-2" data-testid="project-srs-none">No requirements document yet. Accepted: .md, .txt, .pdf or .docx, 2 MB cap.</div>}
+      ) : <div className="text-small text-fg-2" data-testid="project-srs-none">No requirements document yet. Accepted: .md, .txt, .pdf or .docx, 2 MB cap.</div>}
       {srs.previous.length ? (
-        <details className="text-s">
+        <details className="text-small">
           <summary className="cursor-pointer text-fg-2">Previous uploads <span className="tabular-nums">{srs.previous.length}</span>, kept so no document a run used is ever lost</summary>
           <ul className="mt-1 flex flex-col gap-1" data-testid="project-srs-previous">
-            {srs.previous.map((r) => <li key={r.path} className="text-fg-2" data-testid="project-srs-previous-row"><span className="mono text-fg">{r.file}</span> uploaded {fmtDate(r.uploaded_at)} <span className="mono">{r.path}</span></li>)}
+            {srs.previous.map((r) => <li key={r.path} className="text-fg-2" data-testid="project-srs-previous-row"><span className="mono text-fg">{r.file}</span> uploaded {formatDate(r.uploaded_at)} <span className="mono">{r.path}</span></li>)}
           </ul>
         </details>
       ) : null}

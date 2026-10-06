@@ -90,5 +90,5 @@ export function Tip({ text, children, className, asChild = false, mono = false }
 
 function TermBody({ term }: { term: GlossaryKey }) {
   const g = GLOSSARY[term];
-  return <><span className="font-semibold">{g.term}.</span> {g.text}</>;
+  return <><span className="font-medium">{g.term}.</span> {g.text}</>;
 }

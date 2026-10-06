@@ -151,6 +151,8 @@ for (const theme of ['dark', 'light'] as const) {
     // Redesign v2: the amber pill beside the name exists only when the last run is not completed.
     status: el.querySelector('[data-testid="card-status"]')?.getAttribute('data-status') ?? null,
     statusText: el.querySelector('[data-testid="card-status"]')?.textContent ?? null,
+    // Design system: the pill reads "Stopped early" and its tooltip (the Tip span around it) carries the full LABEL text.
+    statusTip: el.querySelector('[data-testid="card-status"]')?.parentElement?.getAttribute('data-tip') ?? null,
     letter: el.querySelector('[data-testid="card-letter"]')?.textContent ?? null,
     open: el.querySelector('[data-testid="card-open"]')?.textContent ?? null,
     text: el.textContent ?? '',
@@ -164,7 +166,7 @@ for (const theme of ['dark', 'light'] as const) {
     // Money on a card is 2 decimals; the exact stored value travels in the tooltip (PR F part 1).
     // Redesign v2: the sentence names shipped "across all N runs" when the project has no pre-v2 record, else "<legacy_runs> older runs kept a summary only."; a last run that is not completed shows an amber "Last run <LABEL>" pill, a completed one shows none.
     const expectStatus = last && last.status !== 'completed' ? String(last.status) : null;
-    const ok = !!c && (Number(p.legacy_runs) ? c.shipped === null && c.legacyRuns === String(p.legacy_runs) : c.shipped === String(p.shipped) && c.legacyRuns === null) && c.findings === String(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === expectStatus && (expectStatus === null || /^Last run /.test(c.statusText ?? '')) && c.letter === String(p.name).trim()[0]!.toUpperCase() && c.open === 'Open project →';
+    const ok = !!c && (Number(p.legacy_runs) ? c.shipped === null && c.legacyRuns === String(p.legacy_runs) : c.shipped === String(p.shipped) && c.legacyRuns === null) && c.findings === String(p.unresolved_findings) && c.spend === `$${Number(p.spend_month).toFixed(2)}` && c.spendTip === `exact: ${exactMoney(p.spend_month)}` && c.status === expectStatus && (expectStatus === null || (c.statusText === (expectStatus === 'stopped' ? 'Stopped early' : expectStatus === 'empty' ? 'Empty run' : 'Run failed') && /^Last run /.test(c.statusTip ?? ''))) && c.letter === String(p.name).trim()[0]!.toUpperCase() && c.open === 'Open project →';
     check(`${theme}: card ${p.id} shows the API's shipped, unresolved findings, spend this month (2 decimals, exact value in the tooltip), the last run's pill only when not completed, the letter badge and "Open project"`, ok, JSON.stringify({ c, p: { shipped: p.shipped, legacy: p.legacy_runs, f: p.unresolved_findings, s: p.spend_month, st: last?.status } }));
     // The headline is the latest run's shipped count, straight from last_run.shipped (no arithmetic).
     const expectLatest = last && last.shipped !== null && last.shipped !== undefined ? String(last.shipped) : null;
