@@ -207,10 +207,18 @@ using the qa-core-heal evaluation report as the template.
   with no finding recorded. docs/audit/run-44cb3d-diagnosis.md. Locked by
   smoke-planned-page; whether the Explorer records the empty page as a
   finding is untested live.
-- D3 (run 6): two unjustified Critic reworks (a success message the site
-  never shows; a timeout already at the gate floor) and cart verdicts that
-  took a badge element count for the badge's value.
-  docs/audit/run-44cb3d-diagnosis.md.
+- D3 (run 6): ADDRESSED (branch engine/rework-rate, Oct 6, not merged):
+  two unjustified Critic reworks (a success message the site never shows; a
+  timeout already at the gate floor) and cart verdicts that took a badge
+  element count for the badge's value. docs/audit/run-44cb3d-diagnosis.md.
+  Record-time fixes: a literal count on a counter refused (RULE 7) and a
+  count capture on one refused (RULE 9); a well-formed email generated in a
+  negative or edge creation flow; the RULE 2 floor after an action raised to
+  10000 ms; doctrine rules 9 (success signals from the recordings) and 10 (a
+  timeout at the floor is no rework reason). Locked by smoke-gate,
+  smoke-tools, smoke-unique-data, smoke-compare-poll, smoke-critic-parse and
+  smoke-emitted-run; scripts/rework-shapes.ts maps runs 5 and 6. The rework
+  rate itself is unmeasured until the next live run.
 - D4 (run 6): FIXED (PR #36, Oct 2): a repair stopped by its budget is
   filed as a critic drop with the first-pass reasons.
   docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-repair-pass and

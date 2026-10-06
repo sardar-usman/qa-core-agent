@@ -60,21 +60,49 @@ export function uniqueFnName(kind: GenerateKind): string {
 }
 
 export interface UniqueFieldHints {
-  /** Scenario category. Only 'happy' creation flows generate data. */
+  /** Scenario category. Happy creation flows generate email, username and password. */
   category?: string;
   /** feature + scenario name + page URL, lowercased, used to spot a creation flow. */
   flowHint: string;
   /** intent + testid + label + role + css + placeholder for the field being filled. */
   fieldHint: string;
+  /**
+   * The plan's canonical scenario name (the planned name the recorded one
+   * matches; the recorded name only when the run has no plan). A negative or
+   * edge scenario is judged on this alone, never on text the model echoed.
+   */
+  canonicalName?: string;
+  /** The value the model asked to fill. A non-happy email is generated only when it is well-formed. */
+  value?: string;
+}
+
+const CREATION_FLOW_RE = /regist|sign[\s_-]?up|create|join|enrol|new[\s_-]?account|onboard/i;
+const EMAIL_FIELD_RE = /e[\s_-]?mail/i;
+// A scenario that is ABOUT the email already being taken keeps its literal:
+// generating a fresh one would make the duplicate test pass for the wrong reason.
+const DUPLICATE_EMAIL_RE = /duplicate|\bexisting\b|already[\s_-]+(?:registered|in[\s_-]+use|used|taken|exists)/i;
+// A login flow: the credential rules (invariants 43 and 56) own its fields.
+const LOGIN_NAME_RE = /\blog(?:s|ged|ging)?[\s_-]?in\b|\bsign(?:s|ed|ing)?[\s_-]?in\b/i;
+
+/**
+ * A well-formed email: one @, a non-empty local part, a dotted domain, no
+ * spaces. The same check keeps the two negatives that test the email itself
+ * literal: an empty value and a malformed one (no @).
+ */
+export function isWellFormedEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 /**
  * Decide whether a field being filled feeds a uniqueness constraint and so needs
  * generated data. General, not tied to any one site:
  *
- *  - Only happy-path creation flows generate. Negative and edge scenarios are
- *    often testing an invalid value or a deliberate duplicate (e.g. "register
- *    with an email already in use"), so their data must stay literal.
+ *  - Happy-path creation flows generate email, username and password.
+ *    Negative and edge creation flows generate only a well-formed email, and
+ *    only when the canonical scenario name does not name a duplicate or
+ *    existing email (nonHappyCreationEmail); an empty or malformed email, a
+ *    username and a password stay literal, since those are what such
+ *    scenarios test.
  *  - The flow has to look like a creation/sign-up flow.
  *  - An email field on such a flow gets a unique email. A username/handle field
  *    on such a flow gets a unique token. A password field gets a strong random
@@ -82,13 +110,32 @@ export interface UniqueFieldHints {
  *    rejected for a weak or breached value the model happened to type.
  */
 export function detectUniqueField(h: UniqueFieldHints): GenerateKind | undefined {
-  if (h.category && h.category !== 'happy') return undefined;
-  const isCreationFlow = /regist|sign[\s_-]?up|create|join|enrol|new[\s_-]?account|onboard/i.test(h.flowHint);
+  if (h.category && h.category !== 'happy') return nonHappyCreationEmail(h);
+  const isCreationFlow = CREATION_FLOW_RE.test(h.flowHint);
   if (!isCreationFlow) return undefined;
-  if (/e[\s_-]?mail/i.test(h.fieldHint)) return 'email';
+  if (EMAIL_FIELD_RE.test(h.fieldHint)) return 'email';
   if (/user[\s_-]?name|\bhandle\b|\bnickname\b/i.test(h.fieldHint)) return 'token';
   if (/pass[\s_-]?word|\bpasswd\b|\bpwd\b/i.test(h.fieldHint)) return 'password';
   return undefined;
+}
+
+/**
+ * A negative or edge creation flow fills a generated email when the email is
+ * not the field under test. Run 44cb3d: the first-name and date-of-birth
+ * registration negatives typed unique2+qa@example.com and unique3+qa@example.com,
+ * and the Critic reworked both, because the second run hits a duplicate email
+ * and fails for a reason that is not the one the test names. Judged on the
+ * plan's canonical scenario name only. Kept literal: an empty or malformed
+ * value (the email IS the field under test), a scenario that names a
+ * duplicate, existing or already-registered email, and a login flow.
+ */
+function nonHappyCreationEmail(h: UniqueFieldHints): GenerateKind | undefined {
+  const name = h.canonicalName ?? '';
+  if (!CREATION_FLOW_RE.test(name)) return undefined;
+  if (DUPLICATE_EMAIL_RE.test(name) || LOGIN_NAME_RE.test(name)) return undefined;
+  if (!EMAIL_FIELD_RE.test(h.fieldHint)) return undefined;
+  if (!isWellFormedEmail(h.value ?? '')) return undefined;
+  return 'email';
 }
 
 /**

@@ -13,11 +13,14 @@ import { currencyAmountIn } from './parse-number.js';
  *   RULE 2: Floor enforcement on async/animated assertions. Timeouts come from
  *           the page (the adaptive timeout measured during exploration), so the
  *           gate no longer injects a completion constant. It only raises a
- *           missing or below-floor timeout up to the 5000 ms floor, so legacy or
- *           externally-built scenarios never ship with a too-short budget.
- *           A toHaveURL that follows an action is floored like every other
- *           type (run 51d535: four reworks read "URL assert [no-timeout]" as
- *           a one-shot check); one recorded before any action is untouched.
+ *           missing or below-floor timeout, so nothing ships with a too-short
+ *           budget. An assertion recorded after an action is floored at
+ *           10000 ms (run 44cb3d: the Critic reworked three assertions sitting
+ *           at the old 5000 ms floor; a timeout only lengthens a failing
+ *           check, so the higher floor costs nothing on a green run). A
+ *           toHaveURL recorded before any action is untouched; another type
+ *           recorded before any action in a scenario that has one keeps the
+ *           5000 ms floor.
  *   RULE 3: No FRAGILE CSS-tier locator on animated or dynamically-changing
  *           elements. Stable selectors (unique ID, data-* attr, single semantic
  *           class) are always allowed, even on animated elements. Exception:
@@ -41,6 +44,15 @@ import { currencyAmountIn } from './parse-number.js';
  *           "capture the value, act, assert_compare". Messages, alerts,
  *           headings and fields the model filled itself are never catalogue
  *           data. Also applied in-run at assert time (tools.ts).
+ *           A bare integer asserted as the text of a counter (a badge,
+ *           quantity, qty, count or counter target, COUNTER_TARGET_RE) is a
+ *           literal count too (run 44cb3d: "cart badge shows 1", three
+ *           reworks); the steer is capture the counter's text, act,
+ *           assert_compare.
+ *   RULE 9: A counter is read by its text, never by its element count. A
+ *           capture with source "count" on a counter target counts badge
+ *           elements (0 before the add, 1 after) and proves the badge
+ *           appeared, not that the number on it went up (run 44cb3d's repair).
  *   RULE 8: No currency amount in a locator name. A role name, label or text
  *           hint that carries a price ("Bolt Cutters ABCDE$48.41", the card's
  *           accessible name concatenating badge and price, run 51d535) pins
@@ -67,7 +79,7 @@ import { currencyAmountIn } from './parse-number.js';
  */
 
 export interface GateViolation {
-  rule: 1 | 3 | 4 | 6 | 7 | 8;
+  rule: 1 | 3 | 4 | 6 | 7 | 8 | 9;
   stepIndex: number;
   detail: string;
 }
@@ -94,9 +106,14 @@ export interface GateResult {
 
 // Floor only. The real timeout is the adaptive value measured from the page
 // during exploration (see adaptive-timeout.ts). This is not a completion
-// constant — it is the lowest budget the gate will let any async assertion ship
-// with, so a missing or too-small timeout gets raised to the floor.
+// constant: it is the lowest budget the gate lets an async assertion ship
+// with, so a missing or too-small timeout gets raised to the floor. An
+// assertion after an action gets the higher floor: run 44cb3d's Critic
+// reworked three assertions at 5000 ms (the contact success message, the
+// empty-email error text, the cart line totals), and a timeout only
+// lengthens a check that is failing anyway, so a green run pays nothing.
 const ASYNC_TIMEOUT_FLOOR = ADAPTIVE_FLOOR_MS;
+export const ASYNC_TIMEOUT_FLOOR_AFTER_ACTION = 10_000;
 // Ceiling. A recorded timeout above this masks a performance regression and
 // drew a rework on every scenario that carried one (run f3b41e: three 60000ms
 // values, each the residue of a failed 60 s probe). Lowered, and logged.
@@ -156,6 +173,12 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
     if (step.kind === 'assert') {
       const r7 = catalogueLiteralReason(step.assertion, scenario.steps.slice(0, i), opts.knownNames);
       if (r7) violations.push({ rule: 7, stepIndex: i, detail: `step ${i + 1}: ${r7}` });
+    }
+
+    // RULE 9: a counter captured as an element count (see counterCountCaptureReason).
+    if (step.kind === 'capture') {
+      const r9 = counterCountCaptureReason(step.target, step.source);
+      if (r9) violations.push({ rule: 9, stepIndex: i, detail: `step ${i + 1}: ${r9}` });
     }
 
     // RULE 3a: capture / assert_compare on a FRAGILE CSS-tier locator.
@@ -233,36 +256,41 @@ export function runGate(scenario: Scenario, opts: { knownNames?: Iterable<string
       if (isActionStep(step)) actionSeen = true;
       if (step.kind !== 'assert') continue;
       const a = step.assertion;
-      // Every timeout-bearing assertion type is floored, including
-      // toBeHidden (absence waits for the element to leave) and toHaveCount
-      // (counts settle after async actions). A toHaveURL that FOLLOWS an
-      // action is floored too: without a timeout the record reads
-      // "[no-timeout]" and the Critic reworks it as a one-shot check (run
-      // 51d535: four reworks, "assert URL matches regex "/auth/register"
-      // [no-timeout]" the only or first reason). A toHaveURL recorded before
-      // any action in the scenario (the page the scenario opened on) is left
-      // as it is. The floor applies after an action; the ceiling always.
       const current = (a as { timeout?: number }).timeout;
-      const floors = a.type === 'toHaveURL' ? actionSeen : hasAction;
-      if (floors && (!current || current < ASYNC_TIMEOUT_FLOOR)) {
-        (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_FLOOR;
-        injections.push({
-          stepIndex: i,
-          assertionType: a.type,
-          detail: `step ${i + 1}: raised timeout to the ${ASYNC_TIMEOUT_FLOOR}ms floor on ${a.type} (was ${current ?? 'unset'})`,
-        });
-      } else if (current !== undefined && current > ASYNC_TIMEOUT_CEILING) {
-        (a as { timeout?: number }).timeout = ASYNC_TIMEOUT_CEILING;
-        injections.push({
-          stepIndex: i,
-          assertionType: a.type,
-          detail: `step ${i + 1}: lowered timeout to the ${ASYNC_TIMEOUT_CEILING}ms ceiling on ${a.type} (was ${current})`,
-        });
-      }
+      const t = rule2Timeout(a.type, current, actionSeen, hasAction);
+      if (!t) continue;
+      (a as { timeout?: number }).timeout = t.timeout;
+      injections.push({ stepIndex: i, assertionType: a.type, detail: `step ${i + 1}: ${t.detail}` });
     }
   }
 
   return { violations, injections };
+}
+
+/**
+ * RULE 2 for one assertion: the timeout it ships with when the gate changes
+ * it, or null when the recorded value stands. Every timeout-bearing type is
+ * floored, toBeHidden and toHaveCount included. After an action (navigate,
+ * click, fill, press, select_option, set_checked, set_input_files) the floor
+ * is ASYNC_TIMEOUT_FLOOR_AFTER_ACTION (10000 ms); a timeout only lengthens a
+ * failing check, so it costs nothing on a green run, and run 44cb3d's Critic
+ * reworked three assertions sitting at 5000 ms. Before any action the old
+ * behavior stands: a toHaveURL there (the page the scenario opened on) is
+ * left as it is (run 51d535 is why a URL after an action is floored at all:
+ * "[no-timeout]" read as a one-shot check), another type keeps the 5000 ms
+ * floor when the scenario has an action somewhere. The ceiling always
+ * applies. Exported so scripts/rework-shapes.ts judges recorded calls with
+ * this exact rule.
+ */
+export function rule2Timeout(type: Assertion['type'], current: number | undefined, actionSeen: boolean, hasAction: boolean): { timeout: number; detail: string } | null {
+  const floor = actionSeen ? ASYNC_TIMEOUT_FLOOR_AFTER_ACTION : type !== 'toHaveURL' && hasAction ? ASYNC_TIMEOUT_FLOOR : null;
+  if (floor !== null && (!current || current < floor)) {
+    return { timeout: floor, detail: `raised timeout to the ${floor}ms floor on ${type} (was ${current ?? 'unset'})` };
+  }
+  if (current !== undefined && current > ASYNC_TIMEOUT_CEILING) {
+    return { timeout: ASYNC_TIMEOUT_CEILING, detail: `lowered timeout to the ${ASYNC_TIMEOUT_CEILING}ms ceiling on ${type} (was ${current})` };
+  }
+  return null;
 }
 
 /**
@@ -384,7 +412,7 @@ function hasDynamicCorroborationByIntent(scenario: Scenario, excludeIdx: number,
 }
 
 /** A state-changing step: what an assertion that follows one must wait for. */
-function isActionStep(s: TraceStep): boolean {
+export function isActionStep(s: Pick<TraceStep, 'kind'>): boolean {
   return s.kind === 'click' || s.kind === 'fill' || s.kind === 'press' || s.kind === 'navigate'
     || s.kind === 'select_option' || s.kind === 'set_checked' || s.kind === 'set_input_files';
 }
@@ -475,6 +503,7 @@ export function gateRuleLabel(rule: GateViolation['rule']): string {
     case 6: return 'RULE 6 (generated id in selector)';
     case 7: return 'RULE 7 (literal catalogue value)';
     case 8: return 'RULE 8 (price in locator name)';
+    case 9: return 'RULE 9 (counter read as an element count)';
   }
 }
 
@@ -487,6 +516,7 @@ export function gateBrokenReason(rule: GateViolation['rule']): string {
     case 6: return 'selector embeds a generated id';
     case 7: return 'literal catalogue value asserted';
     case 8: return 'locator name carries a price';
+    case 9: return 'counter captured as an element count';
   }
 }
 
@@ -504,6 +534,56 @@ const PRICE_LITERAL_RE = /^\s*(?:[$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?|\d[\d,]*\.\
 
 function targetWords(t: SelectorRecord): string {
   return `${selectorText(t)} ${t.intent}`;
+}
+
+/* ─────────────── Counters: a badge, a quantity, a count ─────────────── */
+
+/**
+ * A counter target: a selector or intent naming a badge, quantity, qty, count
+ * or counter (a data-test segment counts: cart-quantity). Matched on whole
+ * words only, so the text is split on non-letters (and camelCase) first:
+ * "account", "discount", "country" and "counted" are not counters. Run
+ * 44cb3d asserted the literal "1" on [data-test='cart-quantity'] three times
+ * and the Critic reworked all three.
+ */
+export const COUNTER_TARGET_RE = /^(?:badge|badges|quantity|quantities|qty|count|counts|counter|counters)$/;
+
+/** True when the selector or intent names a counter (whole words, see COUNTER_TARGET_RE). */
+export function isCounterTarget(t: SelectorRecord): boolean {
+  return targetWords(t)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .some((w) => COUNTER_TARGET_RE.test(w));
+}
+
+/** The steer every counter literal refusal carries. */
+export const COUNTER_LITERAL_STEER = "capture this counter's TEXT before the action, act, then assert_compare greater, less or equal; a literal count is never asserted";
+
+/** The steer every counter count-capture refusal carries. */
+export const COUNTER_COUNT_CAPTURE_STEER = 'a badge is one element; capture its text (source text), not its element count';
+
+/**
+ * Why a toHaveText / toContainText pins a literal count on a counter, or null.
+ * A bare integer ("1") on a badge depends on what the cart held before the
+ * test; the durable shape is the relation between two reads. A pattern is a
+ * format, never a literal. Other targets are left to the rest of RULE 7.
+ */
+export function counterLiteralReason(a: Assertion): string | null {
+  if (a.type !== 'toHaveText' && a.type !== 'toContainText') return null;
+  if (a.pattern) return null;
+  if (!/^\s*\d+\s*$/.test(a.text)) return null;
+  if (!isCounterTarget(a.target)) return null;
+  return `${JSON.stringify(a.text.trim())} on ${targetWords(a.target).trim()} is a literal count on a counter; ${COUNTER_LITERAL_STEER}`;
+}
+
+/**
+ * RULE 9 reason for a capture, or null: a count capture on a counter target
+ * reads how many badge elements exist, not the number the badge shows.
+ */
+export function counterCountCaptureReason(t: SelectorRecord, source: string): string | null {
+  if (source !== 'count' || !isCounterTarget(t)) return null;
+  return `count capture on ${targetWords(t).trim()} reads how many elements match, not the number shown; ${COUNTER_COUNT_CAPTURE_STEER}`;
 }
 
 /**
@@ -529,6 +609,8 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], kn
     return null;
   }
   if (a.type !== 'toHaveText' && a.type !== 'toContainText' && a.type !== 'toHaveValue') return null;
+  const counter = counterLiteralReason(a);
+  if (counter) return counter;
   // A pattern is a format assertion (a price is rendered, a name-shaped
   // string is present): exactly the durable shape rule 6 asks for.
   if (a.type !== 'toHaveValue' && a.pattern) return null;

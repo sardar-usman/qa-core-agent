@@ -5,8 +5,9 @@
  *
  *   RULE 1: Any { kind: 'wait' } step triggers a BLOCKING violation.
  *           Exception: { kind: 'stability_wait' } is always allowed.
- *   RULE 2: Async assertions that lack a sufficient timeout get 20 000 ms
- *           injected in-place (not a rejection).
+ *   RULE 2: An async assertion after an action that lacks a sufficient
+ *           timeout is raised in-place to the 10000 ms floor (not a
+ *           rejection); the 15000 ms ceiling always applies.
  *   RULE 3: Only FRAGILE CSS-tier locators on animated elements are rejected.
  *           Stable selectors (#id, [data-*], single semantic class) are
  *           allowed even on animated elements.
@@ -15,7 +16,7 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
 import { currencyAmountIn } from '../src/agent/parse-number.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
@@ -116,13 +117,13 @@ check('AD. RULE 2 — one injection for the toHaveText assertion', r2.injections
 check('AE. RULE 2 — injection at step index 2', r2.injections[0]?.stepIndex === 2);
 check('AF. RULE 2 — injected assertionType is toHaveText', r2.injections[0]?.assertionType === 'toHaveText');
 const assertAfterInject = r2Sc.steps[2] as { kind: string; assertion: { timeout?: number } };
-check('AG. RULE 2 — missing timeout raised in-place to the 5000 floor', assertAfterInject.assertion.timeout === 5000);
+check('AG. RULE 2: a missing timeout after an action is raised in-place to the 10000 floor', assertAfterInject.assertion.timeout === 10000);
 
 // A timeout at or above the floor (e.g. the adaptive value measured from the
 // page) is left untouched — the gate never overrides a real measured budget.
 const r2SufficientSteps: TraceStep[] = [
   NAV, CLICK_ROLE,
-  // 12000: above the 5000 floor and under the 15000 ceiling, so RULE 2 leaves it alone.
+  // 12000: above the 10000 floor and under the 15000 ceiling, so RULE 2 leaves it alone.
   { kind: 'assert', name: 'ok', assertion: { type: 'toHaveText', target: { level: 'role', arg: { role: 'status', name: '' }, intent: 's' }, text: 'done', timeout: 12000 } },
 ];
 check('AH. RULE 2: adaptive timeout above the floor and under the ceiling is not re-injected', runGate(makeScenario(r2SufficientSteps)).injections.length === 0);
@@ -135,13 +136,17 @@ const r2LowSteps: TraceStep[] = [
 const r2LowSc = makeScenario(r2LowSteps);
 const r2Low = runGate(r2LowSc);
 check('AI. RULE 2 — below-floor timeout 3000 raised to the floor', r2Low.injections.length === 1);
-check('AJ. RULE 2 — in-place mutation to the 5000 floor confirmed', (r2LowSc.steps[2] as { kind: string; assertion: { timeout?: number } }).assertion.timeout === 5000);
-// A timeout exactly at the floor is sufficient — not re-injected.
+check('AJ. RULE 2: in-place mutation to the 10000 floor confirmed', (r2LowSc.steps[2] as { kind: string; assertion: { timeout?: number } }).assertion.timeout === 10000);
+// A timeout exactly at the floor is sufficient, not re-injected; the old
+// 5000 floor after an action is now raised (run 44cb3d: three reworks).
 const r2AtFloorSteps: TraceStep[] = [
   NAV, CLICK_ROLE,
-  { kind: 'assert', name: 'ok', assertion: { type: 'toBeVisible', target: { level: 'role', arg: { role: 'button', name: 'Done' }, intent: 'done button' }, timeout: 5000 } },
+  { kind: 'assert', name: 'ok', assertion: { type: 'toBeVisible', target: { level: 'role', arg: { role: 'button', name: 'Done' }, intent: 'done button' }, timeout: 10000 } },
 ];
-check('AJ2. RULE 2 — timeout exactly at the 5000 floor is not re-injected', runGate(makeScenario(r2AtFloorSteps)).injections.length === 0);
+check('AJ2. RULE 2: a timeout exactly at the 10000 floor is not re-injected', runGate(makeScenario(r2AtFloorSteps)).injections.length === 0);
+const r2OldFloorSc = makeScenario([NAV, CLICK_ROLE, { kind: 'assert', name: 'ok', assertion: { type: 'toContainText', target: { level: 'css', arg: '[data-test="email-error"]', intent: 'email required error text' }, text: '', pattern: '[Rr]equired|email', timeout: 5000 } }]);
+const r2OldFloor = runGate(r2OldFloorSc);
+check('AJ3. RULE 2: the run 44cb3d shape, 5000 after an action, is raised to 10000 and logged', (r2OldFloorSc.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 10000 && r2OldFloor.injections.some((i) => /raised timeout to the 10000ms floor on toContainText \(was 5000\)/.test(i.detail)), JSON.stringify(r2OldFloor.injections));
 
 check('AK. RULE 2 — no injection when no action steps', runGate(makeScenario([{ kind: 'assert', name: 'v', assertion: { type: 'toBeVisible', target: { level: 'role', arg: { role: 'heading', name: 'Home' }, intent: 'h' } } }])).injections.length === 0);
 // Run 51d535: four reworks read 'assert URL matches regex "/auth/register" [no-timeout]'
@@ -149,19 +154,19 @@ check('AK. RULE 2 — no injection when no action steps', runGate(makeScenario([
 // other type; one recorded before any action stays untouched.
 const urlAfterAction = makeScenario([NAV, CLICK_ROLE, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }]);
 const urlAfterActionResult = runGate(urlAfterAction);
-check('AL. RULE 2: a toHaveURL with no timeout that follows an action is raised to the 5000 floor and logged', urlAfterActionResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was unset/.test(i.detail)) && (urlAfterAction.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(urlAfterActionResult.injections));
+check('AL. RULE 2: a toHaveURL with no timeout that follows an action is raised to the 10000 floor and logged', urlAfterActionResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was unset/.test(i.detail)) && (urlAfterAction.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 10000, JSON.stringify(urlAfterActionResult.injections));
 const urlFirst = makeScenario([{ kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }, NAV, CLICK_ROLE, ASSERT_ROLE]);
 const urlFirstResult = runGate(urlFirst);
 check('AL0. RULE 2: a toHaveURL recorded before any action in the scenario is left without a timeout', !urlFirstResult.injections.some((i) => i.assertionType === 'toHaveURL') && (urlFirst.steps[0] as { assertion: { timeout?: number } }).assertion.timeout === undefined, JSON.stringify(urlFirstResult.injections));
 const urlAfterNav = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home' } }]);
 runGate(urlAfterNav);
-check('AL1. RULE 2: a navigate counts as the action a toHaveURL follows', (urlAfterNav.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 5000);
+check('AL1. RULE 2: a navigate counts as the action a toHaveURL follows', (urlAfterNav.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 10000);
 // A toHaveURL the model gave a timeout gets the same floor and cap as every
 // other timeout-bearing type (run 591732 passed 15000, which was never
 // recorded; now it is, and 3000 or 60000 are corrected like any other).
 const urlLow = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home', timeout: 3000 } }]);
 const urlLowResult = runGate(urlLow);
-check('AL2. RULE 2: a toHaveURL timeout below the floor is raised to 5000 and logged', urlLowResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was 3000/.test(i.detail)) && (urlLow.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(urlLowResult.injections));
+check('AL2. RULE 2: a toHaveURL timeout below the floor is raised to 10000 and logged', urlLowResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was 3000/.test(i.detail)) && (urlLow.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === 10000, JSON.stringify(urlLowResult.injections));
 const urlHigh = makeScenario([NAV, { kind: 'assert', name: 'u', assertion: { type: 'toHaveURL', pattern: '/home', timeout: 60000 } }]);
 const urlHighResult = runGate(urlHigh);
 check('AL3. RULE 2: a toHaveURL timeout above the ceiling is lowered to 15000 and logged', urlHighResult.injections.some((i) => i.assertionType === 'toHaveURL' && /was 60000/.test(i.detail)) && (urlHigh.steps[1] as { assertion: { timeout?: number } }).assertion.timeout === ASYNC_TIMEOUT_CEILING, JSON.stringify(urlHighResult.injections));
@@ -281,7 +286,7 @@ const progressBarScenario: Scenario = makeScenario([
 ]);
 const progressBarResult = runGate(progressBarScenario);
 check('BC. real progressBar scenario (#progressBar toHaveText) — no violations', progressBarResult.violations.length === 0);
-check('BD. real progressBar scenario — RULE 2 raises a missing timeout to the floor', progressBarResult.injections.length === 1 && (progressBarScenario.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000);
+check('BD. real progressBar scenario: RULE 2 raises a missing timeout to the floor', progressBarResult.injections.length === 1 && (progressBarScenario.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 10000);
 
 /* ─── RULE 1 exception: stability_wait ───────────────────────────────────── */
 
@@ -362,11 +367,11 @@ const hiddenAssert: TraceStep = {
 };
 const r2ExtSc = makeScenario([NAV, CLICK_ROLE, countAssert, hiddenAssert]);
 const r2Ext = runGate(r2ExtSc);
-check('BM. RULE 2 — toHaveCount after an action gets the floor timeout',
-  (r2ExtSc.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000 &&
+check('BM. RULE 2: toHaveCount after an action gets the floor timeout',
+  (r2ExtSc.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 10000 &&
   r2Ext.injections.some((i) => i.assertionType === 'toHaveCount'), JSON.stringify(r2Ext.injections));
-check('BN. RULE 2 — toBeHidden after an action gets the floor timeout',
-  (r2ExtSc.steps[3] as { assertion: { timeout?: number } }).assertion.timeout === 5000 &&
+check('BN. RULE 2: toBeHidden after an action gets the floor timeout',
+  (r2ExtSc.steps[3] as { assertion: { timeout?: number } }).assertion.timeout === 10000 &&
   r2Ext.injections.some((i) => i.assertionType === 'toBeHidden'));
 
 /* ─── RULE 5: unused captures are stripped ─────────────────────────────────── */
@@ -434,7 +439,28 @@ check('R2K. a toHaveCount recorded with the model\'s 15000ms keeps it (no inject
 const countLow: TraceStep = { kind: 'assert', name: 'count', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-testid="row"]', intent: 'rows' }, count: 1, timeout: 3000 } };
 const scLow = makeScenario([NAV, CLICK_ROLE, countLow]);
 const rLow = runGate(scLow);
-check('R2L. a toHaveCount recorded below the floor is raised to 5000 and logged', rLow.injections.some((i) => i.assertionType === 'toHaveCount' && /was 3000/.test(i.detail)) && (scLow.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 5000, JSON.stringify(rLow.injections));
+check('R2L. a toHaveCount recorded below the floor is raised to 10000 and logged', rLow.injections.some((i) => i.assertionType === 'toHaveCount' && /was 3000/.test(i.detail)) && (scLow.steps[2] as { assertion: { timeout?: number } }).assertion.timeout === 10000, JSON.stringify(rLow.injections));
+
+/* ─── RULE 2 floor after an action is 10000; before any action, the old behavior ── */
+check('R2F. the floor after an action is 10000 and the ceiling stays 15000', ASYNC_TIMEOUT_FLOOR_AFTER_ACTION === 10000 && ASYNC_TIMEOUT_CEILING === 15000);
+const preTitle: TraceStep = { kind: 'assert', name: 'pre', assertion: { type: 'toHaveText', target: { level: 'testid', arg: 'page-title', intent: 'heading' }, text: 'Hand Tools' } };
+const preUrl: TraceStep = { kind: 'assert', name: 'preUrl', assertion: { type: 'toHaveURL', pattern: '/home' } };
+const preSc = makeScenario([preUrl, preTitle, NAV, CLICK_ROLE, ASSERT_ROLE]);
+runGate(preSc);
+const tOf = (st: TraceStep): number | undefined => (st as { assertion: { timeout?: number } }).assertion.timeout;
+check('R2G. before any action: a toHaveURL stays untouched and another type keeps the 5000 floor; after the actions the same scenario floors at 10000', tOf(preSc.steps[0]!) === undefined && tOf(preSc.steps[1]!) === 5000 && tOf(preSc.steps[4]!) === 10000, JSON.stringify(preSc.steps.map((st) => st.kind === 'assert' ? tOf(st) ?? null : st.kind)));
+const ladder = [[undefined, 10000], [5000, 10000], [9999, 10000], [10000, null], [12000, null], [15000, null], [20000, 15000]] as const;
+check('R2H. rule2Timeout after an action: unset, 5000 and 9999 rise to 10000; 10000 to 15000 stand; 20000 is capped at 15000', ladder.every(([cur, want]) => (rule2Timeout('toBeVisible', cur, true, true)?.timeout ?? null) === want), JSON.stringify(ladder.map(([cur]) => rule2Timeout('toBeVisible', cur, true, true))));
+check('R2I. every action kind sets the 10000 floor for what follows (navigate, click, fill, press, select_option, set_checked, set_input_files)',
+  ([
+    { kind: 'navigate', url: 'https://example.com/' },
+    { kind: 'click', target: { level: 'css', arg: '#a', intent: 'a' } },
+    { kind: 'fill', target: { level: 'css', arg: '#f', intent: 'f' }, value: 'x' },
+    { kind: 'press', target: { level: 'css', arg: '#f', intent: 'f' }, key: 'Enter' },
+    { kind: 'select_option', target: { level: 'css', arg: '#s', intent: 's' }, by: 'value', option: 'o' },
+    { kind: 'set_checked', target: { level: 'css', arg: '#c', intent: 'c' }, checked: true },
+    { kind: 'set_input_files', target: { level: 'css', arg: '#u', intent: 'u' }, files: ['a.txt'] },
+  ] as TraceStep[]).every((act) => { const sc = makeScenario([act, preUrl]); runGate(sc); return tOf(sc.steps[1]!) === 10000; }));
 
 /* ─── RULE 2 ceiling: a timeout above 15000 is lowered and logged ─────────── */
 const bigTimeout: TraceStep = { kind: 'assert', name: 'price', assertion: { type: 'toContainText', target: { level: 'testid', arg: 'no-results', intent: 'no results message' }, text: 'no products found', timeout: 60000 } };
@@ -517,6 +543,39 @@ check('R7A6. a name-shaped pattern on the user menu is allowed',
 check('R7A7. runGate passes known names through to RULE 7',
   runGate(makeScenario([NAV, ...loginFills, { kind: 'assert', name: 'g', assertion: { type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'Admin User' } }]), { knownNames: ['Admin User'] }).violations.some((v) => v.rule === 7 && /SRS names/.test(v.detail)));
 
+/* ─── Counters: a literal count on a badge (RULE 7) and a count capture (RULE 9) ── */
+// Run 44cb3d: "cart badge shows 1" asserted three times and reworked three
+// times; the repair then captured the badge's ELEMENT count, 0 before the add
+// and 1 after, which proves the badge appeared, not that it went up.
+const badge: SelectorRecord = { level: 'css', arg: "[data-test='cart-quantity']", intent: 'cart badge shows 1' };
+const badgeOne: TraceStep = { kind: 'assert', name: 'b1', assertion: { type: 'toHaveText', target: badge, text: '1', timeout: 15000 } };
+const rBadge = runGate(makeScenario([NAV, CLICK_ROLE, badgeOne]));
+check('C9A. the run 44cb3d badge literal "1" is rejected under RULE 7 with the counter steer', rBadge.violations.some((v) => v.rule === 7 && v.detail.includes('"1"') && v.detail.includes(COUNTER_LITERAL_STEER)), JSON.stringify(rBadge.violations));
+check('C9B. the counter words match as whole words or data-test segments, camelCase included',
+  [{ level: 'testid', arg: 'cart-quantity', intent: 'header' }, { level: 'css', arg: '.badge', intent: 'x' }, { level: 'css', arg: '#cartCount', intent: 'x' }, { level: 'css', arg: '#n', intent: 'item counter' }, { level: 'css', arg: '[data-test="qty"]', intent: 'x' }, { level: 'css', arg: '#n', intent: 'cart count in the header' }].every((t) => isCounterTarget(t as SelectorRecord)));
+check('C9C. account, discount, country and counted are not counter targets',
+  ['account', 'discount', 'country', 'counted'].every((w) => !isCounterTarget({ level: 'testid', arg: `${w}-label`, intent: `${w} value` })) && !COUNTER_TARGET_RE.test('account') && COUNTER_TARGET_RE.test('quantity'));
+check('C9D. a literal "1" on account and discount targets is not refused (no RULE 7 at all)',
+  catalogueLiteralReason({ type: 'toHaveText', target: { level: 'testid', arg: 'account-level', intent: 'account level' }, text: '1' }, []) === null
+  && catalogueLiteralReason({ type: 'toHaveText', target: { level: 'css', arg: '[data-test="discount-code"]', intent: 'discount code' }, text: '1' }, []) === null);
+check('C9E. a literal "1" on a non-counter target keeps RULE 7\'s existing behavior: allowed on a heading, rejected on a product card without the counter steer',
+  catalogueLiteralReason({ type: 'toHaveText', target: { level: 'css', arg: 'h1', intent: 'step heading' }, text: '1' }, []) === null
+  && /catalogue data/.test(catalogueLiteralReason({ type: 'toHaveText', target: card(' h5'), text: '1' }, []) ?? '')
+  && !(catalogueLiteralReason({ type: 'toHaveText', target: card(' h5'), text: '1' }, []) ?? '').includes(COUNTER_LITERAL_STEER));
+check('C9F. a pattern on a counter is a format, and a non-integer text on a badge is not a literal count',
+  counterLiteralReason({ type: 'toHaveText', target: badge, text: '', pattern: '^\\d+$' }) === null && counterLiteralReason({ type: 'toContainText', target: badge, text: 'New' }) === null && counterLiteralReason({ type: 'toContainText', target: badge, text: ' 12 ' }) !== null);
+check('C9G. toHaveCount 0 and 1 on a counter keep RULE 7\'s existing behavior (allowed)',
+  !runGate(makeScenario([NAV, CLICK_ROLE, { kind: 'assert', name: 'h', assertion: { type: 'toHaveCount', target: badge, count: 0, timeout: 10000 } }, { kind: 'assert', name: 'o', assertion: { type: 'toHaveCount', target: badge, count: 1, timeout: 10000 } }])).violations.some((v) => v.rule === 7));
+const countCap: TraceStep = { kind: 'capture', varName: 'cap_cartBefore', source: 'count', target: { ...badge, intent: 'cart badge count elements before add' }, intent: 'cart badge count elements before add' };
+const countCmp: TraceStep = { kind: 'assert_compare', varName: 'cap_cartBefore', relation: 'greater', source: 'count', target: countCap.target, intent: 'cart badge', readVar: 'cap_cartBefore_now' };
+const rCountCap = runGate(makeScenario([NAV, countCap, CLICK_ROLE, countCmp]));
+check('C9H. a count capture on the badge is rejected under RULE 9 with the read-its-text steer', rCountCap.violations.some((v) => v.rule === 9 && v.stepIndex === 1 && v.detail.includes(COUNTER_COUNT_CAPTURE_STEER)) && counterCountCaptureReason(countCap.target, 'count') !== null && counterCountCaptureReason(countCap.target, 'text') === null, JSON.stringify(rCountCap.violations));
+const textCap: TraceStep = { ...countCap, source: 'text', intent: 'cart badge before add' } as TraceStep;
+const textCmp: TraceStep = { ...countCmp, source: 'text' } as TraceStep;
+check('C9I. a text capture plus greater on the badge passes the gate', runGate(makeScenario([NAV, textCap, CLICK_ROLE, textCmp])).violations.length === 0);
+check('C9J. a count capture of product rows is not a counter and passes', runGate(makeScenario([NAV, { ...countCap, target: { level: 'css', arg: "tr[data-test^='product-']", intent: 'cart product rows before remove' } } as TraceStep, CLICK_ROLE, { ...countCmp, relation: 'less', target: { level: 'css', arg: "tr[data-test^='product-']", intent: 'cart product rows before remove' } } as TraceStep])).violations.length === 0);
+check('C9K. the shared label and drop reason exist for rule 9', gateRuleLabel(9) === 'RULE 9 (counter read as an element count)' && gateBrokenReason(9) === 'counter captured as an element count');
+
 /* ─── RULE 8: a currency amount in a locator name ────────────────────────── */
 // Run 51d535: the Critic reworked three scenarios whose role or label hint was
 // the card's whole accessible name, badge and price included.
@@ -540,4 +599,4 @@ check('R8J. the clean steps of the same scenario carry no RULE 8 violation', !ru
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: Static validation gate — RULE 1 exception (stability_wait), RULE 2 floor enforcement (5000ms, all timeout-bearing types, a toHaveURL after an action), RULE 4 (intermediate value), RULE 5 (unused captures stripped), RULE 8 (price in a locator name), assert_freeze counting.');
+console.log('OK: Static validation gate: RULE 1 exception (stability_wait), RULE 2 floor enforcement (10000ms after an action, all timeout-bearing types, the 15000ms cap), RULE 4 (intermediate value), RULE 5 (unused captures stripped), RULE 7 counter literals, RULE 8 (price in a locator name), RULE 9 (counter count capture), assert_freeze counting.');

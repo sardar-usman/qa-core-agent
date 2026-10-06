@@ -19,7 +19,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runStep } from '../src/agent/replay.js';
-import { createContext, runTool, observedSettleMs } from '../src/agent/tools.js';
+import { createContext, runTool, observedSettleMs, LIVE_PROBE_TIMEOUT_MS } from '../src/agent/tools.js';
+import { ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, ASYNC_TIMEOUT_CEILING } from '../src/agent/gate.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { chromium } from 'playwright';
 import { transcribe } from '../src/agent/transcriber.js';
@@ -190,6 +191,32 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
     const unspecified = await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'go button', css: '#go' } });
     const second = tctx.current?.steps.filter((st) => st.kind === 'assert')[1];
     check('J9. with no timeout passed the recorded value is the adaptive observation (at least the 5000 floor)', unspecified.ok === true && second?.kind === 'assert' && ((second.assertion as { timeout?: number }).timeout ?? 0) >= 5000, JSON.stringify(second));
+
+    /* ─── K. what ships: the end gate floors both at 10000 after the action ── */
+    // Run 44cb3d: the Critic reworked three assertions recorded at 5000 ms
+    // after an action. The recording keeps the page's own number; the
+    // end_scenario gate floors it at 10000 and caps it at 15000.
+    const high = await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'go button again', css: '#go', timeout: 60000 } });
+    const endK = await runTool(tctx, { name: 'end_scenario', input: {} });
+    const shipped = tctx.scenarios.at(-1);
+    const shippedTimeouts = (shipped?.steps ?? []).filter((st) => st.kind === 'assert').map((st) => (st as { assertion: { timeout?: number } }).assertion.timeout);
+    check('K1. after the action the model\'s 7000 and the adaptive 5000 ship at the 10000 floor, and a 60000 ships at the 15000 cap',
+      high.ok === true && endK.ok === true && ASYNC_TIMEOUT_FLOOR_AFTER_ACTION === 10000 && ASYNC_TIMEOUT_CEILING === 15000 && JSON.stringify(shippedTimeouts) === JSON.stringify([10000, 10000, 15000]), JSON.stringify({ endK, shippedTimeouts }));
+    // Before any action a URL check (the page the scenario opened on) ships untouched.
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'url before any action', category: 'edge' } });
+    const preUrl = await runTool(tctx, { name: 'assert', input: { type: 'toHaveURL', pattern: 'about:blank', intent: 'opening page' } });
+    await runTool(tctx, { name: 'click', input: { intent: 'go button', css: '#go' } });
+    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', intent: 'go button', css: '#go' } });
+    const endPre = await runTool(tctx, { name: 'end_scenario', input: {} });
+    const preSteps = (tctx.scenarios.at(-1)?.steps ?? []).filter((st) => st.kind === 'assert').map((st) => (st as { assertion: { timeout?: number } }).assertion.timeout ?? null);
+    check('K2. a toHaveURL recorded before any action ships with no timeout; the assertion after the click ships at 10000', preUrl.ok === true && endPre.ok === true && JSON.stringify(preSteps) === JSON.stringify([null, 10000]), JSON.stringify({ preUrl, endPre, preSteps }));
+    // The live probe wait is NOT the floor: a count or absence probe still
+    // gives up after LIVE_PROBE_TIMEOUT_MS (10 s), whatever the model asked.
+    await runTool(tctx, { name: 'begin_scenario', input: { name: 'live probe cap', category: 'edge' } });
+    const t0 = Date.now();
+    const neverHidden = await runTool(tctx, { name: 'assert', input: { type: 'toBeHidden', intent: 'go button', css: '#go', timeout: 30000 } });
+    const tookMs = Date.now() - t0;
+    check(`K3. the live probe is unchanged: a toBeHidden on a visible element with a 30 s model timeout fails in about ${LIVE_PROBE_TIMEOUT_MS} ms (took ${tookMs} ms)`, LIVE_PROBE_TIMEOUT_MS === 10000 && neverHidden.ok === false && tookMs >= LIVE_PROBE_TIMEOUT_MS - 500 && tookMs < LIVE_PROBE_TIMEOUT_MS + 6000, neverHidden.error);
   } finally {
     await browser.close();
   }
@@ -197,4 +224,4 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read.');
+console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read; recorded assertions ship floored at 10000 ms after an action and untouched before one, capped at 15000, while the live probe still gives up at 10 s.');
