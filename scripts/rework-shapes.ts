@@ -10,20 +10,26 @@
  *   Task 3  RULE 2: an assertion recorded after an action ships at the
  *           10000 ms floor.
  *
+ * A second section per run lists, for every scenario the first Critic pass
+ * marked pass, each recorded call Task 1 would now refuse or Task 2 would now
+ * rewrite (Task 3 floors are not listed: they only lengthen a timeout), or
+ * "none". That is the collateral check: a new rule must not refuse or
+ * rewrite a call in a scenario the Critic already accepted.
+ *
  * Read only, $0: it reads events.jsonl of each run directory and writes
  * nothing anywhere. Every judgment goes through the exported function the
  * tool or the gate uses (ruleSevenShape, hintRecord, counterLiteralReason,
- * counterCountCaptureReason, fillGenerateKind, plannedNameFor, rule2Timeout,
- * adaptiveTimeout), never a copy.
+ * counterCountCaptureReason, fillGenerateKind, creationEmailUnmatchedLine,
+ * plannedNameFor, rule2Timeout, adaptiveTimeout), never a copy.
  *
  * Usage: npx tsx scripts/rework-shapes.ts [run-dir ...]
  * With no argument it reads runs 51d535 and 44cb3d. A missing run directory,
- * events.jsonl, first critic_done event or rework verdict exits non-zero and
- * names the path it looked for; it never prints an empty mapping.
+ * events.jsonl, first critic_done event, rework verdict or pass verdict exits
+ * non-zero and names the path it looked for; it never prints an empty mapping.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ruleSevenShape, hintRecord, fillGenerateKind, plannedNameFor, deriveIntent, type AssertionInput, type ToolContext } from '../src/agent/tools.js';
+import { ruleSevenShape, hintRecord, fillGenerateKind, creationEmailUnmatchedLine, plannedNameFor, deriveIntent, type AssertionInput, type ToolContext } from '../src/agent/tools.js';
 import { counterLiteralReason, counterCountCaptureReason, rule2Timeout, isActionStep, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION } from '../src/agent/gate.js';
 import { adaptiveTimeout } from '../src/agent/adaptive-timeout.js';
 import { assignVerdicts, type ScenarioVerdict } from '../src/agent/critic.js';
@@ -141,8 +147,14 @@ function recordedTimeout(c: Call, pageMsBefore: number): { value: number | undef
   return { value: adaptiveTimeout(observed), source: `adaptive, ${observed} ms page time since the action read from events.jsonl` };
 }
 
-function scenarioHits(seg: Segment, planNames: string[], ctxForPlan: ToolContext): Hit[] {
+/**
+ * What the new rules do to one recording: the hits, plus the console line the
+ * fill tool logs once per scenario when a plan exists and the recorded name
+ * claims no planned name (the email then stays literal).
+ */
+function scenarioHits(seg: Segment, planNames: string[], ctxForPlan: ToolContext): { hits: Hit[]; notes: string[] } {
   const hits: Hit[] = [];
+  const notes: string[] = [];
   const recorded = seg.calls.filter((c) => c.ok);
   const hasAction = recorded.some((c) => isActionStep({ kind: c.name as TraceStep['kind'] }));
   const canonical = planNames.length ? plannedNameFor(ctxForPlan, seg.name) : null;
@@ -175,7 +187,8 @@ function scenarioHits(seg: Segment, planNames: string[], ctxForPlan: ToolContext
     // Task 2: a well-formed literal email in a negative or edge creation flow.
     if (c.name === 'fill' && seg.category !== 'happy') {
       const value = String(c.input.value ?? '');
-      const { generate } = fillGenerateKind(c.input, deriveIntent(c.input as { intent?: string }), { name: seg.name, category: seg.category as never, feature: seg.feature }, canonical, pageUrl, value);
+      const { generate, unmatched } = fillGenerateKind(c.input, deriveIntent(c.input as { intent?: string }), { name: seg.name, category: seg.category as never, feature: seg.feature }, canonical, planNames.length > 0, pageUrl, value);
+      if (unmatched && notes.length === 0) notes.push(`line ${c.line}: ${creationEmailUnmatchedLine(seg.name)}`);
       if (generate === 'email') hits.push({ task: 2, line: c.line, text: `fill ${hintText(c.input)} value ${JSON.stringify(value)}: rewritten to a generated email (generate "email"), judged on the canonical name ${JSON.stringify(canonical ?? seg.name)}` });
     }
 
@@ -195,7 +208,7 @@ function scenarioHits(seg: Segment, planNames: string[], ctxForPlan: ToolContext
     pageMs = isAction ? c.durationMs : pageMs + c.durationMs;
     if (isAction) actionSeen = true;
   }
-  return hits;
+  return { hits, notes };
 }
 
 const TASK_LABEL: Record<Hit['task'], string> = {
@@ -217,12 +230,15 @@ for (const dir of runDirs) {
   const verdicts = (critic.e.verdicts ?? []) as ScenarioVerdict[];
   const rework = verdicts.filter((v) => v.verdict === 'rework');
   if (rework.length === 0) die(`the first critic_done event (line ${critic.line} of ${eventsPath}) holds no rework verdict; nothing to map`);
+  const passed = verdicts.filter((v) => v.verdict === 'pass');
+  if (passed.length === 0) die(`the first critic_done event (line ${critic.line} of ${eventsPath}) holds no pass verdict; nothing to check for collateral`);
   const plan = events.find((x) => x.e.type === 'plan_done');
   const planNames = plan ? ((plan.e.scenarios ?? []) as Array<{ name: string }>).map((s) => s.name) : [];
   const ctxForPlan = { plannedNames: planNames } as unknown as ToolContext;
 
   const segments = segmentsOf(pairCalls(events, critic.line));
-  const byVerdict = assignVerdicts(segments.map((s) => s.name), rework);
+  // One assignment over every verdict, so a pass and a rework never claim the same recording.
+  const byVerdict = assignVerdicts(segments.map((s) => s.name), verdicts);
   const runId = path.basename(abs).split('-').at(-1);
   console.log(`Run ${runId}: ${path.relative(root, eventsPath)}`);
   console.log(`First Critic pass: line ${critic.line}, ${rework.length} rework verdict(s) of ${verdicts.length}.${plan ? '' : ' No plan_done event: canonical names fall back to the recorded names.'}`);
@@ -236,7 +252,8 @@ for (const dir of runDirs) {
       return;
     }
     console.log(`${i + 1}. "${v.scenario}" [${seg.category}] (recording lines ${seg.beginLine} to ${seg.endLine})`);
-    const hits = scenarioHits(seg, planNames, ctxForPlan);
+    const { hits, notes } = scenarioHits(seg, planNames, ctxForPlan);
+    for (const n of notes) console.log(`   note, ${n}`);
     if (hits.length === 0) {
       console.log('   no new rule applies');
       tally.none++;
@@ -249,5 +266,25 @@ for (const dir of runDirs) {
     }
   });
   console.log(`Summary ${runId}: Task 1 applies to ${tally[1]} scenario(s), Task 2 to ${tally[2]}, Task 3 to ${tally[3]}; no new rule applies to ${tally.none}.`);
+
+  // Collateral: what Task 1 refuses or Task 2 rewrites in a scenario the
+  // first Critic pass accepted. Task 3 floors only lengthen a timeout.
+  console.log(`Passed scenarios: new refusals or rewrites (${passed.length} pass verdict(s))`);
+  let collateral = 0;
+  passed.forEach((v, i) => {
+    const segName = [...byVerdict.entries()].find(([, verdict]) => verdict === v)?.[0];
+    const seg = segments.find((s) => s.name === segName);
+    if (!seg) {
+      console.log(`${i + 1}. "${v.scenario}": no accepted recording before line ${critic.line}`);
+      return;
+    }
+    const { hits, notes } = scenarioHits(seg, planNames, ctxForPlan);
+    const mine = hits.filter((h) => h.task === 1 || h.task === 2);
+    console.log(`${i + 1}. "${v.scenario}" [${seg.category}] (recording lines ${seg.beginLine} to ${seg.endLine}): ${mine.length ? `${mine.length} call(s)` : 'none'}`);
+    for (const n of notes) console.log(`   note, ${n}`);
+    for (const h of mine) console.log(`   ${TASK_LABEL[h.task]}, line ${h.line}: ${h.text}`);
+    if (mine.length) collateral++;
+  });
+  console.log(`Collateral ${runId}: ${collateral ? `${collateral} passed scenario(s) with a new refusal or rewrite` : 'none'}.`);
   console.log('');
 }

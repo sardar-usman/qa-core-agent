@@ -84,6 +84,11 @@ const DUPLICATE_EMAIL_RE = /duplicate|\bexisting\b|already[\s_-]+(?:registered|i
 // A login flow: the credential rules (invariants 43 and 56) own its fields.
 const LOGIN_NAME_RE = /\blog(?:s|ged|ging)?[\s_-]?in\b|\bsign(?:s|ed|ing)?[\s_-]?in\b/i;
 
+/** True when the field hints name an email field (the same pattern the creation-email rule uses). */
+export function isEmailField(fieldHint: string): boolean {
+  return EMAIL_FIELD_RE.test(fieldHint);
+}
+
 /**
  * A well-formed email: one @, a non-empty local part, a dotted domain, no
  * spaces. The same check keeps the two negatives that test the email itself
@@ -99,8 +104,9 @@ export function isWellFormedEmail(value: string): boolean {
  *
  *  - Happy-path creation flows generate email, username and password.
  *    Negative and edge creation flows generate only a well-formed email, and
- *    only when the canonical scenario name does not name a duplicate or
- *    existing email (nonHappyCreationEmail); an empty or malformed email, a
+ *    only when the canonical scenario name neither mentions the email nor
+ *    names a duplicate or existing one (nonHappyCreationEmail); an empty or
+ *    malformed email, a
  *    username and a password stay literal, since those are what such
  *    scenarios test.
  *  - The flow has to look like a creation/sign-up flow.
@@ -125,13 +131,17 @@ export function detectUniqueField(h: UniqueFieldHints): GenerateKind | undefined
  * registration negatives typed unique2+qa@example.com and unique3+qa@example.com,
  * and the Critic reworked both, because the second run hits a duplicate email
  * and fails for a reason that is not the one the test names. Judged on the
- * plan's canonical scenario name only. Kept literal: an empty or malformed
- * value (the email IS the field under test), a scenario that names a
- * duplicate, existing or already-registered email, and a login flow.
+ * plan's canonical scenario name only. Kept literal: a scenario whose name
+ * mentions the email (the email IS the field under test: "an invalid email
+ * format" filling a@b.c), an empty or malformed value, a scenario that names
+ * a duplicate, existing or already-registered email or account (kept beside
+ * the email check: "an already registered account" names no email), and a
+ * login flow.
  */
 function nonHappyCreationEmail(h: UniqueFieldHints): GenerateKind | undefined {
   const name = h.canonicalName ?? '';
   if (!CREATION_FLOW_RE.test(name)) return undefined;
+  if (EMAIL_FIELD_RE.test(name)) return undefined;
   if (DUPLICATE_EMAIL_RE.test(name) || LOGIN_NAME_RE.test(name)) return undefined;
   if (!EMAIL_FIELD_RE.test(h.fieldHint)) return undefined;
   if (!isWellFormedEmail(h.value ?? '')) return undefined;

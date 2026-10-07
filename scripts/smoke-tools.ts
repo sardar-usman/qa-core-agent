@@ -189,6 +189,28 @@ check('5i. a literal "1" on targets named account, discount and a step number is
 const endNotCounters = await runTool(toolCtx, { name: 'end_scenario', input: {} });
 check('5j. the end gate accepts them too', endNotCounters.ok && toolCtx.brokenByGate.length === 0, endNotCounters.error);
 
+// RULE 9 reads the selector, never the intent: a list count whose intent says
+// "count" is the working filter shape (capture count, act, compare less).
+const listHtml = `<!doctype html><html><head><title>Tools</title></head><body>
+<p>Cart <span id="n">3</span></p>
+<button type="button" data-test="eco-filter" onclick="document.querySelectorAll('[data-test=product-name]')[0].remove()">Eco only</button>
+<ul><li data-test="product-name">Hammer</li><li data-test="product-name">Saw</li><li data-test="product-name">Pliers</li></ul>
+</body></html>`;
+await page.setContent(listHtml, { waitUntil: 'load' });
+const listBegin = await runTool(toolCtx, { name: 'begin_scenario', input: { name: 'the eco filter narrowed the product list', category: 'happy', feature: 'catalogue' } });
+const listBefore = stepsRecorded();
+const productCount = await runTool(toolCtx, { name: 'capture', input: { name: 'productsBefore', source: 'count', css: "[data-test='product-name']", intent: 'product count before filter' } });
+check('5m. a count capture with intent "product count before filter" on css [data-test=\'product-name\'] is accepted and records the list count', listBegin.ok && productCount.ok && (productCount.data as { value: string }).value === '3' && stepsRecorded() === listBefore + 1, productCount.error ?? listBegin.error);
+const cartCountN = await runTool(toolCtx, { name: 'capture', input: { name: 'nBefore', source: 'count', css: '#n', intent: 'cart count' } });
+check('5n. a count capture with intent "cart count" on css "#n" is accepted: the selector names no counter', cartCountN.ok && (cartCountN.data as { value: string }).value === '1' && stepsRecorded() === listBefore + 2, cartCountN.error);
+const stillRefused = await runTool(toolCtx, { name: 'capture', input: { name: 'badgeBefore', source: 'count', css: "[data-test='cart-quantity']", intent: 'products in the list' } });
+check('5o. a count capture on [data-test=\'cart-quantity\'] is still refused under RULE 9, whatever its intent says', !stillRefused.ok && /^RULE 9 \(counter read as an element count\) rejected this capture: count capture on \[data-test='cart-quantity'\] reads/.test(stillRefused.error ?? '') && stepsRecorded() === listBefore + 2, stillRefused.error);
+const filterClick = await runTool(toolCtx, { name: 'click', input: { testid: 'eco-filter', intent: 'eco filter button' } });
+const listLess = await runTool(toolCtx, { name: 'assert_compare', input: { name: 'productsBefore', relation: 'less', intent: 'product count after filter' } });
+check('5p. the filter click and the compare less on the list count pass', filterClick.ok && listLess.ok, filterClick.error ?? listLess.error);
+const listEnd = await runTool(toolCtx, { name: 'end_scenario', input: {} });
+check('5q. end_scenario accepts the list-count scenario: no RULE 9 at the end gate', listEnd.ok && toolCtx.brokenByGate.length === 0, listEnd.error);
+
 await browser.close();
 
 // The emitted spec reads the badge text, acts, and polls the relation through
@@ -220,4 +242,4 @@ fs.rmSync(emitRoot, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: get_dom surfaces form state and names the test-id attribute first, count and absence probes fail fast with the recorded timeout unchanged, RULE 3, 6 and 8 are refused at record time with nothing recorded, and a counter is read by its text (a literal count and a count capture refused, a text capture plus greater recorded, replayed and emitted through parseNumber in TS and JS).');
+console.log('OK: get_dom surfaces form state and names the test-id attribute first, count and absence probes fail fast with the recorded timeout unchanged, RULE 3, 6 and 8 are refused at record time with nothing recorded, and a counter is read by its text (a literal count and a count capture refused, a text capture plus greater recorded, replayed and emitted through parseNumber in TS and JS; RULE 9 judges the selector, so a list count whose intent says count is recorded).');

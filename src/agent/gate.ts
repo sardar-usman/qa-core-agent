@@ -53,6 +53,9 @@ import { currencyAmountIn } from './parse-number.js';
  *           capture with source "count" on a counter target counts badge
  *           elements (0 before the add, 1 after) and proves the badge
  *           appeared, not that the number on it went up (run 44cb3d's repair).
+ *           Judged on the locator only (isCounterSelector), never the intent:
+ *           "product count before filter" on a product-name css is a list
+ *           count, the working shape for a filter or search scenario.
  *   RULE 8: No currency amount in a locator name. A role name, label or text
  *           hint that carries a price ("Bolt Cutters ABCDE$48.41", the card's
  *           accessible name concatenating badge and price, run 51d535) pins
@@ -548,13 +551,30 @@ function targetWords(t: SelectorRecord): string {
  */
 export const COUNTER_TARGET_RE = /^(?:badge|badges|quantity|quantities|qty|count|counts|counter|counters)$/;
 
-/** True when the selector or intent names a counter (whole words, see COUNTER_TARGET_RE). */
-export function isCounterTarget(t: SelectorRecord): boolean {
-  return targetWords(t)
+/** True when the text names a counter as a whole word (camelCase split first). */
+function namesCounter(text: string): boolean {
+  return text
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z]+/)
     .some((w) => COUNTER_TARGET_RE.test(w));
+}
+
+/** True when the selector or intent names a counter (whole words, see COUNTER_TARGET_RE). */
+export function isCounterTarget(t: SelectorRecord): boolean {
+  return namesCounter(targetWords(t));
+}
+
+/**
+ * True when the LOCATOR alone names a counter: the css, the testid (data-test
+ * segments included), a label or text argument, or a role and its name. The
+ * intent is never read. RULE 9 decides on this, because a model writes
+ * "product count" or "count of results" when it counts a list, and capture
+ * count, act, assert_compare less is the working shape for a filter or a
+ * search scenario.
+ */
+export function isCounterSelector(t: SelectorRecord): boolean {
+  return namesCounter(selectorText(t));
 }
 
 /** The steer every counter literal refusal carries. */
@@ -578,12 +598,13 @@ export function counterLiteralReason(a: Assertion): string | null {
 }
 
 /**
- * RULE 9 reason for a capture, or null: a count capture on a counter target
- * reads how many badge elements exist, not the number the badge shows.
+ * RULE 9 reason for a capture, or null: a count capture on a counter selector
+ * reads how many badge elements exist, not the number the badge shows. Judged
+ * on the locator only (isCounterSelector), never the intent.
  */
 export function counterCountCaptureReason(t: SelectorRecord, source: string): string | null {
-  if (source !== 'count' || !isCounterTarget(t)) return null;
-  return `count capture on ${targetWords(t).trim()} reads how many elements match, not the number shown; ${COUNTER_COUNT_CAPTURE_STEER}`;
+  if (source !== 'count' || !isCounterSelector(t)) return null;
+  return `count capture on ${selectorText(t).trim()} reads how many elements match, not the number shown; ${COUNTER_COUNT_CAPTURE_STEER}`;
 }
 
 /**

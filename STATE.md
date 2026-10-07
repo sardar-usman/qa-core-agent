@@ -217,8 +217,16 @@ using the qa-core-heal evaluation report as the template.
   10000 ms; doctrine rules 9 (success signals from the recordings) and 10 (a
   timeout at the floor is no rework reason). Locked by smoke-gate,
   smoke-tools, smoke-unique-data, smoke-compare-poll, smoke-critic-parse and
-  smoke-emitted-run; scripts/rework-shapes.ts maps runs 5 and 6. The rework
-  rate itself is unmeasured until the next live run.
+  smoke-emitted-run; scripts/rework-shapes.ts maps runs 5 and 6. The honest
+  count: run 6 had 10 first-pass reworks in 10 scenarios; the new rules
+  apply to 9; the eco-filter rework (it asked for an extra assertion) is not
+  addressed by #42. Second commit (Oct 7): RULE 9 judges the selector only
+  (a list count whose intent says "count" is the working filter shape); with
+  a plan in the run, a recorded name that claims no planned name keeps the
+  email literal and logs one line; a negative that names the email keeps it
+  literal; rework-shapes lists the passed scenarios the new rules would
+  refuse or rewrite (none in runs 5 and 6). The rework rate itself is
+  unmeasured until the next live run.
 - D4 (run 6): FIXED (PR #36, Oct 2): a repair stopped by its budget is
   filed as a critic drop with the first-pass reasons.
   docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-repair-pass and

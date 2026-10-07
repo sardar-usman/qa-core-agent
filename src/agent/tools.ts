@@ -7,7 +7,7 @@ import { recoverResolve, type ResolveInput } from './selector-recovery.js';
 export { recoverResolve, type ResolveInput };
 import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation, GenerateKind } from './trace.js';
 import { baseLocator } from './replay.js';
-import { detectUniqueField, generateUnique } from './unique-data.js';
+import { detectUniqueField, generateUnique, isEmailField } from './unique-data.js';
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage } from './parse-number.js';
@@ -169,6 +169,14 @@ export interface ToolContext {
   knownAccounts: Set<string>;
   /** scenarioNameKey of every planned scenario whose SRS rule names a locked account: exempt from the rewrite. */
   lockoutScenarioKeys: Set<string>;
+  /**
+   * Console lines a tool wants shown, in order. The runtime emits each one as
+   * a message event after the tool call that added it (the same way it emits
+   * heals), so it reaches the console and events.jsonl.
+   */
+  notes: string[];
+  /** Scenario names that already logged the creation-email no-plan-match line. */
+  _creationEmailNoted: Set<string>;
   /** Gate: RULE 2 timeout injections applied to accepted scenarios. */
   _gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }>;
   /**
@@ -267,6 +275,8 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     _costCloseout: false,
     knownAccounts: new Set(),
     lockoutScenarioKeys: new Set(),
+    notes: [],
+    _creationEmailNoted: new Set(),
     _gateInjectionLog: [],
     captures: new Map(),
     _assertFailures: new Map(),
@@ -356,8 +366,12 @@ export function hintRecord(input: Record<string, unknown>, fallback: 'element' |
  * it was judged on (enforceFakeCredential reads the same two). A happy
  * creation flow is spotted from the feature, the scenario name and the page
  * URL (invariant 14); a negative or edge one from the plan's canonical name
- * alone (`canonicalName`, the planned name the recorded one matches; the
- * recorded name only when the run has no plan). Exported so
+ * alone (`canonicalName`, the planned name the recorded one matches). The
+ * recorded name stands in ONLY when the run has no plan (`hasPlan` false:
+ * smokes, single-scenario contexts). When a plan exists and the recorded name
+ * claims no planned name there is no canonical name: the email stays literal
+ * and `unmatched` is true for a non-happy email fill, so the caller logs it
+ * (standing rule 1: the model's text is never the fallback). Exported so
  * scripts/rework-shapes.ts judges a recorded fill call exactly as this tool did.
  */
 export function fillGenerateKind(
@@ -365,22 +379,31 @@ export function fillGenerateKind(
   recordIntent: string,
   scenario: Pick<Scenario, 'name' | 'category' | 'feature'> | null,
   canonicalName: string | null,
+  hasPlan: boolean,
   pageUrl: string,
   value: string,
-): { generate: GenerateKind | undefined; fieldHint: string; flowHint: string } {
+): { generate: GenerateKind | undefined; fieldHint: string; flowHint: string; unmatched: boolean } {
   const ci = input as { intent?: unknown; testid?: unknown; label?: unknown; role?: unknown; css?: unknown; placeholder?: unknown };
   const fieldHint = [ci.intent, ci.testid, ci.label, ci.role, ci.css, ci.placeholder, recordIntent]
     .filter((x) => typeof x === 'string').join(' ');
   const flowHint = [scenario?.feature, scenario?.name, pageUrl]
     .filter((x): x is string => typeof x === 'string' && x.length > 0).join(' ');
+  const canonical = canonicalName ?? (hasPlan ? undefined : scenario?.name);
   const generate = detectUniqueField({
     category: scenario?.category,
     flowHint,
     fieldHint,
-    canonicalName: canonicalName ?? scenario?.name,
+    canonicalName: canonical,
     value,
   });
-  return { generate, fieldHint, flowHint };
+  const nonHappy = !!scenario?.category && scenario.category !== 'happy';
+  const unmatched = hasPlan && canonicalName === null && nonHappy && isEmailField(fieldHint);
+  return { generate, fieldHint, flowHint, unmatched };
+}
+
+/** The line logged once per scenario when a plan exists and the recorded name claims no planned name. */
+export function creationEmailUnmatchedLine(recordedName: string): string {
+  return `creation-email rule: recorded name ${JSON.stringify(recordedName)} matched no planned name; email kept literal`;
 }
 
 /** Refuse an action tool call up front when its locator breaks RULE 6 or RULE 8. */
@@ -1451,7 +1474,12 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         // A negative or edge creation flow generates a well-formed email too
         // (the email is not the field under test), judged on the plan's
         // canonical name, never the model's echo of it.
-        const { generate, fieldHint, flowHint } = fillGenerateKind(call.input, record.intent, ctx.current, ctx.current ? plannedNameFor(ctx, ctx.current.name) : null, safeUrl(ctx.page), value);
+        const hasPlan = ctx.plannedNames.length > 0;
+        const { generate, fieldHint, flowHint, unmatched } = fillGenerateKind(call.input, record.intent, ctx.current, ctx.current && hasPlan ? plannedNameFor(ctx, ctx.current.name) : null, hasPlan, safeUrl(ctx.page), value);
+        if (unmatched && ctx.current && !ctx._creationEmailNoted.has(ctx.current.name)) {
+          ctx._creationEmailNoted.add(ctx.current.name);
+          ctx.notes.push(creationEmailUnmatchedLine(ctx.current.name));
+        }
         const filledValue = generate ? generateUnique(generate) : value;
         // Wrong-credential negatives must not spend a real account's lockout
         // budget: on the password fill, if the identifier typed earlier in this

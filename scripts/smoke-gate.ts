@@ -16,7 +16,7 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, isCounterSelector, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
 import { currencyAmountIn } from '../src/agent/parse-number.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
@@ -574,6 +574,20 @@ const textCap: TraceStep = { ...countCap, source: 'text', intent: 'cart badge be
 const textCmp: TraceStep = { ...countCmp, source: 'text' } as TraceStep;
 check('C9I. a text capture plus greater on the badge passes the gate', runGate(makeScenario([NAV, textCap, CLICK_ROLE, textCmp])).violations.length === 0);
 check('C9J. a count capture of product rows is not a counter and passes', runGate(makeScenario([NAV, { ...countCap, target: { level: 'css', arg: "tr[data-test^='product-']", intent: 'cart product rows before remove' } } as TraceStep, CLICK_ROLE, { ...countCmp, relation: 'less', target: { level: 'css', arg: "tr[data-test^='product-']", intent: 'cart product rows before remove' } } as TraceStep])).violations.length === 0);
+// RULE 9 judges the locator, never the intent: a model writes "product count"
+// when it counts a list, and capture count, act, compare less is the working
+// shape for a filter or a search scenario.
+const productCountCap: TraceStep = { kind: 'capture', varName: 'cap_before', source: 'count', target: { level: 'css', arg: "[data-test='product-name']", intent: 'product count before filter' }, intent: 'product count before filter' };
+const productCountCmp: TraceStep = { kind: 'assert_compare', varName: 'cap_before', relation: 'less', source: 'count', target: productCountCap.target, intent: 'product count after filter', readVar: 'cap_before_now' };
+check('C9L. a count capture with intent "product count before filter" on a product-name css is accepted: RULE 9 reads the selector, not the intent',
+  counterCountCaptureReason(productCountCap.target, 'count') === null && !runGate(makeScenario([NAV, productCountCap, CLICK_ROLE, productCountCmp])).violations.some((v) => v.rule === 9));
+const cartCountN: SelectorRecord = { level: 'css', arg: '#n', intent: 'cart count' };
+check('C9M. a count capture with intent "cart count" on css "#n" is accepted (the selector names no counter), while isCounterTarget still reads the intent for RULE 7',
+  counterCountCaptureReason(cartCountN, 'count') === null && !isCounterSelector(cartCountN) && isCounterTarget(cartCountN)
+  && counterLiteralReason({ type: 'toHaveText', target: cartCountN, text: '3' }) !== null);
+check('C9N. isCounterSelector reads the css, the testid, a data-test segment and a role\'s name, camelCase included, and never the intent',
+  [{ level: 'css', arg: "[data-test='cart-quantity']", intent: 'x' }, { level: 'testid', arg: 'cart-quantity', intent: 'x' }, { level: 'css', arg: '#cartCount', intent: 'x' }, { level: 'role', arg: { role: 'status', name: 'Cart badge' }, intent: 'x' }].every((t) => isCounterSelector(t as SelectorRecord))
+  && [{ level: 'css', arg: '#n', intent: 'item counter' }, { level: 'testid', arg: 'account-label', intent: 'badge count' }, { level: 'role', arg: { role: 'list' }, intent: 'result count' }].every((t) => !isCounterSelector(t as SelectorRecord)));
 check('C9K. the shared label and drop reason exist for rule 9', gateRuleLabel(9) === 'RULE 9 (counter read as an element count)' && gateBrokenReason(9) === 'counter captured as an element count');
 
 /* ─── RULE 8: a currency amount in a locator name ────────────────────────── */
