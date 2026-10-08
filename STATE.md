@@ -73,6 +73,44 @@ QA_CORE_EXPLORER_MODEL / QA_CORE_CRITIC_MODEL.
 - PR F design pass: AFTER the audit report. Brief first at
   docs/dashboard-design.md, then page by page, numbers untouched.
 
+## Engine hardening phase (from Oct 6)
+
+Goal: fix the audit's open items (docs/audit-2026-09.md section 10) in
+ranked order, $0 per PR, then ONE live confirmation run graded against a
+bar written here first. Order, exit bar and budget CONFIRMED by the owner
+Oct 6.
+1. engine/rework-rate: DONE, PR #42 merged Oct 8.
+2. Dropped traces kept on the report, redacted, under the plan's canonical
+   name (audit items 5 and 8): DONE, PR #43 merged Oct 8.
+3. Test credentials (audit item 1, D7; decided Oct 8): the client supplies
+   a dedicated test account through the host .env; self-registration is
+   not the login source. Brief first (docs/design/test-credentials.md),
+   then PR.
+4. Action-first discovery rung for state-dependent pages (item 3).
+5. Console honesty: D8 plus the critique seam reaching the repair block
+   (item 9).
+6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
+   orientation load waste (item 11).
+7. Model pricing honesty ($0): one price table keyed by model id; every
+   stage (Planner, Explorer, Critic, Stabilizer, requirements map, page
+   filter, feature parser) priced by the model it actually called; an
+   unknown model id refuses to start. Found Oct 8: priceFor falls back to
+   Opus 4.7 prices, the Critic and Planner prices are fixed constants, the
+   Stabilizer prices Opus at 15/75.
+8. Live confirmation run (Toolshop, same SRS, $6 ceiling, about $6) on the
+   current models (Haiku 4.5, Opus 4.7, Sonnet 4.6), logged in with a
+   dedicated account the owner registered by hand (values in .env only),
+   graded against the bar below.
+Exit bar (written Oct 6, before the run): rework rate under 35 percent on
+the first Critic pass; shipped and rules covered reported, not targeted;
+emitted-spec check green for every shipped test; zero shipped tests whose
+name claims more than the recording proves; the happy login survives
+replay.
+Live budget: one Toolshop run at the $6 ceiling, plus a saucedemo
+regression run (about $0.60) because item 3 touches login.
+Proposed, pending the owner: one A/B Toolshop run after item 8 with only
+the Explorer on Opus 5.5, Critic held fixed (about $6).
+
 ## Audit fix PRs, all MERGED
 
 - #18 cache history (Sept 17).
@@ -249,11 +287,11 @@ using the qa-core-heal evaluation report as the template.
   a wrong no-discovered-page warning, the repair decision line cut by the
   240-character cap); documented, not yet fixed, after the report.
   docs/audit/run-44cb3d-diagnosis.md section 3, D8.
-- Own account (run 5 finding 8): the happy registration scenario's generated
-  account becomes the run's login and the duplicate-email seed, so no run
-  depends on the shared demo account. Run 5's happy login failed with no
-  visible message while a preflight passed before and after. Brief first,
-  then PR, after the report.
+- Test credentials: superseded Oct 8 by phase item 3 (client-supplied
+  account through .env).
+- Run Detail keys rows by exact name; a replay or stability drop whose
+  recorded name differs from the plan name shows as two rows (found in the
+  #43 review).
 - Design item, state-dependent page: on practicesoftwaretesting.com the cart
   link renders only after an add-to-cart, so no crawl of a fresh session
   finds it and the cart rules report not-reachable (run 5 reached them by
