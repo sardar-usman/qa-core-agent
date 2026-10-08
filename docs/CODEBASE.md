@@ -102,6 +102,7 @@ This directory is mixed: the eval harness is production code, the smoke tests ar
 
 | File | Purpose |
 |---|---|
+| `rework-shapes.ts` | Read-only audit evidence, $0. Reads `events.jsonl` of runs 51d535 and 44cb3d (or the run directories passed as arguments) and, for every scenario the first Critic pass reworked, prints which record-time rule (the counter literal and count capture, the generated email in a creation flow, the 10000 ms floor after an action) would have refused, rewritten or floored a recorded call, with its line number, or "no new rule applies". Judges through the same exported functions the tools and the gate use. Exits non-zero naming the path when a run folder, its events or its first `critic_done` is missing. |
 | `eval.ts` | The `npm run eval` harness. Runs `/explore` against the three baseline target sites (saucedemo, the-internet, practice-todo), executes the generated specs through Playwright, and writes `eval-results/<timestamp>/{results.json,summary.md}` with per-site metrics including the v2 columns (Replay pass/fail, Stable/Flaky/Broken, flake_rate). |
 
 ### Smoke tests (regression protection)

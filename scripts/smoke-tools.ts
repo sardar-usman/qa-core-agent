@@ -16,11 +16,27 @@
  *      refused when a capture, assert, assert_compare or action is called,
  *      with the end_scenario gate's message, and nothing is recorded; a
  *      positional selector inside a table and a price-free name pass.
+ *   5. Counters (run 44cb3d: "cart badge shows 1" three times, and a repair
+ *      that counted badge elements): a bare integer asserted as a counter's
+ *      text is refused under RULE 7 with the capture-then-compare steer, a
+ *      count capture on a counter is refused under RULE 9, both before any
+ *      probe and with nothing recorded; a text capture plus assert_compare
+ *      greater on the badge records, replays on a fresh context and emits
+ *      through parseNumber in TypeScript and JavaScript, POM and single
+ *      file; a literal "1" on targets named account, discount or a step
+ *      number is not a counter and is not refused.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { chromium } from 'playwright';
 import { createContext, runTool, LIVE_PROBE_TIMEOUT_MS, type ToolContext } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
-import { PRICE_IN_NAME_STEER } from '../src/agent/gate.js';
+import { PRICE_IN_NAME_STEER, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
+import { replayScenarioOnce } from '../src/agent/replay.js';
+import { transcribePOM } from '../src/agent/pom.js';
+import { transcribe } from '../src/agent/transcriber.js';
+import type { RunReport, Scenario } from '../src/agent/trace.js';
 
 let pass = 0;
 let fail = 0;
@@ -128,8 +144,102 @@ check('4k. an assertion on a positional css inside a table passes the record-tim
 const ended = await runTool(toolCtx, { name: 'end_scenario', input: {} });
 check('4l. the scenario closes clean: the end_scenario gate (the backstop) finds nothing to reject', ended.ok && toolCtx.scenarios.length === 2 && toolCtx.brokenByGate.length === 0, ended.error);
 
+/* ─── 5. counters: read the text, compare, never a literal count ─────────── */
+// The badge increments 300 ms after the click, so the compare has to poll.
+const badgeHtml = `<!doctype html><html><head><title>Cart</title></head><body>
+<header><a href="#cart" data-test="nav-cart">Cart <span data-test="cart-quantity">2</span></a></header>
+<button type="button" data-test="add-to-cart" onclick="setTimeout(function () { var b = document.querySelector('[data-test=cart-quantity]'); b.textContent = String(Number(b.textContent) + 1); }, 300)">Add to cart</button>
+<p>Account level <span data-test="account-level">1</span></p>
+<p>Discount <span data-test="discount-code">1</span></p>
+<p>Step <span data-test="step-number">1</span> of 3</p>
+</body></html>`;
+await page.setContent(badgeHtml, { waitUntil: 'load' });
+await runTool(toolCtx, { name: 'begin_scenario', input: { name: 'added a product and the cart count in the header increased', category: 'happy', feature: 'cart' } });
+const badgeBefore = stepsRecorded();
+toolCtx._assertFailures.clear();
+const literalBadge = await runTool(toolCtx, { name: 'assert', input: { type: 'toHaveText', css: "[data-test='cart-quantity']", text: '2', intent: 'cart badge shows 2', timeout: 15000 } });
+check('5a. a bare integer asserted as the badge text is refused under RULE 7 with the counter steer, before any probe', !literalBadge.ok && /^RULE 7 \(literal catalogue value\) rejected this assertion: "2" on .*cart-quantity.* is a literal count on a counter; /.test(literalBadge.error ?? '') && (literalBadge.error ?? '').includes(COUNTER_LITERAL_STEER) && toolCtx._assertFailures.size === 0 && stepsRecorded() === badgeBefore, literalBadge.error);
+const literalQty = await runTool(toolCtx, { name: 'assert', input: { type: 'toContainText', testid: 'cart-quantity', text: ' 2 ', intent: 'header quantity' } });
+check('5b. the same literal through a testid and toContainText is refused too', !literalQty.ok && (literalQty.error ?? '').includes(COUNTER_LITERAL_STEER) && stepsRecorded() === badgeBefore, literalQty.error);
+const waitBadge = await runTool(toolCtx, { name: 'wait_for_text', input: { css: "[data-test='cart-quantity']", text: '2', intent: 'cart badge' } });
+check('5c. a wait_for_text for a bare integer on the badge is refused the same way (it records the same literal)', !waitBadge.ok && (waitBadge.error ?? '').includes(COUNTER_LITERAL_STEER) && stepsRecorded() === badgeBefore, waitBadge.error);
+const countBadge = await runTool(toolCtx, { name: 'capture', input: { name: 'cartBefore', source: 'count', css: "[data-test='cart-quantity']", intent: 'cart badge count elements before add' } });
+check('5d. a count capture on the badge is refused under RULE 9 with the read-its-text steer, nothing recorded or registered', !countBadge.ok && /^RULE 9 \(counter read as an element count\) rejected this capture: /.test(countBadge.error ?? '') && (countBadge.error ?? '').includes(COUNTER_COUNT_CAPTURE_STEER) && stepsRecorded() === badgeBefore && toolCtx.captures.size === 0, countBadge.error);
+const textBadge = await runTool(toolCtx, { name: 'capture', input: { name: 'cartBefore', source: 'text', css: "[data-test='cart-quantity']", intent: 'cart badge before add' } });
+check('5e. a text capture on the badge records the number shown', textBadge.ok && (textBadge.data as { value: string }).value === '2' && stepsRecorded() === badgeBefore + 1, textBadge.error);
+await runTool(toolCtx, { name: 'click', input: { testid: 'add-to-cart', intent: 'add to cart button' } });
+const greaterBadge = await runTool(toolCtx, { name: 'assert_compare', input: { name: 'cartBefore', relation: 'greater', intent: 'cart badge after add' } });
+check('5f. assert_compare greater on the re-read badge text passes once the badge settles', greaterBadge.ok && toolCtx.current?.steps.at(-1)?.kind === 'assert_compare', greaterBadge.error);
+const endBadge = await runTool(toolCtx, { name: 'end_scenario', input: {} });
+check('5g. end_scenario accepts the counter scenario: the end gate finds nothing to reject', endBadge.ok && toolCtx.brokenByGate.length === 0, endBadge.error);
+const badgeScenario = toolCtx.scenarios.at(-1) as Scenario;
+const badgeReplay = await replayScenarioOnce(browser, { ...badgeScenario, steps: [{ kind: 'navigate', url: 'data:text/html,' + encodeURIComponent(badgeHtml) }, ...badgeScenario.steps] }, undefined, 8000);
+check('5h. the recorded counter scenario replays green on a fresh context', badgeReplay.passed === true, JSON.stringify(badgeReplay));
+
+await page.setContent(badgeHtml, { waitUntil: 'load' });
+await runTool(toolCtx, { name: 'begin_scenario', input: { name: 'account and discount details are shown', category: 'happy', feature: 'account' } });
+const notCounters = [
+  { testid: 'account-level', intent: 'account level' },
+  { testid: 'discount-code', intent: 'discount code' },
+  { css: "[data-test='step-number']", intent: 'step indicator' },
+];
+const notCounterResults = [];
+for (const hints of notCounters) notCounterResults.push(await runTool(toolCtx, { name: 'assert', input: { type: 'toHaveText', text: '1', timeout: 10000, ...hints } }));
+check('5i. a literal "1" on targets named account, discount and a step number is not a counter: each assertion passes and records', notCounterResults.every((r) => r.ok) && (toolCtx.current?.steps.filter((st) => st.kind === 'assert').length ?? 0) === 3, JSON.stringify(notCounterResults));
+const endNotCounters = await runTool(toolCtx, { name: 'end_scenario', input: {} });
+check('5j. the end gate accepts them too', endNotCounters.ok && toolCtx.brokenByGate.length === 0, endNotCounters.error);
+
+// RULE 9 reads the selector, never the intent: a list count whose intent says
+// "count" is the working filter shape (capture count, act, compare less).
+const listHtml = `<!doctype html><html><head><title>Tools</title></head><body>
+<p>Cart <span id="n">3</span></p>
+<button type="button" data-test="eco-filter" onclick="document.querySelectorAll('[data-test=product-name]')[0].remove()">Eco only</button>
+<ul><li data-test="product-name">Hammer</li><li data-test="product-name">Saw</li><li data-test="product-name">Pliers</li></ul>
+</body></html>`;
+await page.setContent(listHtml, { waitUntil: 'load' });
+const listBegin = await runTool(toolCtx, { name: 'begin_scenario', input: { name: 'the eco filter narrowed the product list', category: 'happy', feature: 'catalogue' } });
+const listBefore = stepsRecorded();
+const productCount = await runTool(toolCtx, { name: 'capture', input: { name: 'productsBefore', source: 'count', css: "[data-test='product-name']", intent: 'product count before filter' } });
+check('5m. a count capture with intent "product count before filter" on css [data-test=\'product-name\'] is accepted and records the list count', listBegin.ok && productCount.ok && (productCount.data as { value: string }).value === '3' && stepsRecorded() === listBefore + 1, productCount.error ?? listBegin.error);
+const cartCountN = await runTool(toolCtx, { name: 'capture', input: { name: 'nBefore', source: 'count', css: '#n', intent: 'cart count' } });
+check('5n. a count capture with intent "cart count" on css "#n" is accepted: the selector names no counter', cartCountN.ok && (cartCountN.data as { value: string }).value === '1' && stepsRecorded() === listBefore + 2, cartCountN.error);
+const stillRefused = await runTool(toolCtx, { name: 'capture', input: { name: 'badgeBefore', source: 'count', css: "[data-test='cart-quantity']", intent: 'products in the list' } });
+check('5o. a count capture on [data-test=\'cart-quantity\'] is still refused under RULE 9, whatever its intent says', !stillRefused.ok && /^RULE 9 \(counter read as an element count\) rejected this capture: count capture on \[data-test='cart-quantity'\] reads/.test(stillRefused.error ?? '') && stepsRecorded() === listBefore + 2, stillRefused.error);
+const filterClick = await runTool(toolCtx, { name: 'click', input: { testid: 'eco-filter', intent: 'eco filter button' } });
+const listLess = await runTool(toolCtx, { name: 'assert_compare', input: { name: 'productsBefore', relation: 'less', intent: 'product count after filter' } });
+check('5p. the filter click and the compare less on the list count pass', filterClick.ok && listLess.ok, filterClick.error ?? listLess.error);
+const listEnd = await runTool(toolCtx, { name: 'end_scenario', input: {} });
+check('5q. end_scenario accepts the list-count scenario: no RULE 9 at the end gate', listEnd.ok && toolCtx.brokenByGate.length === 0, listEnd.error);
+
 await browser.close();
+
+// The emitted spec reads the badge text, acts, and polls the relation through
+// parseNumber, in both languages and both emitters.
+const counterReport = (language: 'ts' | 'js'): RunReport => ({
+  url: 'https://shop.example.com/', language,
+  scenarios: [{ ...badgeScenario, steps: [{ kind: 'navigate', url: 'https://shop.example.com/' }, ...badgeScenario.steps] }],
+  cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
+  cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
+  steps: 0, startedAt: '', finishedAt: '',
+});
+const emitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-counter-'));
+const POLL_GREATER_RE = /await expect\.poll\(async \(\) => parseNumber\(.*textContent\(\).*\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(parseNumber\(cap_cartBefore\)\)/;
+for (const language of ['ts', 'js'] as const) {
+  const pomDir = path.join(emitRoot, `pom-${language}`);
+  const pom = transcribePOM({ report: counterReport(language), outDir: pomDir, name: 'cart' });
+  const pomSpec = fs.readFileSync(pom.specFile, 'utf8');
+  const pomFiles = [pomSpec, ...pom.pageFiles.map((f) => fs.readFileSync(f, 'utf8'))].join('\n');
+  check(`5k. ${language} POM: the badge capture is a text read and the compare polls through parseNumber (greater)`,
+    /const cap_cartBefore = .*textContent\(\)/.test(pomSpec) && POLL_GREATER_RE.test(pomSpec) && /parse-number/.test(pomSpec) && !/cap_cartBefore = .*\.count\(\)/.test(pomSpec) && /cart-quantity/.test(pomFiles),
+    pomSpec.split('\n').filter((l) => /cap_cartBefore|parse-number/.test(l)).join(' | '));
+  const inline = transcribe({ report: counterReport(language), outDir: path.join(emitRoot, `inline-${language}`), name: 'cart' });
+  const inlineSpec = fs.readFileSync(inline.specPath, 'utf8');
+  check(`5l. ${language} single file: the same text read and parseNumber poll, with the parser inlined`,
+    /const cap_cartBefore = .*textContent\(\)/.test(inlineSpec) && POLL_GREATER_RE.test(inlineSpec) && /^function parseNumber\(text\)/m.test(inlineSpec),
+    inlineSpec.split('\n').filter((l) => /cap_cartBefore/.test(l)).join(' | '));
+}
+fs.rmSync(emitRoot, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: get_dom surfaces form state and names the test-id attribute first, count and absence probes fail fast with the recorded timeout unchanged, and RULE 3, 6 and 8 are refused at record time with nothing recorded.');
+console.log('OK: get_dom surfaces form state and names the test-id attribute first, count and absence probes fail fast with the recorded timeout unchanged, RULE 3, 6 and 8 are refused at record time with nothing recorded, and a counter is read by its text (a literal count and a count capture refused, a text capture plus greater recorded, replayed and emitted through parseNumber in TS and JS; RULE 9 judges the selector, so a list count whose intent says count is recorded).');

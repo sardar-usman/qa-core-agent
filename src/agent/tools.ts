@@ -5,10 +5,10 @@ import { recoverResolve, type ResolveInput } from './selector-recovery.js';
 // Re-exported for back-compat with older consumers of tools.ts. New code
 // should import from selector-recovery.ts directly.
 export { recoverResolve, type ResolveInput };
-import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation } from './trace.js';
+import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation, GenerateKind } from './trace.js';
 import { baseLocator } from './replay.js';
-import { detectUniqueField, generateUnique } from './unique-data.js';
-import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
+import { detectUniqueField, generateUnique, isEmailField } from './unique-data.js';
+import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
@@ -169,6 +169,14 @@ export interface ToolContext {
   knownAccounts: Set<string>;
   /** scenarioNameKey of every planned scenario whose SRS rule names a locked account: exempt from the rewrite. */
   lockoutScenarioKeys: Set<string>;
+  /**
+   * Console lines a tool wants shown, in order. The runtime emits each one as
+   * a message event after the tool call that added it (the same way it emits
+   * heals), so it reaches the console and events.jsonl.
+   */
+  notes: string[];
+  /** Scenario names that already logged the creation-email no-plan-match line. */
+  _creationEmailNoted: Set<string>;
   /** Gate: RULE 2 timeout injections applied to accepted scenarios. */
   _gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }>;
   /**
@@ -267,6 +275,8 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     _costCloseout: false,
     knownAccounts: new Set(),
     lockoutScenarioKeys: new Set(),
+    notes: [],
+    _creationEmailNoted: new Set(),
     _gateInjectionLog: [],
     captures: new Map(),
     _assertFailures: new Map(),
@@ -330,8 +340,12 @@ function recordTimeGateError(
   return null;
 }
 
-/** The record the hints build, or null when no locating hint was given (the resolve will say so). */
-function hintRecord(input: Record<string, unknown>, fallback: 'element' | 'elements' | 're-read element' = 'element'): SelectorRecord | null {
+/**
+ * The record the hints build, or null when no locating hint was given (the
+ * resolve will say so). Exported so scripts/rework-shapes.ts builds a recorded
+ * call's record exactly as the record-time gate did.
+ */
+export function hintRecord(input: Record<string, unknown>, fallback: 'element' | 'elements' | 're-read element' = 'element'): SelectorRecord | null {
   try {
     const hints = input as { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string };
     const record = recordFromHints({ ...hints, intent: deriveIntent(hints, fallback) });
@@ -345,6 +359,51 @@ function hintRecord(input: Record<string, unknown>, fallback: 'element' | 'eleme
   } catch {
     return null;
   }
+}
+
+/**
+ * The generate kind of a fill, or undefined for a literal fill, plus the hints
+ * it was judged on (enforceFakeCredential reads the same two). A happy
+ * creation flow is spotted from the feature, the scenario name and the page
+ * URL (invariant 14); a negative or edge one from the plan's canonical name
+ * alone (`canonicalName`, the planned name the recorded one matches). The
+ * recorded name stands in ONLY when the run has no plan (`hasPlan` false:
+ * smokes, single-scenario contexts). When a plan exists and the recorded name
+ * claims no planned name there is no canonical name: the email stays literal
+ * and `unmatched` is true for a non-happy email fill, so the caller logs it
+ * (standing rule 1: the model's text is never the fallback). Exported so
+ * scripts/rework-shapes.ts judges a recorded fill call exactly as this tool did.
+ */
+export function fillGenerateKind(
+  input: Record<string, unknown>,
+  recordIntent: string,
+  scenario: Pick<Scenario, 'name' | 'category' | 'feature'> | null,
+  canonicalName: string | null,
+  hasPlan: boolean,
+  pageUrl: string,
+  value: string,
+): { generate: GenerateKind | undefined; fieldHint: string; flowHint: string; unmatched: boolean } {
+  const ci = input as { intent?: unknown; testid?: unknown; label?: unknown; role?: unknown; css?: unknown; placeholder?: unknown };
+  const fieldHint = [ci.intent, ci.testid, ci.label, ci.role, ci.css, ci.placeholder, recordIntent]
+    .filter((x) => typeof x === 'string').join(' ');
+  const flowHint = [scenario?.feature, scenario?.name, pageUrl]
+    .filter((x): x is string => typeof x === 'string' && x.length > 0).join(' ');
+  const canonical = canonicalName ?? (hasPlan ? undefined : scenario?.name);
+  const generate = detectUniqueField({
+    category: scenario?.category,
+    flowHint,
+    fieldHint,
+    canonicalName: canonical,
+    value,
+  });
+  const nonHappy = !!scenario?.category && scenario.category !== 'happy';
+  const unmatched = hasPlan && canonicalName === null && nonHappy && isEmailField(fieldHint);
+  return { generate, fieldHint, flowHint, unmatched };
+}
+
+/** The line logged once per scenario when a plan exists and the recorded name claims no planned name. */
+export function creationEmailUnmatchedLine(recordedName: string): string {
+  return `creation-email rule: recorded name ${JSON.stringify(recordedName)} matched no planned name; email kept literal`;
 }
 
 /** Refuse an action tool call up front when its locator breaks RULE 6 or RULE 8. */
@@ -1412,12 +1471,15 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         // succeeds AND survives re-running. A fixed email would pass exploration
         // then fail replay on a duplicate. The same generator runs in replay and
         // in the emitted spec, so the value is fresh on every run.
-        const ci = call.input as { intent?: unknown; testid?: unknown; label?: unknown; role?: unknown; css?: unknown; placeholder?: unknown };
-        const fieldHint = [ci.intent, ci.testid, ci.label, ci.role, ci.css, ci.placeholder, record.intent]
-          .filter((x) => typeof x === 'string').join(' ');
-        const flowHint = [ctx.current?.feature, ctx.current?.name, safeUrl(ctx.page)]
-          .filter((x): x is string => typeof x === 'string' && x.length > 0).join(' ');
-        const generate = detectUniqueField({ category: ctx.current?.category, flowHint, fieldHint });
+        // A negative or edge creation flow generates a well-formed email too
+        // (the email is not the field under test), judged on the plan's
+        // canonical name, never the model's echo of it.
+        const hasPlan = ctx.plannedNames.length > 0;
+        const { generate, fieldHint, flowHint, unmatched } = fillGenerateKind(call.input, record.intent, ctx.current, ctx.current && hasPlan ? plannedNameFor(ctx, ctx.current.name) : null, hasPlan, safeUrl(ctx.page), value);
+        if (unmatched && ctx.current && !ctx._creationEmailNoted.has(ctx.current.name)) {
+          ctx._creationEmailNoted.add(ctx.current.name);
+          ctx.notes.push(creationEmailUnmatchedLine(ctx.current.name));
+        }
         const filledValue = generate ? generateUnique(generate) : value;
         // Wrong-credential negatives must not spend a real account's lockout
         // budget: on the password fill, if the identifier typed earlier in this
@@ -1539,6 +1601,11 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         const captureHint = hintRecord(call.input, source === 'count' ? 'elements' : 'element');
         const captureGate = captureHint ? recordTimeGateError('capture', captureHint) : null;
         if (captureGate) return { ok: false, error: captureGate };
+        // RULE 9 at record time: a counter (a badge, a quantity) is read by its
+        // text. A count capture on it counts badge elements, 0 before the add
+        // and 1 after, which proves the badge appeared, not that it went up.
+        const counterCapture = captureHint ? counterCountCaptureReason(captureHint, source) : null;
+        if (counterCapture) return { ok: false, error: `${gateRuleLabel(9)} rejected this capture: ${counterCapture}.` };
         let record: SelectorRecord;
         let value: string;
         if (source === 'count') {
@@ -1676,6 +1743,10 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         const wftHint = hintRecord(wftSelectorHints);
         const wftGate = wftHint ? recordTimeGateError('assert', wftHint, { shape: { type: 'toHaveText', target: wftHint, text: wftText }, knownDynamic: true }) : null;
         if (wftGate) return { ok: false, error: wftGate };
+        // A wait for a bare integer on a counter records the same literal count
+        // an assert would (RULE 7), so it is refused the same way.
+        const wftCounter = wftHint ? counterLiteralReason({ type: 'toHaveText', target: wftHint, text: wftText }) : null;
+        if (wftCounter) return { ok: false, error: `${gateRuleLabel(7)} rejected this assert: ${wftCounter}.` };
         const { record: wftRecord, loc: wftLoc } = await resolveAndRecord(ctx, wftSelectorHints as never);
         const wftStart = Date.now();
         let wftMatched = false;
@@ -2023,7 +2094,7 @@ export function observedSettleMs(ctx: Pick<ToolContext, '_pageMsSinceAction'>, p
 
 /**
  * The timeout recorded on an assertion: the model's own value when it passed
- * one (the gate floors it at 5000ms and caps it at 15000ms), else the adaptive
+ * one (the gate floors it at 10000ms after an action and caps it at 15000ms), else the adaptive
  * value observed from the page. The model's value used to be discarded for
  * async assertions, so a scenario shipped whatever the clock said.
  */
@@ -2221,7 +2292,7 @@ async function executeAssertion(
         // Strip the ambiguity marker so the transcribed spec also omits .first()
         // for this specific assertion. baseLocator already does the right thing
         // in replay.ts when ambiguous=false. The timeout the model passed is
-        // recorded (the gate floors it at 5000ms); it used to be dropped, so
+        // recorded (the gate floors it at 10000ms after an action); it used to be dropped, so
         // every count check shipped with the floor whatever the model asked.
         assertion: { type: 'toHaveCount', target: { ...record, ambiguous: undefined }, count: input.count, ...(input.timeout ? { timeout: input.timeout } : {}) },
       });
@@ -2290,7 +2361,7 @@ async function executeAssertion(
 }
 
 /** Shape of an assert tool call, shared by the cap helpers and executeAssertion. */
-type AssertionInput = Parameters<typeof executeAssertion>[1];
+export type AssertionInput = Parameters<typeof executeAssertion>[1];
 
 /**
  * The regex source the model passed, validated. A model that writes the
@@ -2355,23 +2426,36 @@ function describeAssertion(input: AssertionInput): string {
  * A scenario whose success signal is wrong fails loudly with the real page
  * state instead of thrashing the form until the budget runs out.
  */
+/**
+ * The assertion shape RULE 7 judges an assert call by, before any probe: the
+ * record its hints build and its literal, pattern or count. Null for a type
+ * RULE 7 does not judge; an Error for an invalid regex. Exported so
+ * scripts/rework-shapes.ts judges a recorded call exactly as this tool did.
+ */
+export function ruleSevenShape(input: AssertionInput): Extract<Assertion, { target: SelectorRecord }> | Error | null {
+  if (input.type !== 'toHaveText' && input.type !== 'toContainText' && input.type !== 'toHaveValue' && input.type !== 'toHaveCount') return null;
+  const record = recordFromHints({ ...(input as object), intent: deriveIntent(input) });
+  const r7Pattern = regexSource(input.regex);
+  if (r7Pattern instanceof Error) return r7Pattern;
+  return input.type === 'toHaveCount'
+    ? (input.atLeast != null
+      ? { type: 'toHaveCount' as const, target: record, count: Number(input.atLeast), atLeast: true }
+      : { type: 'toHaveCount' as const, target: record, count: Number(input.count ?? 0) })
+    : input.type === 'toHaveValue'
+      ? { type: 'toHaveValue' as const, target: record, value: String(input.value ?? '') }
+      : typeof r7Pattern === 'string'
+        ? { type: input.type, target: record, text: '', pattern: r7Pattern }
+        : { type: input.type, target: record, text: String(input.text ?? '') };
+}
+
 async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Promise<ToolResult> {
   // RULE 7 in-run: a literal catalogue value is refused before the probe runs,
   // so the model is steered at once instead of at end_scenario (the gate
   // applies the same rule again on the recorded trace).
-  if (ctx.current && (input.type === 'toHaveText' || input.type === 'toContainText' || input.type === 'toHaveValue' || input.type === 'toHaveCount')) {
-    const record = recordFromHints({ ...(input as object), intent: deriveIntent(input) });
-    const r7Pattern = regexSource(input.regex);
-    if (r7Pattern instanceof Error) return { ok: false, error: r7Pattern.message };
-    const shape = input.type === 'toHaveCount'
-      ? (input.atLeast != null
-        ? { type: 'toHaveCount' as const, target: record, count: Number(input.atLeast), atLeast: true }
-        : { type: 'toHaveCount' as const, target: record, count: Number(input.count ?? 0) })
-      : input.type === 'toHaveValue'
-        ? { type: 'toHaveValue' as const, target: record, value: String(input.value ?? '') }
-        : typeof r7Pattern === 'string'
-          ? { type: input.type, target: record, text: '', pattern: r7Pattern }
-          : { type: input.type, target: record, text: String(input.text ?? '') };
+  const shape = ctx.current ? ruleSevenShape(input) : null;
+  if (shape instanceof Error) return { ok: false, error: shape.message };
+  if (ctx.current && shape) {
+    const record = shape.target;
     // A toHaveValue on a field this scenario filled reads the fill, so it is
     // test data; resolve the element key the same way the handler does.
     const filledHere = input.type === 'toHaveValue' && ctx.current.steps.some((st) => st.kind === 'fill' && sameHints(st.target, record));

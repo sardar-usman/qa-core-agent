@@ -295,6 +295,20 @@ check('O2. the Explorer prompt\'s ASSERTION RULES 7 points at doctrine rule 8 in
 check('O3. the Critic\'s vacuous rule cites doctrine rule 8', /doctrine rule 8 below; cite it as rule 8/.test(CRITIC_SYSTEM_PROMPT));
 check('O4. doctrine rule 2 names the text relations before and after', /before or after for text/.test(ASSERTION_DOCTRINE));
 
+/* ─── P. run 44cb3d: success signals from the recordings, timeouts at the floor ── */
+// The first verdict reworked the happy registration for a success message the
+// site never shows, though three negative siblings asserted the stay-on-page
+// URL; three more reworks asked to raise 5000 ms timeouts. Both rules live in
+// the shared doctrine, so the Explorer and the Critic read the same words.
+check('P1. doctrine rule 9: a navigation after a submit is a success signal when a negative sibling asserts the stay-on-page URL; never require what no recording shows',
+  /\n9\. [^\n]*A navigation to a different page after a submit is a valid success signal when a negative scenario in the same set asserts the stay-on-page URL after a failed submit; never require a message, toast or element that no recording in the set shows\./.test(ASSERTION_DOCTRINE));
+check('P2. doctrine rule 10: a timeout at or above the gate floor is never a rework reason by itself',
+  /\n10\. A timeout at or above the gate floor \(10000ms after an action\) is never a rework reason by itself\./.test(ASSERTION_DOCTRINE));
+check('P3. doctrine rule 1 states the 10000ms floor after an action, and no prompt still states the old 5000ms floor',
+  /1\. [^\n]*the gate floors any assertion after an action at 10000ms and caps any at 15000ms/.test(ASSERTION_DOCTRINE) && !/floors a missing one at 5000ms/.test(EXPLORER_SYSTEM_PROMPT + CRITIC_SYSTEM_PROMPT));
+check('P4. doctrine rule 6 reads a counter by its text, never by its element count', /6\. [^\n]*A counter \(a cart badge, a quantity\) is read by its TEXT[^\n]*a count capture on a badge counts elements/.test(ASSERTION_DOCTRINE));
+check('P5. both prompts carry rules 9 and 10 word for word', [EXPLORER_SYSTEM_PROMPT, CRITIC_SYSTEM_PROMPT].every((pr) => pr.includes(ASSERTION_DOCTRINE) && /\n9\. Success signals come from the recordings/.test(pr) && /\n10\. A timeout at or above the gate floor/.test(pr)));
+
 /* ─── P. one retry on a zero-verdict response ─────────────────────────────── */
 {
   const scripted = (responses: string[]): { client: CriticClient; calls: () => number } => {

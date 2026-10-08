@@ -19,15 +19,20 @@
  *   - helpers/unique-data.{ts,js} ships with uniqueEmail / uniqueToken.
  *   - The JS output path is clean (require + module.exports).
  *   - The single-file inline transcriber inlines the generator and calls it.
+ *   - A negative or edge creation flow generates a well-formed email too (run
+ *     44cb3d: the first-name and date-of-birth registration negatives typed
+ *     unique2+qa@example.com and unique3+qa@example.com, both reworked),
+ *     judged on the plan's canonical name; an empty or malformed email, a
+ *     duplicate-email scenario and a login flow stay literal (sections F, G).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { scaffold, frameworkDirName } from '../src/agent/scaffold.js';
 import { transcribe } from '../src/agent/transcriber.js';
-import { detectUniqueField, generateUnique } from '../src/agent/unique-data.js';
+import { detectUniqueField, generateUnique, isWellFormedEmail } from '../src/agent/unique-data.js';
 import { chromium } from 'playwright';
-import { createContext, runTool } from '../src/agent/tools.js';
+import { createContext, runTool, creationEmailUnmatchedLine } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { scenarioNameKey } from '../src/agent/rule-coverage.js';
 import type { RunReport, TraceStep } from '../src/agent/trace.js';
@@ -245,8 +250,101 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
   }
 }
 
+/* ─── F. a negative or edge creation flow generates a well-formed email ─────── */
+const FIRST_NAME_NEG = 'rejected registration with an empty required field (first name) and required-field error displayed';
+const DOB_EDGE = 'rejected registration with malformed date-of-birth format and error displayed';
+const neg = (canonicalName: string, value: string, fieldHint = 'email input email', category = 'negative') =>
+  detectUniqueField({ category, flowHint: `account ${canonicalName} https://practicesoftwaretesting.com/auth/register`, fieldHint, canonicalName, value });
+check('F1. the run 44cb3d first-name negative: its valid literal email is generated', neg(FIRST_NAME_NEG, 'unique2+qa@example.com') === 'email');
+check('F2. the run 44cb3d date-of-birth edge: its valid literal email is generated', neg(DOB_EDGE, 'unique3+qa@example.com', 'email input email', 'edge') === 'email');
+check('F3. the empty-email negative keeps its empty value', neg('rejected registration submission with empty email field and showed required-field error', '') === undefined);
+check('F4. a malformed email (no @) stays literal by the same validity check', neg('rejected registration with an invalid email format', 'alice.example.com') === undefined && neg('rejected registration with an invalid email format', 'alice@') === undefined);
+check('F5. a scenario that names a duplicate, existing or already-registered email keeps its literal',
+  ['rejected registration with an already-used email address and showed an error', 'rejected registration with a duplicate email', 'rejected sign up with an existing email', 'rejected registration because the email is already registered'].every((n) => neg(n, 'customer@practicesoftwaretesting.com') === undefined));
+check('F6. other fields of a negative creation flow stay literal (password, first name)', neg(FIRST_NAME_NEG, 'Welcome01!', 'password input password') === undefined && neg(FIRST_NAME_NEG, 'Alice', 'first name input first-name') === undefined);
+check('F7. a login flow keeps its credentials: a negative login naming a registered user is not generated', neg('rejected login of a registered user with a wrong password', 'customer@practicesoftwaretesting.com') === undefined && neg('signed in as a new account with a wrong password', 'a@b.co') === undefined);
+check('F8. judged on the canonical name only: a register URL or a feature in the flow hint does not make a non-creation scenario generate', detectUniqueField({ category: 'negative', flowHint: 'registration https://x.com/auth/register', fieldHint: 'email input', canonicalName: 'rejected the newsletter form with an empty first name', value: 'a@b.co' }) === undefined);
+check('F9. happy flows are unchanged: the value is not judged (an empty value still generates), and a happy login still does not',
+  detectUniqueField({ category: 'happy', flowHint: 'register', fieldHint: 'email input', canonicalName: 'registered', value: '' }) === 'email' && detectUniqueField({ category: 'happy', flowHint: 'login sign in', fieldHint: 'email input', value: 'a@b.co' }) === undefined);
+check('F11. a negative that names the email keeps it literal, the email is the field under test: "an invalid email format" filling a@b.c (well-formed) stays literal',
+  isWellFormedEmail('a@b.c') && neg('rejected registration with an invalid email format', 'a@b.c') === undefined && neg('rejected sign up because the e-mail was too long', 'a@b.c', 'email input email', 'edge') === undefined);
+check('F12. a negative whose name does not mention the email still generates it: "an empty required field (first name)" filling a valid email',
+  neg('rejected registration with an empty required field (first name)', 'jane@example.com') === 'email');
+check('F13. the duplicate check stays beside the email check: a name that says "already registered account" without the word email keeps its literal',
+  neg('rejected registration with an already registered account', 'customer@practicesoftwaretesting.com') === undefined);
+check('F10. isWellFormedEmail: one @, a dotted domain, no spaces', isWellFormedEmail('unique2+qa@example.com') && !isWellFormedEmail('') && !isWellFormedEmail('alice.example.com') && !isWellFormedEmail('a b@c.de') && !isWellFormedEmail('a@localhost'));
+
+/* ─── G. the fill tool applies it live, on the plan's canonical name ───────── */
+{
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const bctx = await browser.newContext(); await installEvalShim(bctx); const page = await bctx.newPage();
+    const registerHtml = '<!doctype html><html><body><h3>Register</h3><form><input data-test="first-name" id="first" placeholder="First name"><input data-test="email" id="email" placeholder="Email"><input data-test="password" id="password" type="password" placeholder="Password"><button data-test="register-submit">Register</button></form></body></html>';
+    const tctx = createContext(page, 60);
+    const PLANNED_PROFILE = 'rejected the profile form with an empty first name';
+    tctx.plannedNames = [FIRST_NAME_NEG, PLANNED_PROFILE, 'rejected registration submission with empty email field', 'rejected registration with an invalid email format', 'rejected registration with an already-used email address', 'registered a new account with valid data'];
+    const emailFill = (): Extract<TraceStep, { kind: 'fill' }> | undefined => tctx.current?.steps.find((st): st is Extract<TraceStep, { kind: 'fill' }> => st.kind === 'fill' && st.target.intent === 'email input');
+    const run = async (name: string, category: string, value: string): Promise<{ step: Extract<TraceStep, { kind: 'fill' }> | undefined; onPage: string; data: unknown; ended: boolean }> => {
+      await page.setContent(registerHtml, { waitUntil: 'load' });
+      await runTool(tctx, { name: 'begin_scenario', input: { name, category, feature: 'account' } });
+      await runTool(tctx, { name: 'fill', input: { intent: 'first name input', testid: 'first-name', value: '' } });
+      const r = await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value } });
+      const step = emailFill();
+      const onPage = await page.inputValue('#email');
+      await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'register-submit', intent: 'register button' } });
+      const end = await runTool(tctx, { name: 'end_scenario', input: {} });
+      return { step, onPage, data: r.data, ended: end.ok === true };
+    };
+    const g1 = await run(FIRST_NAME_NEG, 'negative', 'unique2+qa@example.com');
+    check('G1. the first-name negative: the literal email is replaced by a generated one, on the page and on the step (generate email)',
+      g1.ended && g1.step?.generate === 'email' && g1.step.value !== 'unique2+qa@example.com' && isWellFormedEmail(g1.step.value) && g1.onPage === g1.step.value && (g1.data as { generated?: string }).generated === 'email', JSON.stringify(g1));
+    // The model echoed the planned name with "during sign up" appended; the
+    // canonical (planned) name names no creation flow, so the email stays literal.
+    const g2 = await run(`${PLANNED_PROFILE} during sign up`, 'negative', 'jane@example.com');
+    check('G2. judged on the plan\'s canonical name, never the model\'s echo: an echoed "sign up" does not generate', g2.ended && g2.step?.generate === undefined && g2.step?.value === 'jane@example.com', JSON.stringify(g2));
+    const g3 = await run('rejected registration submission with empty email field', 'negative', '');
+    check('G3. the empty-email negative stays literal (empty)', g3.ended && g3.step?.generate === undefined && g3.step?.value === '' && g3.onPage === '', JSON.stringify(g3));
+    const g4 = await run('rejected registration with an invalid email format', 'negative', 'alice.example.com');
+    check('G4. the malformed email stays literal', g4.ended && g4.step?.generate === undefined && g4.step?.value === 'alice.example.com', JSON.stringify(g4));
+    const g5 = await run('rejected registration with an already-used email address', 'negative', 'customer@practicesoftwaretesting.com');
+    check('G5. the duplicate-email scenario stays literal', g5.ended && g5.step?.generate === undefined && g5.step?.value === 'customer@practicesoftwaretesting.com', JSON.stringify(g5));
+    const g6 = await run('registered a new account with valid data', 'happy', 'jane@example.com');
+    check('G6. the happy registration is unchanged: generated as before', g6.ended && g6.step?.generate === 'email' && g6.step.value !== 'jane@example.com', JSON.stringify(g6));
+    const g7 = await run('rejected registration with an invalid email format', 'negative', 'a@b.c');
+    check('G7. a planned negative that names the email keeps a well-formed a@b.c literal, on the page and on the step', g7.ended && g7.step?.generate === undefined && g7.step?.value === 'a@b.c' && g7.onPage === 'a@b.c', JSON.stringify(g7));
+
+    // Standing rule 1: with a plan in the run, a recorded name that claims no
+    // planned name gives no canonical name. The email stays literal (the
+    // model's name is never the fallback) and one line is logged per scenario.
+    const UNMATCHED = 'rejected registration with a blank first name field';
+    const notesBefore = tctx.notes.length;
+    await page.setContent(registerHtml, { waitUntil: 'load' });
+    const b8 = await runTool(tctx, { name: 'begin_scenario', input: { name: UNMATCHED, category: 'negative', feature: 'account' } });
+    const f8a = await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'jane@example.com' } });
+    const f8b = await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'jane@example.com' } });
+    const g8step = emailFill();
+    const a8 = await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'register-submit', intent: 'register button' } });
+    const e8 = await runTool(tctx, { name: 'end_scenario', input: {} });
+    const newNotes = tctx.notes.slice(notesBefore);
+    check('G8. plan present, recorded name matches no planned name: a valid email in a first-name negative is kept literal', b8.ok && f8a.ok && f8b.ok && a8.ok && e8.ok && g8step?.generate === undefined && g8step?.value === 'jane@example.com' && (await page.inputValue('#email')) === 'jane@example.com', JSON.stringify({ b8, f8a, f8b, a8, e8, g8step }));
+    check('G9. the line is logged once for the scenario, word for word, though the email was filled twice',
+      newNotes.length === 1 && newNotes[0] === creationEmailUnmatchedLine(UNMATCHED) && newNotes[0] === `creation-email rule: recorded name "${UNMATCHED}" matched no planned name; email kept literal`, JSON.stringify(newNotes));
+
+    // No plan in the run (a smoke, a single-scenario context): the recorded
+    // name stands in, as before, and nothing is logged.
+    const nctx = createContext(page, 60);
+    await page.setContent(registerHtml, { waitUntil: 'load' });
+    const b10 = await runTool(nctx, { name: 'begin_scenario', input: { name: UNMATCHED, category: 'negative', feature: 'account' } });
+    const f10 = await runTool(nctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'jane@example.com' } });
+    const g10step = nctx.current?.steps.find((st): st is Extract<TraceStep, { kind: 'fill' }> => st.kind === 'fill');
+    check('G10. no plan in the run: the recorded name stands in, the email is generated and no line is logged', b10.ok && f10.ok && g10step?.generate === 'email' && g10step.value !== 'jane@example.com' && nctx.notes.length === 0, JSON.stringify({ b10, f10, g10step, notes: nctx.notes }));
+  } finally {
+    await browser.close();
+  }
+}
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: unique-data — creation-flow email/username/password fields generate fresh, strong values in the emitted spec (POM + inline, TS + JS); deliberate-duplicate and login literals are preserved.');
+console.log('OK: unique-data: creation-flow email/username/password fields generate fresh, strong values in the emitted spec (POM + inline, TS + JS); a negative or edge creation flow generates a well-formed email judged on the canonical name (the recorded name only with no plan; with a plan and no match the email stays literal and one line is logged); empty, malformed, email-named, deliberate-duplicate and login literals are preserved.');

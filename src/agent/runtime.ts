@@ -1982,6 +1982,7 @@ export async function runAgentLoop(args: {
   // call); we drain new ones after each tool runs so each shows up as its own
   // visible event in the run output.
   let emittedHeals = 0;
+  let emittedNotes = 0;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (cost.usd > maxUsd) {
@@ -2093,6 +2094,10 @@ export async function runAgentLoop(args: {
       while (emittedHeals < ctx.heals.length) {
         const h = ctx.heals[emittedHeals++]!;
         onEvent?.({ type: 'heal', from: h.from, to: h.to, intent: h.intent, scenario: h.scenario });
+      }
+      // Tool-side console lines (the creation-email no-plan-match line), once each.
+      while (emittedNotes < ctx.notes.length) {
+        onEvent?.({ type: 'message', text: ctx.notes[emittedNotes++]! });
       }
       toolResults.push({
         type: 'tool_result',

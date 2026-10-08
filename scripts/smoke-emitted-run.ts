@@ -8,7 +8,9 @@
  *      toHaveURL, toHaveText literal and pattern, toContainText, toHaveValue,
  *      toHaveAttribute pattern, toBeChecked, toHaveCount 0 and atLeast,
  *      capture plus assert_compare with changed, greater on a currency string
- *      and equal against a different target, and a frame chain.
+ *      and on a cart badge's text (run 44cb3d: a counter is read by its text,
+ *      never as a literal or an element count), equal against a different
+ *      target, and a frame chain.
  *   2. A small static site is served from a local port by this process
  *      (node:http, in memory, no files on disk) so the shipped tests have
  *      something real to drive. The assertions are true on that site.
@@ -273,6 +275,17 @@ function scenarios(): Scenario[] {
       { kind: 'click', target: addButton },
       { kind: 'assert_compare', varName: 'cap_badgeCount', relation: 'greater', source: 'count', target: cartBadge, intent: 'cart badge', readVar: 'cap_badgeCount_now' },
     ] },
+    // A counter read by its text (gate RULE 7 refuses a literal count on it,
+    // RULE 9 a count capture): the badge shows 1 after the first add, the
+    // capture reads that text, the second add raises it, and the compare
+    // polls through parseNumber.
+    { name: 'a second add raises the number on the cart badge', category: 'happy', feature: 'delayed', steps: [
+      { kind: 'navigate', url: `${base}/delayed.html` },
+      { kind: 'click', target: addButton },
+      { kind: 'capture', varName: 'cap_badgeText', source: 'text', target: cartBadge, intent: 'cart badge' },
+      { kind: 'click', target: addButton },
+      { kind: 'assert_compare', varName: 'cap_badgeText', relation: 'greater', source: 'text', target: cartBadge, intent: 'cart badge', readVar: 'cap_badgeText_now' },
+    ] },
     { name: 'the create account link on the landing page opens the registration form', category: 'happy', feature: 'registration', steps: [
       { kind: 'navigate', url: `${base}/` },
       { kind: 'click', target: createAccountLink },
@@ -364,6 +377,10 @@ for (const language of ['ts', 'js'] as const) {
       return i > 0 && /^await awaitCaptureReady\(page\.locator\(".+"\), 10000\);/.test(delayedLines[i - 1] ?? '');
     };
     check(`${language}: the emitted count captures wait for their target before the read (less and the empty-baseline greater)`, waitBefore('cap_cardCount') && waitBefore('cap_badgeCount'), delayedLines.filter((l) => /cap_cardCount|cap_badgeCount|awaitCaptureReady/.test(l)).join(' | '));
+    const badgeTextLine = delayedLines.findIndex((l) => l.startsWith('const cap_badgeText = ') && l.includes('textContent()'));
+    check(`${language}: the badge counter is read by its text (no wait, no count) and the greater compare polls through parseNumber`,
+      badgeTextLine > 0 && !/awaitCaptureReady/.test(delayedLines[badgeTextLine - 1] ?? '') && delayedLines.some((l) => /^await expect\.poll\(async \(\) => parseNumber\(.*textContent\(\).*\), \{ timeout: \d+ \}\)\.toBeGreaterThan\(parseNumber\(cap_badgeText\)\);$/.test(l)),
+      delayedLines.filter((l) => /cap_badgeText/.test(l)).join(' | '));
     const helperImport = language === 'ts' ? `import { awaitCaptureReady } from '../../helpers/assertions';` : `const { awaitCaptureReady } = require('../../helpers/assertions');`;
     check(`${language}: the delayed spec imports awaitCaptureReady from helpers/assertions and the helper is shipped`, delayedSpec.includes(helperImport) && fs.readFileSync(path.join(outDir, `helpers/assertions.${language}`), 'utf8').includes('async function awaitCaptureReady(locator'), delayedSpec.split('\n').slice(0, 6).join(' | '));
     const contactBeforeEach = contactSpec.slice(contactSpec.indexOf('test.beforeEach'), contactSpec.indexOf('test("'));

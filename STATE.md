@@ -207,10 +207,26 @@ using the qa-core-heal evaluation report as the template.
   with no finding recorded. docs/audit/run-44cb3d-diagnosis.md. Locked by
   smoke-planned-page; whether the Explorer records the empty page as a
   finding is untested live.
-- D3 (run 6): two unjustified Critic reworks (a success message the site
-  never shows; a timeout already at the gate floor) and cart verdicts that
-  took a badge element count for the badge's value.
-  docs/audit/run-44cb3d-diagnosis.md.
+- D3 (run 6): ADDRESSED (PR #42, engine/rework-rate, Oct 6, not merged):
+  two unjustified Critic reworks (a success message the site never shows; a
+  timeout already at the gate floor) and cart verdicts that took a badge
+  element count for the badge's value. docs/audit/run-44cb3d-diagnosis.md.
+  Record-time fixes: a literal count on a counter refused (RULE 7) and a
+  count capture on one refused (RULE 9); a well-formed email generated in a
+  negative or edge creation flow; the RULE 2 floor after an action raised to
+  10000 ms; doctrine rules 9 (success signals from the recordings) and 10 (a
+  timeout at the floor is no rework reason). Locked by smoke-gate,
+  smoke-tools, smoke-unique-data, smoke-compare-poll, smoke-critic-parse and
+  smoke-emitted-run; scripts/rework-shapes.ts maps runs 5 and 6. The honest
+  count: run 6 had 10 first-pass reworks in 10 scenarios; the new rules
+  apply to 9; the eco-filter rework (it asked for an extra assertion) is not
+  addressed by #42. Second commit (Oct 7): RULE 9 judges the selector only
+  (a list count whose intent says "count" is the working filter shape); with
+  a plan in the run, a recorded name that claims no planned name keeps the
+  email literal and logs one line; a negative that names the email keeps it
+  literal; rework-shapes lists the passed scenarios the new rules would
+  refuse or rewrite (none in runs 5 and 6). The rework rate itself is
+  unmeasured until the next live run.
 - D4 (run 6): FIXED (PR #36, Oct 2): a repair stopped by its budget is
   filed as a critic drop with the first-pass reasons.
   docs/audit/run-44cb3d-diagnosis.md. Locked by smoke-repair-pass and
