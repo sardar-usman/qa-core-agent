@@ -150,6 +150,12 @@ export interface ToolContext {
   _gateAttempts: Map<string, number>;
   /** Gate: scenarios permanently dropped after hitting the 2-attempt cap. */
   brokenByGate: Array<{ scenario: string; reason: string; attempts: number }>;
+  /**
+   * The trace each brokenByGate entry rejected, keyed by the entry's
+   * scenario name (the last rejected attempt). The runtime hands it to the
+   * report's droppedTraces (invariant 69); it never reaches the funnel.
+   */
+  gateBrokenTraces: Map<string, Scenario>;
   /** Scenarios begun but never finalized (step budget exhausted, abandoned). */
   incomplete: Array<{ scenario: string; reason: string }>;
   /**
@@ -271,6 +277,7 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     networkErrors: [],
     _gateAttempts: new Map(),
     brokenByGate: [],
+    gateBrokenTraces: new Map(),
     incomplete: [],
     _costCloseout: false,
     knownAccounts: new Set(),
@@ -1904,9 +1911,11 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           if (violation && plannedName) {
             const attempts = (ctx._plannedPageAttempts.get(plannedName) ?? 0) + 1;
             ctx._plannedPageAttempts.set(plannedName, attempts);
+            const rejected = ctx.current;
             ctx.current = null; // abandon, exactly like a gate rejection
             if (attempts >= PLANNED_PAGE_CAP) {
               ctx.brokenByGate.push({ scenario: plannedName, reason: plannedPageBrokenReason(violation), attempts });
+              ctx.gateBrokenTraces.set(plannedName, rejected);
               return {
                 ok: false,
                 error: `Planned-page violation BROKEN after ${attempts} attempts: "${plannedName}" was ${violation.message}. This scenario is permanently dropped and recorded with both paths; move on to the next planned scenario.`,
@@ -1925,6 +1934,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           const scenarioName = ctx.current.name;
           const attempts = (ctx._gateAttempts.get(scenarioName) ?? 0) + 1;
           ctx._gateAttempts.set(scenarioName, attempts);
+          const rejected = ctx.current;
           ctx.current = null; // abandon — Explorer can call begin_scenario again
           const firstV = gateResult.violations[0]!;
           const ruleLabel = gateRuleLabel(firstV.rule);
@@ -1932,6 +1942,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
           if (attempts >= 2) {
             const reason = gateBrokenReason(firstV.rule);
             ctx.brokenByGate.push({ scenario: scenarioName, reason, attempts });
+            ctx.gateBrokenTraces.set(scenarioName, rejected);
             return {
               ok: false,
               error: `Gate BROKEN after ${attempts} attempts (${ruleLabel}): ${details}. This scenario is permanently dropped — move on to the next scenario.`,
@@ -2050,6 +2061,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
               const firstV = gateResult.violations[0]!;
               const reason = gateBrokenReason(firstV.rule);
               ctx.brokenByGate.push({ scenario: scenarioName, reason, attempts });
+              ctx.gateBrokenTraces.set(scenarioName, ctx.current);
               dropped = 1;
             } else {
               for (const inj of gateResult.injections) {

@@ -226,6 +226,9 @@ function buildLoginReport(withContact: boolean): RunReport {
   const rec = report.reconciliation!;
   check('B5. the drop lands in the emitted_failed bucket with the error', rec.emitted_failed?.length === 1 && rec.emitted_failed[0]?.name === scenarios()[1]!.name && /Nope|toHaveText/.test(rec.emitted_failed[0]?.reason ?? ''), JSON.stringify(rec.emitted_failed));
   check('B6. the identity holds: planned 2 = generated 1 + emitted_failed 1, balanced', rec.planned === 2 && rec.generated === 1 && rec.accountedFor === 2 && rec.balanced && rec.dropped.length === 0, JSON.stringify({ planned: rec.planned, generated: rec.generated, accountedFor: rec.accountedFor, balanced: rec.balanced }));
+  check('B6a. droppedTraces carries the transcribed trace of the dropped scenario under its name, and the identity check holds (invariant 69)',
+    report.droppedTraces?.length === 1 && report.droppedTraces[0]!.name === scenarios()[1]!.name && report.droppedTraces[0]!.stage === 'emitted_failed'
+    && JSON.stringify(report.droppedTraces[0]!.steps) === JSON.stringify(scenarios()[1]!.steps) && report.droppedTracesWarning === undefined && !lines.some((l) => /droppedTraces does not match/.test(l)), JSON.stringify(report.droppedTraces));
   const rendered = renderReconciliation(rec).join('\n');
   check('B7. the console line states the new term and names the drop', /planned 2 = generated 1 \+ dropped 0 \+ emitted_failed 1 \[OK\]/.test(rendered) && rendered.includes(`"${scenarios()[1]!.name}"`), rendered);
   check('B8. the console named the drop during the stage', lines.some((l) => l.startsWith('Dropped from the framework (emitted-spec check failed twice):') && l.includes(scenarios()[1]!.name)), lines.join('\n'));
@@ -309,6 +312,8 @@ function buildLoginReport(withContact: boolean): RunReport {
   check('G7. the failed case is removed from data/contact.json and the two passing cases stay', fs.existsSync(dataFile) && cases.length === 2 && cases.every((c) => c.name !== 'rejected a malformed email'), JSON.stringify(cases));
   const rec = report.reconciliation!;
   check('G8. the member scenario behind the case leaves the report and the funnel balances: planned 5 = generated 4 + emitted_failed 1', rec.planned === 5 && rec.generated === 4 && (rec.emitted_failed ?? []).length === 1 && rec.balanced && rec.added === 0 && !report.scenarios.some((s) => s.name === 'rejected a malformed email'), JSON.stringify({ planned: rec.planned, generated: rec.generated, accountedFor: rec.accountedFor, added: rec.added }));
+  const caseTrace = report.droppedTraces?.find((t) => t.name === dataCase);
+  check('G9. the data case keeps its name in droppedTraces with the member scenario\'s trace, and no unmatched-name line was printed', !!caseTrace && caseTrace.stage === 'emitted_failed' && caseTrace.steps.length > 0 && !caseTrace.noTrace && report.droppedTracesWarning === undefined && !lines.some((l) => /drop name: recorded name/.test(l)), JSON.stringify(caseTrace));
   fs.rmSync(path.dirname(frameworkDir), { recursive: true, force: true });
 }
 
@@ -322,6 +327,8 @@ function buildLoginReport(withContact: boolean): RunReport {
   check('H2. the login test fails twice and is recorded in emitted_failed with an error that names the unset credentials, distinguishable from a rejected recorded login', !!loginDrop && /no happy-login credentials were available to the check/.test(loginDrop.error) && /QA_CORE_TEST_USER/.test(loginDrop.error) && /Welcome back|toContainText/.test(loginDrop.error), JSON.stringify(loginDrop));
   check('H3. the outcome is on the report: the login scenario is gone from the shipped list and named in the bucket', !report.scenarios.some((s) => s.feature === 'login') && report.reconciliation!.emitted_failed?.[0]?.name === 'logged in with the recorded account' && report.reconciliation!.balanced, JSON.stringify(report.reconciliation!.emitted_failed));
   check('H4. the stage said it ran with no login credentials', lines.some((l) => /with no login credentials/.test(l)), lines.join('\n'));
+  const loginTrace = report.droppedTraces?.find((t) => t.name === 'logged in with the recorded account');
+  check('H5. the dropped happy login keeps its trace, its credential values redacted in memory (and so in the working-directory report)', !!loginTrace && loginTrace.steps.filter((st) => st.kind === 'fill' && st.value === '[redacted:credential]').length === 2 && !JSON.stringify(report.droppedTraces).includes(PASS) && !JSON.stringify(report.droppedTraces).includes(USER), JSON.stringify(loginTrace?.steps.filter((st) => st.kind === 'fill')));
 }
 
 server.close();

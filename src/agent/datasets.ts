@@ -1,7 +1,7 @@
 import type { RunReport, Scenario, TraceStep } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { canonicalIntent } from './pom.js';
-import { findHappyLoginScenario, recordedCredentials } from './auth-emit.js';
+import { findHappyLoginScenario, recordedCredentials, AUTH_ENV_USER, AUTH_ENV_PASS } from './auth-emit.js';
 
 /**
  * Dataset extraction — turns a run's recorded fill values into per-feature
@@ -59,34 +59,82 @@ type FillStep = Extract<TraceStep, { kind: 'fill' }>;
 export const CREDENTIAL_REDACTION = '[redacted:credential]';
 
 /**
+ * The credential values a run must never write where a diagnosis or a client
+ * reads them. Built from:
+ *   - the happy login among the shipped scenarios (as before),
+ *   - the happy login among the dropped traces (a dropped happy login would
+ *     otherwise leak its password into droppedTraces),
+ *   - the values of the env credential variables the run used
+ *     (QA_CORE_TEST_USER / QA_CORE_TEST_PASS when set and non-empty),
+ *   - the set remembered on this report object when its dropped traces were
+ *     attached (rememberCredentialSecrets), so a later stage that drops more
+ *     scenarios still masks a password the earlier redaction already hid.
+ * VALUE-BASED: wrong-credential test data never equals a real credential,
+ * so it is never in the set (invariant 43).
+ */
+export function credentialSecrets(report: RunReport, env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const out = new Set<string>(rememberedSecrets.get(report) ?? []);
+  const addLogin = (login: Scenario | null): void => {
+    if (!login) return;
+    const creds = recordedCredentials(login);
+    for (const v of [creds.user, creds.pass]) if (v !== undefined && v !== '') out.add(v);
+  };
+  addLogin(findHappyLoginScenario(report));
+  const droppedAsScenarios = (report.droppedTraces ?? []).flatMap((t) => [
+    { name: t.name, category: t.category ?? 'happy', feature: t.feature, steps: t.steps },
+    ...(t.repairSteps ? [{ name: t.name, category: t.category ?? 'happy', feature: t.feature, steps: t.repairSteps }] : []),
+  ]) as Scenario[];
+  addLogin(findHappyLoginScenario({ ...report, scenarios: droppedAsScenarios }));
+  for (const name of [AUTH_ENV_USER, AUTH_ENV_PASS]) {
+    const v = env[name];
+    if (typeof v === 'string' && v !== '') out.add(v);
+  }
+  out.delete(CREDENTIAL_REDACTION);
+  return out;
+}
+
+// Secrets derived from raw traces, kept per report OBJECT and never
+// serialized: once a dropped trace is redacted in memory, its happy-login
+// password can no longer be read back from it.
+const rememberedSecrets = new WeakMap<RunReport, Set<string>>();
+
+/** Remember a secret set on this report object (see credentialSecrets). */
+export function rememberCredentialSecrets(report: RunReport, secrets: Set<string>): void {
+  rememberedSecrets.set(report, new Set([...(rememberedSecrets.get(report) ?? []), ...secrets]));
+}
+
+/** Steps with every fill whose value is a secret masked; other steps untouched. */
+export function redactSteps(steps: TraceStep[], secret: Set<string>): TraceStep[] {
+  return steps.map((st) => (st.kind === 'fill' && secret.has(st.value) ? { ...st, value: CREDENTIAL_REDACTION } : st));
+}
+
+/** Dropped traces with their steps and repair steps redacted. */
+export function redactDroppedTraces(traces: NonNullable<RunReport['droppedTraces']>, secret: Set<string>): NonNullable<RunReport['droppedTraces']> {
+  if (secret.size === 0) return traces;
+  return traces.map((t) => ({ ...t, steps: redactSteps(t.steps, secret), ...(t.repairSteps ? { repairSteps: redactSteps(t.repairSteps, secret) } : {}) }));
+}
+
+/**
  * A copy of the report with the REAL credential values masked, for the
  * run-report.json that ships INSIDE the framework zip (the deliverable a
  * client receives). VALUE-BASED: only fills whose value equals a credential
- * the happy login used (the values the setup project reads from env) are
- * redacted, wherever they appear — the login scenario, an embedded leading
- * login block, anywhere. Wrong-credential test data (wrong_password, an
- * empty string, an injection payload) is deliberately KEPT: it is what the
- * negative test asserts against, not a secret. Without a happy login there
- * are no real credentials to mask and the report passes through byte for
- * byte. The input report is NOT mutated: the working-directory
- * run-report.json keeps the raw values.
+ * in credentialSecrets (the happy login's values, from the shipped scenarios
+ * or the dropped traces, and the env credential variables) are redacted,
+ * wherever they appear: the login scenario, an embedded leading login block,
+ * a dropped trace. Wrong-credential test data (wrong_password, an empty
+ * string, an injection payload) is deliberately KEPT: it is what the
+ * negative test asserts against, not a secret. With no secret the report
+ * passes through byte for byte. The input report is NOT mutated: the
+ * working-directory run-report.json keeps the raw scenario values (its
+ * droppedTraces are redacted when attached, invariant 69).
  */
 export function redactCredentialValues(report: RunReport): RunReport {
-  const login = findHappyLoginScenario(report);
-  if (!login) return report;
-  const creds = recordedCredentials(login);
-  const secret = new Set([creds.user, creds.pass].filter((v): v is string => v !== undefined && v !== ''));
+  const secret = credentialSecrets(report);
   if (secret.size === 0) return report;
   return {
     ...report,
-    scenarios: report.scenarios.map((s) => ({
-      ...s,
-      steps: s.steps.map((st) =>
-        st.kind === 'fill' && secret.has(st.value)
-          ? { ...st, value: CREDENTIAL_REDACTION }
-          : st,
-      ),
-    })),
+    scenarios: report.scenarios.map((s) => ({ ...s, steps: redactSteps(s.steps, secret) })),
+    ...(report.droppedTraces ? { droppedTraces: redactDroppedTraces(report.droppedTraces, secret) } : {}),
   };
 }
 

@@ -29,6 +29,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { readEvents, pairCalls, segmentsOf, type Call, type Segment } from './lib/run-events.js';
 import { ruleSevenShape, hintRecord, fillGenerateKind, creationEmailUnmatchedLine, plannedNameFor, deriveIntent, type AssertionInput, type ToolContext } from '../src/agent/tools.js';
 import { counterLiteralReason, counterCountCaptureReason, rule2Timeout, isActionStep, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION } from '../src/agent/gate.js';
 import { adaptiveTimeout } from '../src/agent/adaptive-timeout.js';
@@ -40,83 +41,11 @@ const DEFAULT_RUNS = [
   'output/practicesoftwaretesting-com/20261001T122557Z-44cb3d',
 ];
 
-interface Call {
-  line: number;
-  name: string;
-  input: Record<string, unknown>;
-  ok: boolean;
-  preview: string | undefined;
-  durationMs: number;
-}
-
-interface Segment {
-  name: string;
-  category: string;
-  feature: string | undefined;
-  beginLine: number;
-  endLine: number;
-  calls: Call[];
-}
-
 interface Hit { task: 1 | 2 | 3; line: number; text: string }
 
 function die(message: string): never {
   console.error(`rework-shapes: ${message}`);
   process.exit(2);
-}
-
-function readEvents(file: string): Array<{ line: number; e: Record<string, unknown> }> {
-  return fs.readFileSync(file, 'utf8').split('\n')
-    .map((raw, i) => ({ raw, line: i + 1 }))
-    .filter(({ raw }) => raw.trim())
-    .map(({ raw, line }) => ({ line, e: JSON.parse(raw) as Record<string, unknown> }));
-}
-
-/** Pair every tool_call with the tool_result that follows it (the loop runs tools one at a time). */
-function pairCalls(events: Array<{ line: number; e: Record<string, unknown> }>, before: number): Call[] {
-  const calls: Call[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const { line, e } = events[i]!;
-    if (line >= before) break;
-    if (e.type !== 'tool_call') continue;
-    const result = events.slice(i + 1).find((x) => x.e.type === 'tool_result' && x.e.name === e.name);
-    calls.push({
-      line,
-      name: String(e.name),
-      input: (e.input ?? {}) as Record<string, unknown>,
-      ok: result?.e.ok === true,
-      preview: typeof result?.e.preview === 'string' ? result.e.preview : undefined,
-      durationMs: result ? Date.parse(String(result.e.t)) - Date.parse(String(e.t)) : 0,
-    });
-  }
-  return calls;
-}
-
-/**
- * The recordings that reached the Critic: a segment opens at an accepted
- * begin_scenario and is kept when an end_scenario is accepted; a later
- * accepted begin_scenario replaces a segment that never closed (a gate
- * rejection, a finding or a skip abandoned it). The last kept recording of
- * a name wins, as it does on ctx.scenarios.
- */
-function segmentsOf(calls: Call[]): Segment[] {
-  const done = new Map<string, Segment>();
-  let open: Segment | null = null;
-  for (const c of calls) {
-    if (c.name === 'begin_scenario' && c.ok) {
-      open = { name: String(c.input.name ?? ''), category: String(c.input.category ?? 'happy'), feature: typeof c.input.feature === 'string' ? c.input.feature : undefined, beginLine: c.line, endLine: c.line, calls: [] };
-      continue;
-    }
-    if (!open) continue;
-    if (c.name === 'end_scenario' && c.ok) {
-      open.endLine = c.line;
-      done.set(open.name, open);
-      open = null;
-      continue;
-    }
-    open.calls.push(c);
-  }
-  return [...done.values()];
 }
 
 function hintText(input: Record<string, unknown>): string {

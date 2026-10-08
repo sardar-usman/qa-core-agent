@@ -345,23 +345,44 @@ export function citationMismatchReason(category: string, ruleText: string): stri
  * and the cost-ceiling salvage.
  */
 export function claimPlanned(plannedNames: string[], names: string[]): Set<string> {
+  return new Set(claimByPosition(plannedNames, names).filter((p): p is string => p !== undefined));
+}
+
+/**
+ * The same claim as claimPlanned, keeping which name claimed which planned
+ * name (the first occurrence of a repeated name). A name that claims
+ * nothing is absent from the map. The reconciliation files every drop under
+ * the planned name it claims: the plan's canonical name, never a model echo
+ * (standing rule 1).
+ */
+export function matchPlanned(plannedNames: string[], names: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  claimByPosition(plannedNames, names).forEach((p, i) => {
+    if (p !== undefined && !out.has(names[i]!)) out.set(names[i]!, p);
+  });
+  return out;
+}
+
+/** The planned name each input name claims, by position: exact key first, then containment, each planned name claimable once. */
+function claimByPosition(plannedNames: string[], names: string[]): Array<string | undefined> {
+  const out: Array<string | undefined> = names.map(() => undefined);
   const claimed = new Set<string>();
   const keyOf = new Map(plannedNames.map((p) => [p, scenarioNameKey(p)] as const));
-  const loose: string[] = [];
-  for (const n of names) {
+  const loose: Array<{ i: number; k: string }> = [];
+  names.forEach((n, i) => {
     const k = scenarioNameKey(n);
-    if (!k) continue;
+    if (!k) return;
     const exact = plannedNames.find((p) => !claimed.has(p) && keyOf.get(p) === k);
-    if (exact) claimed.add(exact);
-    else loose.push(k);
-  }
-  for (const k of loose) {
+    if (exact) { claimed.add(exact); out[i] = exact; }
+    else loose.push({ i, k });
+  });
+  for (const { i, k } of loose) {
     const hit = plannedNames.find((p) => {
       if (claimed.has(p)) return false;
       const pk = keyOf.get(p) ?? '';
       return pk.length > 0 && (pk.includes(k) || k.includes(pk));
     });
-    if (hit) claimed.add(hit);
+    if (hit) { claimed.add(hit); out[i] = hit; }
   }
-  return claimed;
+  return out;
 }

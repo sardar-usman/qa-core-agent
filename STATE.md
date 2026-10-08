@@ -260,12 +260,18 @@ using the qa-core-heal evaluation report as the template.
   action). Needs an action-first rung: plan the feature on the page that
   starts the action and record the reached page as reached-by-action, never
   by URL. Crawl caps and politeness rules stay.
-- Dropped scenarios keep only their name and verdict on the run-report;
-  their recorded steps are lost, so a drop cannot be diagnosed from the
-  artefact alone. Decide whether to keep dropped traces (redacted).
-- reconciliation.dropped carries the Critic's echo of a scenario name (one
+- ADDRESSED (engine/dropped-traces, Oct 8, not merged): Dropped scenarios
+  keep only their name and verdict on the run-report; their recorded steps
+  are lost, so a drop cannot be diagnosed from the artefact alone. Now
+  run-report.droppedTraces keeps every drop's trace, credential-redacted in
+  every copy (invariant 69). Locked by smoke-dropped-traces.
+- ADDRESSED (engine/dropped-traces, Oct 8, not merged):
+  reconciliation.dropped carries the Critic's echo of a scenario name (one
   run 3 drop lost its quotation marks); identity fields must carry the
-  plan's canonical name (standing rule 1).
+  plan's canonical name (standing rule 1). Now every drop and emitted_failed
+  entry is filed under the planned name with recordedName kept, and a drop
+  with no planned match is a loud line; scripts/dropped-traces-check.ts maps
+  27 of 27 drops of runs 3, 5 and 6.
 - runtime passes the critique client seam through, so the repair block can
   be driven with a fixture Critic (found in #32; today the seam is
   unreachable from the pipeline and only repairOutcome is locked).

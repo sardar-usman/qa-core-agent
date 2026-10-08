@@ -4,14 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
 import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
-import type { RunReport, Scenario } from './trace.js';
+import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, type ReplayEvent } from './replay.js';
 import { stability, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
-import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned } from './rule-coverage.js';
+import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
+import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { totalCost } from './cost-total.js';
 import { discoverPages, writeDiscoveryJson } from './discovery.js';
@@ -397,6 +398,44 @@ export function plannedEntryFor(plan: PlannedScenario[], name: string): PlannedS
   return null;
 }
 
+/**
+ * The repair plan for a set of rework scenarios. Each entry carries the
+ * plan's canonical name (the planned name the recorded one claims; matched
+ * across the whole rework set, so two reworks never claim one planned
+ * entry), never the recorded echo, so the repair Explorer and the
+ * creation-email rule (invariant 14) judge the plan's name. The recorded name
+ * stands in only when the run has no plan entry for it. `recordedNameFor`
+ * maps a name the repair loop used (a returned scenario, a reason key) back
+ * to the recorded name of the rework it repairs, so the first verdicts, which
+ * are keyed by the recorded names, are found for either name.
+ */
+export function repairPlanFor(
+  rework: Scenario[],
+  verdicts: ScenarioVerdict[],
+  runPlan: PlannedScenario[] | undefined,
+): { plan: PlannedScenario[]; recordedNameFor: (name: string) => string } {
+  const canonical = matchPlanned((runPlan ?? []).map((p) => p.name), rework.map((s) => s.name));
+  const plan: PlannedScenario[] = rework.map((s) => {
+    const v = verdictFor(verdicts, s.name);
+    const plannedName = canonical.get(s.name);
+    const planned = plannedName !== undefined ? (runPlan ?? []).find((p) => p.name === plannedName) : undefined;
+    return {
+      name: plannedName ?? s.name,
+      category: s.category ?? 'happy',
+      rationale: `REWORK: ${(v?.reasons ?? []).join('; ') || 'assertion too weak'}`,
+      ...(s.feature ? { feature: s.feature } : {}),
+      ...(planned?.pageUrl ? { pageUrl: planned.pageUrl } : {}),
+      ...(planned?.volatilePage ? { volatilePage: true } : {}),
+    };
+  });
+  const recordedNameFor = (name: string): string => {
+    const hit = matchPlanned(plan.map((p) => p.name), [name]).get(name);
+    if (hit === undefined) return name;
+    return rework[plan.findIndex((p) => p.name === hit)]?.name ?? name;
+  };
+  return { plan, recordedNameFor };
+}
+
 async function repairPass(args: {
   client: Anthropic;
   model: string;
@@ -424,28 +463,27 @@ async function repairPass(args: {
   notes: string[];
   /** Why a rework scenario was not re-recorded, by scenario name (the structured form of `notes`). */
   reasons: Record<string, string>;
+  /**
+   * The repair attempt's trace for a rework that was NOT re-recorded, by
+   * recorded name, when the attempt got far enough to leave one (a
+   * mid-repair stop, a gate rejection). Kept for droppedTraces only.
+   */
+  attempts: Record<string, TraceStep[]>;
 }> {
-  const plan: PlannedScenario[] = args.rework.map((s) => {
-    const v = verdictFor(args.verdicts, s.name);
-    const planned = plannedEntryFor(args.plan ?? [], s.name);
-    return {
-      name: s.name,
-      category: s.category ?? 'happy',
-      rationale: `REWORK: ${(v?.reasons ?? []).join('; ') || 'assertion too weak'}`,
-      ...(s.feature ? { feature: s.feature } : {}),
-      ...(planned?.pageUrl ? { pageUrl: planned.pageUrl } : {}),
-      ...(planned?.volatilePage ? { volatilePage: true } : {}),
-    };
-  });
+  // Scenario names, reason keys and attempt keys come back under the
+  // recorded rework name (recordedNameFor), so every verdict lookup keyed by
+  // the recorded name still works; the repair loop itself sees the plan's name.
+  const { plan, recordedNameFor } = repairPlanFor(args.rework, args.verdicts, args.plan);
   const repairNote = [
     'REPAIR PASS. The planned scenarios above were recorded earlier, but the Critic judged their assertions too weak. Re-record each one now:',
     '- Reuse the recorded steps below as your starting point; do not change what the scenario tests.',
     '- Strengthen exactly the named weaknesses: add the missing outcome assertion, replace the vacuous one.',
     '',
-    ...args.rework.map((s) => {
+    ...args.rework.map((s, i) => {
       const v = verdictFor(args.verdicts, s.name);
       const fixes = v?.required_fixes?.length ? `\n  required fixes: ${v.required_fixes.join('; ')}` : '';
-      return `"${s.name}"\n  critic reasons: ${(v?.reasons ?? []).join('; ') || '(none given)'}${fixes}\n  recorded steps: ${s.steps.map(describeStep).join(' -> ')}`;
+      const planned = plan[i]!.name;
+      return `"${planned}"${planned !== s.name ? ` (first recorded as "${s.name}")` : ''}\n  critic reasons: ${(v?.reasons ?? []).join('; ') || '(none given)'}${fixes}\n  recorded steps: ${s.steps.map(describeStep).join(' -> ')}`;
     }),
   ].join('\n');
 
@@ -479,6 +517,8 @@ async function repairPass(args: {
     });
     const notes: string[] = [];
     const reasons: Record<string, string> = {};
+    const attempts: Record<string, TraceStep[]> = {};
+    for (const [name, trace] of ctx.gateBrokenTraces) attempts[recordedNameFor(name)] = trace.steps;
     if (loop.closeout) {
       notes.push(loop.closeout.closed
         ? `"${loop.closeout.scenario}" closed under the cost closeout grace ($${loop.closeout.usd.toFixed(4)}).`
@@ -488,6 +528,7 @@ async function repairPass(args: {
       const why = loop.endedReason === 'cost_ceiling' ? 'mid-repair when the cost ceiling hit; the in-progress work is discarded' : 'left unfinished by the repair pass; discarded';
       notes.push(`"${ctx.current.name}" was ${why}.`);
       reasons[ctx.current.name] = why;
+      if (ctx.current.steps.length > 0) attempts[recordedNameFor(ctx.current.name)] = ctx.current.steps;
       ctx.current = null;
     }
     for (const f of ctx.findings) { notes.push(`finding during repair of "${f.scenario}": expected ${f.expected}, page stayed at ${f.url}.`); reasons[f.scenario] ??= `finding: expected ${f.expected}, URL at the time ${f.url}`; }
@@ -500,7 +541,17 @@ async function repairPass(args: {
     // entry never reads as "reason not recorded".
     const reRecorded = new Set(ctx.scenarios.map((s) => scenarioNameKey(s.name)));
     for (const p of plan) if (!reRecorded.has(scenarioNameKey(p.name))) reasons[p.name] ??= 'no trace came back from the repair pass';
-    return { scenarios: ctx.scenarios, cost: loop.cost, steps: ctx.steps, heals: ctx.heals, notes, reasons };
+    const byRecorded: Record<string, string> = {};
+    for (const [name, why] of Object.entries(reasons)) byRecorded[recordedNameFor(name)] ??= why;
+    return {
+      scenarios: ctx.scenarios.map((s) => ({ ...s, name: recordedNameFor(s.name) })),
+      cost: loop.cost,
+      steps: ctx.steps,
+      heals: ctx.heals,
+      notes,
+      reasons: byRecorded,
+      attempts,
+    };
   } finally {
     await context?.close();
     await browser?.close();
@@ -1094,6 +1145,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     ...(requirementsUsd !== undefined ? { requirementsUsd } : {}),
   };
   let brokenByGate: Array<{ scenario: string; reason: string; attempts: number }> = [];
+  // The trace each gate-broken scenario was rejected with (droppedTraces, invariant 69).
+  let gateBrokenTraces = new Map<string, Scenario>();
   let gateInjectionLog: Array<{ scenario: string; stepIndex: number; assertionType: string; detail: string }> = [];
   // Scenarios begun but never finalized — recorded explicitly so reconciliation
   // can account for them (planned = generated + dropped + incomplete) instead of
@@ -1249,6 +1302,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           } else {
             const firstV = gr.violations[0]!;
             ctx.brokenByGate.push({ scenario: ctx.current.name, reason: gateBrokenReason(firstV.rule), attempts: 1 });
+            ctx.gateBrokenTraces.set(ctx.current.name, ctx.current);
           }
         } else {
           ctx.incomplete.push({ scenario: ctx.current.name, reason: 'explorer stopped before finalizing (no assertion recorded)' });
@@ -1269,6 +1323,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       if (opts.resume.spentUsd.critic > 0) cost.criticUsd = opts.resume.spentUsd.critic;
     }
     brokenByGate = ctx.brokenByGate;
+    gateBrokenTraces = ctx.gateBrokenTraces;
     gateInjectionLog = ctx._gateInjectionLog;
     incomplete = ctx.incomplete;
     findings = ctx.findings;
@@ -1381,6 +1436,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // rework or reject drops for real (no loops, structurally one pass).
   // 'pass' continues to Reality-Check (Step 4).
   let scenariosForReplay = scenarios;
+  // What the repair pass recorded, by the recorded rework name: the
+  // re-recorded traces and the partial attempts (droppedTraces only).
+  const repairTraces: { repaired: Scenario[]; attempts: Record<string, TraceStep[]> } = { repaired: [], attempts: {} };
   if (review && !opts.skipCritic) {
     const split = splitGate(scenarios, review.verdicts);
     if (split.rejected.length > 0) {
@@ -1477,6 +1535,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             secondVerdicts = [];
           }
           repairedScenarios = repair.scenarios;
+          repairTraces.repaired = repair.scenarios;
+          repairTraces.attempts = repair.attempts;
         } catch (err) {
           const cls = classifyRunError(err);
           if (cls.kind !== 'other') {
@@ -1578,6 +1638,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // drop the ones that pass-then-fail. Only scenarios that pass every
   // iteration make it into the final emitted spec.
   let stabilityInfo: RunReport['stability'];
+  // The traces stability re-runs (droppedTraces for a stability drop).
+  const stabilityInput = emittedScenarios;
   if (!opts.skipStability && emittedScenarios.length > 0) {
     try {
       const storageStatePath = path.join(process.cwd(), 'playwright', '.auth', 'user.json');
@@ -1750,7 +1812,25 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // all share one auditable funnel.
   // A name in two funnel buckets is a run problem said out loud, never a
   // "+1 added" that balances the identity by accident.
-  report.reconciliation = reconcile(report, { onDuplicate: (m) => opts.onEvent?.({ type: 'message', text: `WARNING: ${m}` }) });
+  // Every drop is filed under the plan's canonical name; a drop whose
+  // recorded name claims no planned name is said out loud (standing rule 1).
+  report.reconciliation = reconcile(report, {
+    onDuplicate: (m) => opts.onEvent?.({ type: 'message', text: `WARNING: ${m}` }),
+    onUnmatchedName: (m) => opts.onEvent?.({ type: 'message', text: `WARNING: ${m}` }),
+  });
+
+  // Dropped traces (invariant 69): every drop point's trace, attached under
+  // the drop's canonical name, credential-redacted, and checked against the
+  // drop names (a gap is a loud line and droppedTracesWarning).
+  const traceStore = traceStoreForRun({
+    gateBroken: gateBrokenTraces,
+    recorded: scenarios,
+    repaired: repairTraces.repaired,
+    repairAttempts: repairTraces.attempts,
+    replayed: scenariosForReplay,
+    stabilityInput,
+  });
+  attachDroppedTraces(report, traceStore, (line) => opts.onEvent?.({ type: 'message', text: line }));
 
   // Rule coverage: classify every stated rule as covered, planned-but-dropped,
   // or not-planned. Attached to the report and written to its own file so the
