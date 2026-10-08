@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunReport } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
-import { reconcile } from './reconcile.js';
+import { reconcile, unmatchedDropLine } from './reconcile.js';
+import { attachDroppedTraces, recordOf, storeFromDroppedTraces, storeTrace, type TraceRecord } from './dropped-traces.js';
 import { computeRuleCoverage } from './rule-coverage.js';
 import { unreachableFeatures } from './planner.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, type AuthCredentials } from './auth-emit.js';
@@ -283,8 +284,19 @@ function rebuildAccounting(
   log: (l: string) => void,
   removedScenarios: Set<string> = new Set(),
   dropped: Array<{ scenario: string; error: string }> = [],
+  emittedTraces: Map<string, TraceRecord> = new Map(),
 ): void {
-  report.reconciliation = reconcile(report, { onDuplicate: (m) => log(`WARNING: ${m}`) });
+  // A name the runtime already reported as unmatched is not printed twice.
+  const reported = new Set(report.reconciliation?.unmatchedDropNames ?? []);
+  report.reconciliation = reconcile(report, {
+    onDuplicate: (m) => log(`WARNING: ${m}`),
+    onUnmatchedName: (m) => { if (![...reported].some((n) => unmatchedDropLine(n) === m)) log(`WARNING: ${m}`); },
+  });
+  // Dropped traces: the earlier stages' traces carried over, plus the
+  // transcribed trace of every scenario this stage dropped (invariant 69).
+  const store = storeFromDroppedTraces(report.droppedTraces);
+  for (const [name, record] of emittedTraces) storeTrace(store, 'emitted_failed', name, record);
+  attachDroppedTraces(report, store, log);
   if (requirements && report.ruleCoverage) {
     const dropReasons = new Map<string, string>(report.reconciliation.dropped.map((d) => [d.name, d.reason]));
     for (const e of report.emittedFailed ?? []) dropReasons.set(e.scenario, `emitted-spec check: ${e.error.split('\n')[0] ?? ''}`);
@@ -395,7 +407,9 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     const failedTwice = tests.filter((t) => t.status === 'failed');
     const byTitle = new Map(report.scenarios.map((s) => [testTitleFor(s), s]));
     const byName = new Map(report.scenarios.map((s) => [s.name, s]));
-    const dropped: Array<{ scenario: string; error: string }> = [];
+    const dropped: Array<{ scenario: string; error: string; dataCase?: boolean }> = [];
+    // The transcribed trace of each drop, by its emitted_failed name (droppedTraces).
+    const emittedTraces = new Map<string, TraceRecord>();
     // Scenarios to remove from the report: a failed scenario test, or the
     // member scenario behind a failed data case (its test IS that case).
     const removeScenarios = new Set<string>();
@@ -405,16 +419,19 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     for (const t of failedTwice) {
       const error = annotateLoginError(t, frameworkDir, credsPassed);
       const s = byTitle.get(t.name);
-      if (s) { dropped.push({ scenario: s.name, error }); removeScenarios.add(s.name); continue; }
+      if (s) { dropped.push({ scenario: s.name, error }); removeScenarios.add(s.name); emittedTraces.set(s.name, recordOf(s)); continue; }
       const data = parseDataTestTitle(t.name);
       if (data) {
         // Recorded under "<feature>: <case name>". A member case's scenario
         // leaves the report too (its only test was this case); a rule-derived
         // case has no scenario and leaves only the data file.
-        dropped.push({ scenario: `${data.feature}: ${data.caseName}`, error });
+        const caseName = `${data.feature}: ${data.caseName}`;
+        dropped.push({ scenario: caseName, error, dataCase: true });
         removedCases.set(data.feature, (removedCases.get(data.feature) ?? new Set()).add(data.caseName));
         const member = byName.get(data.caseName) ?? byName.get(data.caseName.replace(/^boundary: /, ''));
         if (member) removeScenarios.add(member.name);
+        // The member's trace is the case's trace; a rule-derived case has none.
+        emittedTraces.set(caseName, member ? recordOf(member) : { steps: [], noTrace: 'a rule-derived data case: no recorded scenario behind it' });
         continue;
       }
       unmapped.push(t);
@@ -432,7 +449,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     report.emittedFailed = [...(report.emittedFailed ?? []), ...dropped];
     report.scenarios = report.scenarios.filter((s) => !removeScenarios.has(s.name));
     for (const d of dropped) log(`Dropped from the framework (emitted-spec check failed twice): "${d.scenario}": ${d.error.split('\n')[0] ?? ''}`);
-    rebuildAccounting(report, opts.requirements, log, removeScenarios, dropped);
+    rebuildAccounting(report, opts.requirements, log, removeScenarios, dropped, emittedTraces);
     unlink();
     cleanRunFiles(frameworkDir);
     fs.rmSync(frameworkDir, { recursive: true, force: true });

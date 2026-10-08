@@ -1,6 +1,6 @@
 import type { RunReport } from './trace.js';
 import { elementLookedFor, findingKindOf } from './finding-kind.js';
-import { scenarioNameKey } from './rule-coverage.js';
+import { matchPlanned, scenarioNameKey } from './rule-coverage.js';
 
 /**
  * Reporting reconciliation.
@@ -51,6 +51,12 @@ export interface DroppedScenario {
    */
   stage: 'gate' | 'critic' | 'repair' | 'replay' | 'stability';
   reason: string;
+  /**
+   * The name the scenario was recorded (or echoed) under, kept only when it
+   * differs from `name`, which is the plan's canonical name (standing rule 1;
+   * run 5e4394 filed a drop under a Critic echo with its quotation marks lost).
+   */
+  recordedName?: string;
 }
 
 export interface IncompleteScenario {
@@ -87,7 +93,14 @@ export interface Reconciliation {
    * Absent on a report written before the stage existed; the renderer and
    * the dashboard treat a missing bucket as empty.
    */
-  emitted_failed?: Array<{ name: string; reason: string }>;
+  emitted_failed?: Array<{ name: string; reason: string; recordedName?: string }>;
+  /**
+   * Recorded drop names (dropped and emitted_failed) that matched no planned
+   * name in a run that has a plan: kept under the recorded name and printed
+   * loudly through onUnmatchedName. Absent when every drop matched or the run
+   * has no plan.
+   */
+  unmatchedDropNames?: string[];
   /** generated + dropped.length + incomplete.length + findings.length + skipped.length + emitted_failed.length. */
   accountedFor: number;
   /**
@@ -127,6 +140,17 @@ export interface ReconcileOptions {
    * bucket, never as "+N added".
    */
   onDuplicate?: (message: string) => void;
+  /**
+   * A drop whose recorded name matches no planned name in a run with a plan.
+   * The drop keeps its recorded name and is listed on
+   * `unmatchedDropNames`; the runtime passes a handler that prints the line.
+   */
+  onUnmatchedName?: (message: string) => void;
+}
+
+/** The loud line for a drop whose recorded name claims no planned name. */
+export function unmatchedDropLine(recordedName: string): string {
+  return `drop name: recorded name ${JSON.stringify(recordedName)} matched no planned name`;
 }
 
 /**
@@ -279,8 +303,6 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   };
   for (const s of report.scenarios) claim('generated', s.name);
   const droppedOnce = dropped.filter((d) => claim(`dropped at ${d.stage}`, d.name));
-  dropped.length = 0;
-  dropped.push(...droppedOnce);
   const incompleteOnce = incomplete.filter((i) => claim('incomplete', i.name));
   incomplete.length = 0;
   incomplete.push(...incompleteOnce);
@@ -292,9 +314,45 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   // and the test failed twice, so the scenario was dropped from the framework
   // after every earlier stage had passed it (run 51d535: 3 of 6 on a clean
   // install). Its own term, with the Playwright error as the reason.
-  const emittedFailed = (report.emittedFailed ?? [])
-    .map((e) => ({ name: e.scenario, reason: e.error }))
-    .filter((e) => claim('emitted_failed', e.name));
+  const emittedAll = (report.emittedFailed ?? []).map((e) => ({ name: e.scenario, reason: e.error, dataCase: e.dataCase === true }));
+  const emittedOnce = emittedAll.filter((e) => claim('emitted_failed', e.name));
+
+  // 9. Canonical names. Every drop is filed under the plan's canonical name,
+  // the planned name its recorded name claims (exact key first, containment
+  // second, each planned name claimable once, the same matcher skip_scenario
+  // and the salvage use), never the Critic's or the model's echo. The bucket
+  // claim above stays on the recorded names, so a double record is still
+  // caught. Every recorded name in the run takes part in the match in bucket
+  // order, so a shipped scenario keeps the plan entry it fulfilled. With no
+  // plan the recorded name stands in; with a plan and no match the drop keeps
+  // its recorded name and says so loudly. A data-driven emitted case is named
+  // "<feature>: <case>" by design (invariant 63) and is not a scenario name.
+  const noPlanRecorded = report.plan == null;
+  const allNames = [...new Set([
+    ...report.scenarios.map((x) => x.name),
+    ...droppedOnce.map((d) => d.name),
+    ...incompleteOnce.map((i) => i.name),
+    ...findingsOnce.map((f) => f.name),
+    ...skipped.map((x) => x.name),
+    ...emittedOnce.filter((e) => !e.dataCase).map((e) => e.name),
+  ])];
+  const plannedFor = matchPlanned((report.plan ?? []).map((p) => p.name), allNames);
+  const unmatchedDropNames: string[] = [];
+  const canonical = (recorded: string): { name: string; recordedName?: string } => {
+    if (noPlanRecorded) return { name: recorded };
+    const planned = plannedFor.get(recorded);
+    if (planned === undefined) {
+      if (!unmatchedDropNames.includes(recorded)) {
+        unmatchedDropNames.push(recorded);
+        opts.onUnmatchedName?.(unmatchedDropLine(recorded));
+      }
+      return { name: recorded };
+    }
+    return planned === recorded ? { name: planned } : { name: planned, recordedName: recorded };
+  };
+  dropped.length = 0;
+  dropped.push(...droppedOnce.map((d) => ({ ...d, ...canonical(d.name) })));
+  const emittedFailed = emittedOnce.map(({ dataCase, ...e }) => (dataCase ? e : { ...e, ...canonical(e.name) }));
 
   const accountedFor = generated + dropped.length + incomplete.length + findings.length + skipped.length + emittedFailed.length;
   const planned = report.plan?.length ?? accountedFor;
@@ -317,7 +375,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
     note = `Explorer accounted for ${accountedFor} scenario(s) vs ${planned} planned (${shortfall} fewer). ${shortfall} planned scenario(s) vanished without a drop or incomplete reason.`;
   }
 
-  return { planned, generated, dropped, incomplete, findings, skipped, emitted_failed: emittedFailed, accountedFor, added, balanced, stable, recovered, flaky, broken, noPlan, note };
+  return { planned, generated, dropped, incomplete, findings, skipped, emitted_failed: emittedFailed, ...(unmatchedDropNames.length > 0 ? { unmatchedDropNames } : {}), accountedFor, added, balanced, stable, recovered, flaky, broken, noPlan, note };
 }
 
 /** Which stage of the pipeline left a zero-scenario run empty. */
@@ -391,6 +449,11 @@ export function diagnoseEmptyRun(report: RunReport): { cause: EmptyRunCause; lin
  * Render the reconciliation as plain text lines for the CLI and gateway.
  * Names every dropped scenario and its reason.
  */
+/** The recorded name beside a drop filed under its planned name, empty when they agree. */
+function recordedAs(recordedName: string | undefined): string {
+  return recordedName ? ` (recorded as ${JSON.stringify(recordedName)})` : '';
+}
+
 export function renderReconciliation(rec: Reconciliation): string[] {
   const lines: string[] = [];
   const balanceMark = rec.balanced ? 'OK' : 'MISMATCH';
@@ -414,7 +477,7 @@ export function renderReconciliation(rec: Reconciliation): string[] {
   if (rec.dropped.length > 0) {
     lines.push('  dropped:');
     for (const d of rec.dropped) {
-      lines.push(`    • [${d.stage}] "${d.name}" — ${d.reason}`);
+      lines.push(`    • [${d.stage}] "${d.name}"${recordedAs(d.recordedName)} — ${d.reason}`);
     }
   }
   if (rec.incomplete.length > 0) {
@@ -448,7 +511,7 @@ export function renderReconciliation(rec: Reconciliation): string[] {
   if (emittedFailed.length > 0) {
     lines.push('  emitted_failed (the written framework failed the test twice; dropped from the framework):');
     for (const e of emittedFailed) {
-      lines.push(`    • "${e.name}" — ${e.reason}`);
+      lines.push(`    • "${e.name}"${recordedAs(e.recordedName)} — ${e.reason}`);
     }
   }
   if (rec.note) lines.push(`  note: ${rec.note}`);

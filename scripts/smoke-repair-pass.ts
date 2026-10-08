@@ -31,6 +31,7 @@ import { decideRepairPass, splitGate, mergeRepairVerdicts, repairDoneEvent, repa
 import type { Scenario } from '../src/agent/trace.js';
 import { reconcile, diagnoseEmptyRun, REPAIR_REASON_NOT_RECORDED } from '../src/agent/reconcile.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
+import { repairPlanFor } from '../src/agent/runtime.js';
 import type { RunReport } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -383,6 +384,37 @@ check('F7. verdictFor finds a scenario\'s verdict through the prefix',
   check('J11. the parsed repair verdict carries the per-fix judgement', reviewed.verdicts[0]?.fixes?.[0]?.applied === true);
   const plain = await critique({ scenarios: [scenario], url: 'https://x.example/', apiKey: 'fake', client });
   check('J12. a first-pass review renders no fixes block and one system block', plain.verdicts.length === 1 && !/REQUIRED FIXES/.test((captured as unknown as { content: string } | null)?.content ?? '') && ((captured as unknown as { system: unknown[] } | null)?.system ?? []).length === 1);
+}
+
+/* ─── L. the repair plan carries the plan's canonical name (invariant 69, standing rule 1) ── */
+{
+  const PLANNED = 'rejected sign-up with a blank "first name" and showed an error';
+  const RECORDED = '1. [negative] rejected sign-up with a blank first name and showed an error';
+  const OTHER = 'added a product and the cart badge went up';
+  const rework: Scenario[] = [
+    { name: RECORDED, category: 'negative', feature: 'account', steps: [] },
+    { name: OTHER, category: 'happy', feature: 'cart', steps: [] },
+  ];
+  const verdicts: ScenarioVerdict[] = [
+    { scenario: RECORDED, verdict: 'rework', reasons: ['the error text is not asserted'], required_fixes: ['assert the first-name error'] },
+    { scenario: OTHER, verdict: 'rework', reasons: ['badge read as a count'], required_fixes: [] },
+  ];
+  const runPlan = [
+    { name: PLANNED, category: 'negative' as const, rationale: 'r', feature: 'account', pageUrl: 'https://shop.example/auth/register' },
+  ];
+  const { plan, recordedNameFor } = repairPlanFor(rework, verdicts, runPlan);
+  check('L1. the repair plan entry carries the planned name, not the recorded echo, with its planned page', plan[0]?.name === PLANNED && plan[0]?.pageUrl === 'https://shop.example/auth/register', JSON.stringify(plan[0]));
+  check('L2. the rationale still carries the first verdict found under the recorded name', plan[0]?.rationale === 'REWORK: the error text is not asserted', plan[0]?.rationale);
+  check('L3. a rework with no plan entry keeps its recorded name', plan[1]?.name === OTHER && plan[1]?.pageUrl === undefined);
+  check('L4. recordedNameFor maps the planned name (and a small echo of it) back to the recorded name, so the first verdict is found for either name',
+    recordedNameFor(PLANNED) === RECORDED && recordedNameFor('rejected sign-up with a blank first name and showed an error') === RECORDED
+    && verdictFor(verdicts, recordedNameFor(PLANNED))?.reasons[0] === 'the error text is not asserted'
+    && verdictFor(verdicts, PLANNED)?.reasons[0] === 'the error text is not asserted');
+  check('L5. a name the plan does not know maps to itself', recordedNameFor(OTHER) === OTHER && recordedNameFor('something else entirely') === 'something else entirely');
+  const twice = repairPlanFor([rework[0]!, { ...rework[0]!, name: `${RECORDED} (page 2)` }], verdicts, runPlan);
+  check('L6. two reworks never claim one planned entry: the second keeps its recorded name', twice.plan[0]!.name === PLANNED && twice.plan[1]!.name === `${RECORDED} (page 2)`, JSON.stringify(twice.plan.map((p) => p.name)));
+  const noPlan = repairPlanFor(rework, verdicts, undefined);
+  check('L7. no plan in the run: every entry keeps its recorded name', noPlan.plan.map((p) => p.name).join('|') === `${RECORDED}|${OTHER}`);
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

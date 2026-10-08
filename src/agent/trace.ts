@@ -575,8 +575,24 @@ export interface RunReport {
    * reconciliation identity:
    * planned === generated + dropped + incomplete + findings + skipped + emitted_failed.
    */
-  emittedFailed?: Array<{ scenario: string; error: string }>;
+  emittedFailed?: Array<{
+    scenario: string;
+    error: string;
+    /** True for a data-driven case, named "<feature>: <case>" rather than by a scenario (invariant 63). */
+    dataCase?: boolean;
+  }>;
   reconciliation?: import('./reconcile.js').Reconciliation;
+  /**
+   * The recorded trace of every dropped scenario, so a drop can be diagnosed
+   * from run-report.json alone (invariant 69): one entry per name in
+   * reconciliation.dropped plus reconciliation.emitted_failed, under the
+   * same canonical name. Credential values are redacted in every copy, the
+   * working-directory report included. Absent when nothing was dropped.
+   * Nothing that emits a framework reads it.
+   */
+  droppedTraces?: import('./dropped-traces.js').DroppedTrace[];
+  /** Set when the dropped traces and the drop names disagree (a missing or an extra trace), with the names. */
+  droppedTracesWarning?: string;
   /**
    * Rule coverage against the requirements map (SRS runs only). Also written
    * to rule-coverage.json in the run output directory. Absent without --srs.
