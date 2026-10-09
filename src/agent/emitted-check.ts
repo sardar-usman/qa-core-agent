@@ -8,7 +8,12 @@ import { reconcile, unmatchedDropLine } from './reconcile.js';
 import { attachDroppedTraces, recordOf, storeFromDroppedTraces, storeTrace, type TraceRecord } from './dropped-traces.js';
 import { computeRuleCoverage } from './rule-coverage.js';
 import { unreachableFeatures } from './planner.js';
-import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, type AuthCredentials } from './auth-emit.js';
+import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, reportUsesTestAccount, type AuthCredentials } from './auth-emit.js';
+import {
+  readTestCredentials, recordWrongPassword, refuseWrongPassword, wrongPasswordCapReason,
+  wrongPasswordCountLine, wrongPasswordSubmits,
+} from './test-credentials.js';
+import { maskForDisk } from './credential-leak.js';
 
 /**
  * The emitted-spec check: the last stage before the zip.
@@ -38,14 +43,20 @@ import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentia
  * the stage records `inconclusive` with the reason, keeps the framework whole
  * and prints a loud warning. A network blip never drops everything.
  *
- * Credentials: the login spec and the auth setup read QA_CORE_TEST_USER and
- * QA_CORE_TEST_PASS. The stage passes the run's recorded happy-login
- * credentials (the values findHappyLoginScenario yields, the same ones the
- * setup reads from env) into the Playwright child's environment, in memory
- * only: never a .env in the run directory, never the zip, never a log line.
- * With no happy login it passes nothing and the login project behaves as the
- * framework would on a client machine; a login test that then fails twice is
- * recorded with an error that says the values were unset.
+ * Credentials: the login spec, the auth setup and every credential-marked
+ * fill read QA_CORE_TEST_USER and QA_CORE_TEST_PASS. The stage passes the
+ * test account from the agent's own env (the host-scoped pair when set, else
+ * the generic one, invariant 70) into the Playwright child's environment
+ * under the generic names, in memory only: never a .env in the run
+ * directory, never the zip, never a log line. A report written before the
+ * marker existed, run with no env account, falls back to its recorded happy
+ * login. With neither it passes nothing; a login test that then fails twice
+ * is recorded with an error that says the values were not provided.
+ *
+ * Wrong-password submits count against the run's cap here too: a test the
+ * remaining cap cannot cover is not run (`--grep-invert`), kept in the
+ * framework and recorded as skipped with the cap reason, and a failed one is
+ * retried only when the cap covers the retry.
  *
  * Dataset cases: a data-driven case ("[data] <feature> — <case>") that fails
  * twice is removed from data/<feature>.json (re-applied after the
@@ -78,11 +89,14 @@ export interface EmittedCheckOptions {
   /** Skip the pre-run reachability probe (a local fixture answers it anyway). */
   probe?: boolean;
   /**
-   * Credentials for the child env. Absent: the run's recorded happy-login
-   * credentials (findHappyLoginScenario). null: pass none, as a run with no
-   * happy login would (the smoke's seam for the unset outcome).
+   * Credentials for the child env. Absent: the test account from the env
+   * (readTestCredentials for the run's host), else, for a report with no
+   * credential marker, its recorded happy login. null: pass none (the
+   * smoke's seam for the unset outcome).
    */
   credentials?: AuthCredentials | null;
+  /** The env the test account is read from; process.env when absent. */
+  env?: NodeJS.ProcessEnv;
   /** Test seam: sees the child's environment right before each spawn. Never used for logging. */
   observeChildEnv?: (env: NodeJS.ProcessEnv) => void;
   log: (line: string) => void;
@@ -128,8 +142,9 @@ export interface EmittedCheckResult {
  */
 export function writeReportFiles(outDir: string, report: RunReport): void {
   fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(report, null, 2));
-  if (report.ruleCoverage) fs.writeFileSync(path.join(outDir, 'rule-coverage.json'), JSON.stringify(report.ruleCoverage, null, 2));
+  // No test-account value reaches disk (invariant 70): every string masked.
+  fs.writeFileSync(path.join(outDir, 'run-report.json'), JSON.stringify(maskForDisk(report), null, 2));
+  if (report.ruleCoverage) fs.writeFileSync(path.join(outDir, 'rule-coverage.json'), JSON.stringify(maskForDisk(report.ruleCoverage), null, 2));
 }
 
 /** The agent repo root: the nearest ancestor of this module that holds Playwright's test package. */
@@ -188,10 +203,11 @@ function escapeRegex(s: string): string {
 
 interface PwRun { status: number | null; killed: boolean; tests: EmittedTest[]; stderr: string; durationMs: number }
 
-async function runPlaywright(frameworkDir: string, agentRoot: string, grep: string[] | null, timeoutMs: number, extraEnv: NodeJS.ProcessEnv = {}, observe?: (env: NodeJS.ProcessEnv) => void): Promise<PwRun> {
+async function runPlaywright(frameworkDir: string, agentRoot: string, grep: string[] | null, timeoutMs: number, extraEnv: NodeJS.ProcessEnv = {}, observe?: (env: NodeJS.ProcessEnv) => void, grepInvert: string[] = []): Promise<PwRun> {
   const cli = path.join(agentRoot, 'node_modules', '@playwright', 'test', 'cli.js');
   const args = [cli, 'test', '--reporter=json', '--workers=1', '--retries=0'];
   if (grep && grep.length > 0) args.push('--grep', grep.map(escapeRegex).join('|'));
+  if (grepInvert.length > 0) args.push('--grep-invert', grepInvert.map(escapeRegex).join('|'));
   // The recorded credentials travel in the child's environment only; the
   // parent's own QA_CORE_TEST_* (a developer's shell) never leak into the
   // check, so what the framework sees is exactly what the run recorded.
@@ -274,7 +290,7 @@ function annotateLoginError(t: EmittedTest, frameworkDir: string, credsPassed: b
     try { spec = fs.readFileSync(candidate, 'utf8'); break; } catch { /* try the next */ }
   }
   if (!spec.includes(AUTH_ENV_USER) && !spec.includes(AUTH_ENV_PASS)) return error;
-  return `no happy-login credentials were available to the check (the run recorded no happy login, so ${AUTH_ENV_USER} / ${AUTH_ENV_PASS} were unset and the test ran with empty values); ${error}`;
+  return `test credentials not provided to the check (${AUTH_ENV_USER} / ${AUTH_ENV_PASS} were unset, so the test ran with empty values); ${error}`;
 }
 
 /** Rebuild reconciliation and rule coverage after the emitted drops, the same builders the runtime used. */
@@ -342,12 +358,48 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
 
   const agentRoot = opts.agentRoot ?? findAgentRoot();
   const t0 = Date.now();
-  // The run's recorded happy-login credentials, for the child env only.
+  // The test account for the child env only (invariant 70): the env pair the
+  // agent ran with, passed under the generic names the framework reads. A
+  // report from before the marker, with no env account, uses its recorded login.
+  const envCreds = readTestCredentials(opts.env ?? process.env, report.url);
   const login = findHappyLoginScenario(report);
-  const creds: AuthCredentials | null = opts.credentials === undefined ? (login ? recordedCredentials(login) : null) : opts.credentials;
+  const legacy = !envCreds && login && !reportUsesTestAccount(report) ? recordedCredentials(login) : null;
+  const creds: AuthCredentials | null = opts.credentials === undefined
+    ? (envCreds ? { user: envCreds.user, pass: envCreds.pass } : legacy)
+    : opts.credentials;
   const childEnv = credentialEnv(creds);
   const credsPassed = Object.keys(childEnv).length > 0;
-  log(`Emitted-spec check: running the written framework once with Playwright (chromium, one worker) against ${report.url}${credsPassed ? ` with the recorded login credentials in the child environment (${AUTH_ENV_USER} / ${AUTH_ENV_PASS}, in memory only)` : ' with no login credentials (the run recorded no happy login)'}`);
+  const credsSource = opts.credentials !== undefined ? 'the supplied credentials' : envCreds ? `${envCreds.userVar} / ${envCreds.passVar}` : 'the recorded login';
+  log(`Emitted-spec check: running the written framework once with Playwright (chromium, one worker) against ${report.url}${credsPassed ? ` with the test account in the child environment (${AUTH_ENV_USER} / ${AUTH_ENV_PASS} from ${credsSource}, in memory only)` : ' with no test account (test credentials not provided)'}`);
+
+  // The wrong-password cap (invariant 70): tests the remaining cap cannot
+  // cover are not run; they stay in the framework, recorded as skipped.
+  const ledger = report.wrongPasswordAttempts;
+  const submitsByTitle = new Map<string, number>();
+  for (const sc of report.scenarios) {
+    const n = wrongPasswordSubmits(sc);
+    if (n > 0) submitsByTitle.set(testTitleFor(sc), n);
+  }
+  const capExcluded: string[] = [];
+  if (ledger && submitsByTitle.size > 0) {
+    let room = Math.max(0, ledger.cap - ledger.count);
+    for (const sc of report.scenarios) {
+      const n = submitsByTitle.get(testTitleFor(sc));
+      if (!n) continue;
+      if (n <= room) { room -= n; continue; }
+      capExcluded.push(testTitleFor(sc));
+      refuseWrongPassword(ledger, sc.name, 'emitted');
+    }
+    if (capExcluded.length > 0) log(`WARNING: Emitted-spec check: ${capExcluded.length} test(s) not run: ${wrongPasswordCapReason(ledger)}: ${capExcluded.map((t) => `"${t}"`).join(', ')}; they stay in the framework as generated`);
+  }
+  const capSkipped = (): EmittedTest[] => capExcluded.map((name) => ({ name, status: 'skipped' as const, error: ledger ? wrongPasswordCapReason(ledger) : 'not run', attempts: 0 }));
+  const countRun = (ran: EmittedTest[]): void => {
+    if (!ledger) return;
+    for (const t of ran) {
+      const n = submitsByTitle.get(t.name);
+      if (n && (t.status === 'passed' || t.status === 'failed')) recordWrongPassword(ledger, n, 'emitted');
+    }
+  };
 
   if (opts.probe !== false) {
     const probeErr = await probeUrl(report.url);
@@ -360,7 +412,8 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
 
   const unlink = linkNodeModules(frameworkDir, agentRoot);
   try {
-    const first = await runPlaywright(frameworkDir, agentRoot, null, timeoutMs, childEnv, opts.observeChildEnv);
+    const first = await runPlaywright(frameworkDir, agentRoot, null, timeoutMs, childEnv, opts.observeChildEnv, capExcluded);
+    countRun(first.tests);
     if (first.killed) {
       const reason = `timed out after ${Math.round(timeoutMs / 1000)}s; the framework is kept as generated`;
       log(`WARNING: Emitted-spec check inconclusive: ${reason}`);
@@ -384,11 +437,29 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
       return { ...none, report: withEmittedRun(report, { tests: first.tests, durationMs: Date.now() - t0, inconclusive: true, reason }) };
     }
 
-    let tests = first.tests.map((t) => ({ ...t, attempts: 1 }));
-    if (failedFirst.length > 0) {
+    let tests = [...first.tests.map((t) => ({ ...t, attempts: 1 })), ...capSkipped()];
+    // A failed wrong-password test is retried only when the cap covers it;
+    // otherwise it fails with the cap named, never retried past the cap.
+    const noRetry = new Set<string>();
+    if (ledger) {
+      let room = Math.max(0, ledger.cap - ledger.count);
+      for (const t of failedFirst) {
+        const n = submitsByTitle.get(t.name) ?? 0;
+        if (n === 0) continue;
+        if (n <= room) { room -= n; continue; }
+        noRetry.add(t.name);
+        refuseWrongPassword(ledger, t.name, 'emitted');
+      }
+    }
+    const toRetry = failedFirst.filter((t) => !noRetry.has(t.name));
+    if (noRetry.size > 0) {
+      tests = tests.map((t) => (noRetry.has(t.name) ? { ...t, error: `failed once; not retried: ${wrongPasswordCapReason(ledger!)}; ${t.error ?? 'failed'}` } : t));
+    }
+    if (toRetry.length > 0) {
       const left = timeoutMs - (Date.now() - t0);
-      log(`Emitted-spec check: ${failedFirst.length} test(s) failed on the first run; retrying once: ${failedFirst.map((t) => `"${t.name}"`).join(', ')}`);
-      const second = await runPlaywright(frameworkDir, agentRoot, failedFirst.map((t) => t.name), Math.max(15_000, left), childEnv, opts.observeChildEnv);
+      log(`Emitted-spec check: ${toRetry.length} test(s) failed on the first run; retrying once: ${toRetry.map((t) => `"${t.name}"`).join(', ')}`);
+      const second = await runPlaywright(frameworkDir, agentRoot, toRetry.map((t) => t.name), Math.max(15_000, left), childEnv, opts.observeChildEnv);
+      countRun(second.tests);
       if (second.killed) {
         const reason = `the retry timed out after ${Math.round(timeoutMs / 1000)}s in total; the framework is kept as generated`;
         log(`WARNING: Emitted-spec check inconclusive: ${reason}`);
@@ -396,7 +467,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
       }
       const retried = new Map(second.tests.map((t) => [t.name, t]));
       tests = tests.map((t) => {
-        if (t.status !== 'failed') return t;
+        if (t.status !== 'failed' || noRetry.has(t.name)) return t;
         const r = retried.get(t.name);
         if (!r) return { ...t, attempts: 2 };
         return { ...r, attempts: 2 };
@@ -438,6 +509,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     }
     const passed = tests.filter((t) => t.status === 'passed').length;
     log(`Emitted-spec check: ${passed} of ${tests.length} test(s) passed in ${(durationMs / 1000).toFixed(1)}s${failedTwice.length ? `; ${failedTwice.length} failed twice` : ''}`);
+    if (ledger) log(wrongPasswordCountLine(ledger, 'emitted'));
     for (const t of unmapped) {
       log(`WARNING: Emitted-spec check: "${t.name}" failed twice but is not a scenario test (${/a11y/.test(t.file ?? '') ? 'the a11y check' : 'a setup test'}); it stays in the framework: ${t.error?.split('\n')[0] ?? ''}`);
     }

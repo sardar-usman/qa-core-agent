@@ -1,7 +1,8 @@
 import { chromium, type Browser } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { Scenario, TraceStep } from './trace.js';
-import { replayScenarioOnce, type ObservedState } from './replay.js';
+import { replayScenarioOnce, type ObservedState, type ReplayAccess } from './replay.js';
+import { canSubmitWrongPassword, refuseWrongPassword, wrongPasswordCapReason, wrongPasswordSubmits } from './test-credentials.js';
 import {
   proposeStabilityFix,
   applyProposal,
@@ -26,10 +27,8 @@ import {
  * Zero LLM cost. Pure Playwright execution.
  */
 
-export interface StabilityOptions {
+export interface StabilityOptions extends ReplayAccess {
   scenarios: Scenario[];
-  /** Storage state reused from the Explorer run, when present. */
-  storageStatePath?: string;
   /** Number of stability iterations per scenario. Defaults to 3. */
   iterations?: number;
   /** Per-step timeout. Defaults to 10s. */
@@ -217,6 +216,23 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
 
     for (const scenario of opts.scenarios) {
       const scenarioStart = Date.now();
+      // A wrong-password scenario spends from the cap on every iteration
+      // (invariant 70). One the remaining cap cannot cover in full is refused
+      // without running a single iteration, and never reaches the Stabilizer.
+      const submits = wrongPasswordSubmits(scenario);
+      if (submits > 0 && opts.wrongPassword && !canSubmitWrongPassword(opts.wrongPassword, submits * iterations)) {
+        refuseWrongPassword(opts.wrongPassword, scenario.name, 'stability');
+        const error = wrongPasswordCapReason(opts.wrongPassword);
+        opts.onEvent?.({ type: 'iteration_failed', name: scenario.name, iteration: 1, failedStep: -1, stepKind: 'unknown', error });
+        verdicts.push({
+          name: scenario.name, iterations, passes: 0, stable: false, classification: 'broken', pattern: 'refused', gaveUp: true, attempts: [],
+          firstFailure: { iteration: 1, failedStep: -1, stepKind: 'unknown', error },
+          durationMs: 0,
+        });
+        flaked.push(scenario);
+        broken.push(scenario);
+        continue;
+      }
       const firstPass = await runIterations(browser, scenario, iterations, timeoutMs, opts);
       let { passes, outcomes, firstFailure } = firstPass;
       let classification = classify(passes, iterations);
@@ -233,7 +249,8 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
       // LLM-guided fixes, each informed by what the previous one tried.
       // Skip `broken` (zero passes — real bug, not a flake). Skip `stable`
       // (nothing to fix). Skip when stabilize is disabled (offline mode).
-      if (classification === 'flaky' && stabilizeEnabled && firstFailure) {
+      const capCoversReRun = submits === 0 || !opts.wrongPassword || canSubmitWrongPassword(opts.wrongPassword, submits * iterations);
+      if (classification === 'flaky' && stabilizeEnabled && firstFailure && capCoversReRun) {
         opts.onEvent?.({
           type: 'stabilize_started',
           name: scenario.name,
@@ -461,7 +478,7 @@ async function runIterations(
   let firstFailure: StabilityVerdict['firstFailure'];
 
   for (let i = 0; i < iterations; i++) {
-    const result = await replayScenarioOnce(browser, scenario, opts.storageStatePath, timeoutMs);
+    const result = await replayScenarioOnce(browser, scenario, { ...opts, stage: 'stability' }, timeoutMs);
     if (result.passed) {
       passes++;
       outcomes.push('P');

@@ -23,31 +23,25 @@ export default defineConfig({
     actionTimeout: 10_000,
     navigationTimeout: 15_000,
   },
+  // No setup project: the repo's own tests/auth.setup.ts (QA_CORE_AUTH_*) is
+  // retired. Login scenarios read the dedicated test account from
+  // QA_CORE_TEST_USER / QA_CORE_TEST_PASS (CLAUDE.md invariant 70).
   projects: [
-    {
-      name: 'setup',
-      testMatch: /.*\.setup\.ts/,
-      testDir: './tests',
-    },
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      dependencies: ['setup'],
     },
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'] },
-      dependencies: ['setup'],
     },
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
-      dependencies: ['setup'],
     },
     {
       name: 'mobile',
       use: { ...devices['iPhone 14'] },
-      dependencies: ['setup'],
     },
   ],
 });

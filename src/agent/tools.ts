@@ -5,7 +5,7 @@ import { recoverResolve, type ResolveInput } from './selector-recovery.js';
 // Re-exported for back-compat with older consumers of tools.ts. New code
 // should import from selector-recovery.ts directly.
 export { recoverResolve, type ResolveInput };
-import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation, GenerateKind } from './trace.js';
+import type { Assertion, Scenario, SelectorRecord, TraceStep, CaptureSource, CompareRelation, CredentialMarker, GenerateKind } from './trace.js';
 import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique, isEmailField } from './unique-data.js';
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
@@ -15,6 +15,10 @@ import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import { LOCATOR_EXPECTED_PREFIX, LOCATOR_MESSAGE_PREFIX, type Finding } from './finding-kind.js';
+import {
+  CREDENTIALS_NOT_PROVIDED, FORGOT_FLOW_RE, NEEDS_INBOX_RE, canSubmitWrongPassword, credentialValue, isLoginFlow, recordWrongPassword,
+  refuseWrongPassword, wrongPasswordCapReason, wrongPasswordSubmits, type WrongPasswordLedger,
+} from './test-credentials.js';
 import {
   chooseStateAssertion,
   SEMANTIC_STATE_ATTRS,
@@ -176,6 +180,17 @@ export interface ToolContext {
   /** scenarioNameKey of every planned scenario whose SRS rule names a locked account: exempt from the rewrite. */
   lockoutScenarioKeys: Set<string>;
   /**
+   * The dedicated test account (invariant 70), read from the env by the
+   * runtime: a fill with `credential: 'user' | 'pass'` types this value and
+   * records only the marker. Null when the run has no credentials; a marked
+   * fill then skips the scenario with "test credentials not provided".
+   */
+  testCredentials: { user: string; pass: string } | null;
+  /** The wrong-password counter shared across the run's stages (invariant 70); absent without credentials. */
+  wrongPassword?: WrongPasswordLedger;
+  /** Which stage this loop counts its wrong-password submits against. */
+  wrongPasswordStage: 'explorer' | 'repair';
+  /**
    * Console lines a tool wants shown, in order. The runtime emits each one as
    * a message event after the tool call that added it (the same way it emits
    * heals), so it reaches the console and events.jsonl.
@@ -282,6 +297,8 @@ export function createContext(page: Page, maxSteps: number): ToolContext {
     _costCloseout: false,
     knownAccounts: new Set(),
     lockoutScenarioKeys: new Set(),
+    testCredentials: null,
+    wrongPasswordStage: 'explorer',
     notes: [],
     _creationEmailNoted: new Set(),
     _gateInjectionLog: [],
@@ -507,13 +524,18 @@ export const TOOL_DEFS = [
       type: 'object',
       properties: {
         intent: { type: 'string' },
-        value: { type: 'string' },
+        value: { type: 'string', description: 'The text to type. Omit (or pass "") when credential is set: the test account value is read from the env and never typed by you.' },
+        credential: {
+          type: 'string',
+          enum: ['user', 'pass'],
+          description: 'Fill the dedicated test account instead of a value: "user" for its identifier (username or email), "pass" for its password. Required for every sign-in with the real account (a happy login) and for the account half of a wrong-password or duplicate-email check. Never type a real password yourself; a wrong password in a wrong-password negative is typed as a literal value.',
+        },
         role: { type: 'string' },
         label: { type: 'string' },
         testid: { type: 'string' },
         css: { type: 'string' },
       },
-      required: ['intent', 'value'],
+      required: ['intent'],
     },
   },
   {
@@ -829,6 +851,143 @@ export function plannedNameFor(ctx: ToolContext, name: string): string | null {
 
 /** Planned-page violations allowed before the scenario is recorded as gate-broken. */
 export const PLANNED_PAGE_CAP = 2;
+
+/* ─── the test account (invariant 70) ───────────────────────────────────── */
+
+const CREDENTIAL_PASSWORD_HINT_RE = /pass[\s_-]?word|\bpasswd\b|\bpwd\b|passcode/i;
+const CREDENTIAL_IDENTIFIER_RE = /e[\s_-]?mail|user[\s_-]?name|\blogin\b|account|identifier|\buser\b/i;
+
+/**
+ * The marker a fill carries: the model's `credential`, or the account half a
+ * typed value equals (a safety net, like the fill routing: the value is
+ * recorded as the marker, never as text). An invalid marker is an error.
+ */
+function credentialForFill(ctx: ToolContext, raw: unknown, value: string): CredentialMarker | undefined | ToolResult {
+  if (raw !== undefined && raw !== null && raw !== '') {
+    if (raw !== 'user' && raw !== 'pass') return { ok: false, error: `credential must be "user" or "pass" (got ${JSON.stringify(raw)}).` };
+    return raw;
+  }
+  const c = ctx.testCredentials;
+  if (c && value !== '') {
+    if (value === c.pass) return 'pass';
+    if (value === c.user) return 'user';
+  }
+  return undefined;
+}
+
+/**
+ * Record the scenario in progress as skipped with this reason and discard
+ * its trace: the cases the test account must not take part in (no
+ * credentials, a reset mail, a submit past the wrong-password cap) are
+ * decided here, deterministically, never left to the model's wording.
+ */
+function skipCurrentScenario(ctx: ToolContext, reason: string): ToolResult {
+  const current = ctx.current;
+  if (!current) return { ok: false, error: `${reason}.` };
+  const planned = ctx.plannedNames.length > 0 ? plannedNameFor(ctx, current.name) ?? current.name : current.name;
+  const key = scenarioNameKey(planned);
+  ctx.current = null;
+  ctx.captures.clear();
+  if (!ctx.skipped.some((s) => scenarioNameKey(s.scenario) === key) && !ctx.findings.some((f) => scenarioNameKey(f.scenario) === key)) {
+    ctx.skipped.push({ scenario: planned, reason });
+  }
+  return {
+    ok: false,
+    error: `Skipped "${planned}": ${reason}. The scenario in progress was discarded and recorded as skipped; nothing was filled. Continue with begin_scenario for the next planned scenario, or finish.`,
+  };
+}
+
+/**
+ * Refusals decided before the element is touched: a marker with no
+ * credentials, the account's email in a reset flow, a typed password in a
+ * happy login, and a happy login whose identifier was typed.
+ */
+function credentialFillRefusal(ctx: ToolContext, input: Record<string, unknown>, credential: CredentialMarker | undefined): ToolResult | null {
+  const current = ctx.current;
+  if (!current) {
+    if (credential && !ctx.testCredentials) return { ok: false, error: `${CREDENTIALS_NOT_PROVIDED}: this run has no test account.` };
+    return null;
+  }
+  const canonical = ctx.plannedNames.length > 0 ? plannedNameFor(ctx, current.name) ?? current.name : current.name;
+  if (credential && !ctx.testCredentials) return skipCurrentScenario(ctx, CREDENTIALS_NOT_PROVIDED);
+  // A reset flow never uses the account (owner decision F): its email is
+  // generated, and a reset that needs a registered account's inbox is skipped.
+  const resetFlow = FORGOT_FLOW_RE.test(`${current.feature ?? ''} ${canonical} ${safeUrl(ctx.page)}`);
+  const emailField = /e[\s_-]?mail/i.test(['intent', 'testid', 'label', 'css', 'placeholder'].map((k) => input[k]).filter((x) => typeof x === 'string').join(' '));
+  if (resetFlow && (credential === 'user' || (emailField && NEEDS_INBOX_RE.test(canonical)))) {
+    return skipCurrentScenario(ctx, 'would send mail to the test account');
+  }
+  const happyLogin = current.category === 'happy' && isLoginFlow({ name: canonical, ...(current.feature ? { feature: current.feature } : {}) });
+  if (!happyLogin) return null;
+  const hints = ['intent', 'testid', 'label', 'role', 'css', 'placeholder'].map((k) => input[k]).filter((x) => typeof x === 'string').join(' ');
+  const value = String(input.value ?? '');
+  if (!credential && value !== '' && CREDENTIAL_PASSWORD_HINT_RE.test(hints)) {
+    if (!ctx.testCredentials) return skipCurrentScenario(ctx, CREDENTIALS_NOT_PROVIDED);
+    return {
+      ok: false,
+      error: 'A happy login signs in with the dedicated test account: fill the password with credential: "pass" and the identifier with credential: "user", with no value. Never type a password into a sign-in; the value comes from the env on every run.',
+    };
+  }
+  if (credential === 'pass') {
+    const ident = [...current.steps].reverse().find((st): st is Extract<TraceStep, { kind: 'fill' }> =>
+      st.kind === 'fill' && CREDENTIAL_IDENTIFIER_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !CREDENTIAL_PASSWORD_HINT_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`));
+    if (ident && !ident.credential && !ident.generate && ident.value !== '') {
+      return {
+        ok: false,
+        error: 'The identifier in this sign-in was typed as a value. A happy login uses the test account on both fields: re-fill the identifier with credential: "user" (no value), then fill the password with credential: "pass".',
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * The wrong-password submits a fill adds to the scenario in progress, checked
+ * against the cap before the field is touched (invariant 70). A fill that
+ * would pass the cap skips the scenario with the cap reason; `commit` counts
+ * the submits once the fill is recorded.
+ */
+function wrongPasswordSpend(ctx: ToolContext, step: TraceStep): { refused?: ToolResult; commit: () => void } {
+  const noop = { commit: () => {} };
+  const cur = ctx.current;
+  const ledger = ctx.wrongPassword;
+  if (!cur || !ledger) return noop;
+  const delta = wrongPasswordSubmits({ ...cur, steps: [...cur.steps, step] }) - wrongPasswordSubmits(cur);
+  if (delta <= 0) return noop;
+  if (!canSubmitWrongPassword(ledger, delta)) {
+    const planned = ctx.plannedNames.length > 0 ? plannedNameFor(ctx, cur.name) ?? cur.name : cur.name;
+    refuseWrongPassword(ledger, planned, ctx.wrongPasswordStage);
+    return { refused: skipCurrentScenario(ctx, wrongPasswordCapReason(ledger)), commit: () => {} };
+  }
+  return { commit: () => recordWrongPassword(ledger, delta, ctx.wrongPasswordStage) };
+}
+
+/** Type the test account into the field and record only the marker. */
+async function fillCredential(
+  ctx: ToolContext,
+  record: SelectorRecord,
+  loc: import('@playwright/test').Locator,
+  marker: CredentialMarker,
+  autoMarked: boolean,
+): Promise<ToolResult> {
+  const creds = ctx.testCredentials;
+  if (!creds) return { ok: false, error: `${CREDENTIALS_NOT_PROVIDED}: this run has no test account.` };
+  const step: TraceStep = { kind: 'fill', target: record, value: '', credential: marker };
+  const spend = wrongPasswordSpend(ctx, step);
+  if (spend.refused) return spend.refused;
+  await loc.fill(credentialValue(creds, marker));
+  ctx.lastActionAt = Date.now();
+  pushStep(ctx, step);
+  spend.commit();
+  return {
+    ok: true,
+    data: {
+      filled: record.intent,
+      credential: marker,
+      ...(autoMarked ? { note: `the value typed is the test account's ${marker === 'user' ? 'identifier' : 'password'}; it is recorded as credential "${marker}" and read from the env on every run. Pass credential: "${marker}" with no value next time.` } : {}),
+    },
+  };
+}
 
 function pushStep(ctx: ToolContext, step: TraceStep): void {
   if (!ctx.current) throw new Error('No scenario in progress — call begin_scenario first.');
@@ -1446,7 +1605,14 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         const value = String(call.input.value ?? '');
         const fillGate = actionGateError(call.input);
         if (fillGate) return { ok: false, error: fillGate };
+        // The test account (invariant 70): a marker, or a typed value equal
+        // to the account's (marked here, so the value is never recorded).
+        const credential = credentialForFill(ctx, call.input.credential, value);
+        if (typeof credential === 'object') return credential;
+        const credentialRefusal = credentialFillRefusal(ctx, call.input, credential);
+        if (credentialRefusal) return credentialRefusal;
         const { record, loc } = await resolveAndRecord(ctx, call.input as never);
+        if (credential) return fillCredential(ctx, record, loc, credential, call.input.credential === undefined);
         // Detect the real control type before acting. fill() throws "Element is
         // not an <input>" on a <select>, and silently no-ops nothing useful on a
         // checkbox. Route each control to the action Playwright supports, and
@@ -1491,13 +1657,18 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
         // Wrong-credential negatives must not spend a real account's lockout
         // budget: on the password fill, if the identifier typed earlier in this
         // scenario is a known real account, that identifier is rewritten to a
-        // generated non-existent one (the same mechanism as unique data).
+        // generated non-existent one (the same mechanism as unique data). The
+        // test account's own identifier (a credential marker) is never rewritten.
         const overrode = await enforceFakeCredential(ctx, fieldHint, flowHint);
+        const newStep: TraceStep = generate
+          ? { kind: 'fill', target: record, value: filledValue, generate }
+          : { kind: 'fill', target: record, value: filledValue };
+        const spend = wrongPasswordSpend(ctx, newStep);
+        if (spend.refused) return spend.refused;
         await loc.fill(filledValue);
         ctx.lastActionAt = Date.now();
-        pushStep(ctx, generate
-          ? { kind: 'fill', target: record, value: filledValue, generate }
-          : { kind: 'fill', target: record, value: filledValue });
+        pushStep(ctx, newStep);
+        spend.commit();
         return { ok: true, data: { filled: record.intent, generated: generate ?? undefined, ...(overrode ? { identifierOverridden: overrode } : {}) } };
       }
       case 'select_option': {
@@ -2126,6 +2297,11 @@ function recordedTimeout(ctx: ToolContext, requested: number | undefined, probeS
  * which is the legitimate "assert a pre-existing value" case).
  */
 export function fillValueForTarget(steps: TraceStep[], target: SelectorRecord): string | null {
+  return fillStepForTarget(steps, target)?.value ?? null;
+}
+
+/** The most recent fill on the same element (by elementKey), the step itself so its marker is visible. */
+export function fillStepForTarget(steps: TraceStep[], target: SelectorRecord): Extract<TraceStep, { kind: 'fill' }> | null {
   // Bind by ONE thing: the element's own stable key (elementKey), read off the
   // live DOM element at resolve time. No intent-string matching, no cascade-tier
   // matching — those are what kept failing, letting a later field's fill leak
@@ -2139,10 +2315,10 @@ export function fillValueForTarget(steps: TraceStep[], target: SelectorRecord): 
   // assertion keeps the model's value, the legitimate "assert a pre-existing
   // default" path, and still cannot borrow another field's value.
   if (!target.elementKey) return null;
-  let bound: string | null = null;
+  let bound: Extract<TraceStep, { kind: 'fill' }> | null = null;
   for (const s of steps) {
     if (s.kind !== 'fill') continue;
-    if (s.target.elementKey && s.target.elementKey === target.elementKey) bound = s.value;
+    if (s.target.elementKey && s.target.elementKey === target.elementKey) bound = s;
   }
   return bound;
 }
@@ -2356,7 +2532,27 @@ async function executeAssertion(
       // generated field — unknowable. Read the recorded fill value for this
       // field; fall back to the model's value only when the field was never
       // filled in this scenario (asserting a pre-existing default).
-      const filled = ctx.current ? fillValueForTarget(ctx.current.steps, record) : null;
+      const boundFill = ctx.current ? fillStepForTarget(ctx.current.steps, record) : null;
+      // A field holding the test account asserts the account's value from the
+      // env and records only the marker (invariant 70), as does a typed value
+      // that equals it.
+      const credMarker: CredentialMarker | undefined = boundFill?.credential
+        ?? (boundFill === null && ctx.testCredentials && typeof input.value === 'string' && input.value !== ''
+          ? (input.value === ctx.testCredentials.pass ? 'pass' : input.value === ctx.testCredentials.user ? 'user' : undefined)
+          : undefined);
+      if (credMarker) {
+        if (!ctx.testCredentials) return { ok: false, error: `${CREDENTIALS_NOT_PROVIDED}: this field holds the test account.` };
+        const t0c = Date.now();
+        await expect(loc).toHaveValue(credentialValue(ctx.testCredentials, credMarker), probe);
+        const observedC = recordedTimeout(ctx, input.timeout, t0c);
+        pushStep(ctx, {
+          kind: 'assert',
+          name: `${record.intent} has the test account's ${credMarker === 'user' ? 'identifier' : 'password'}`,
+          assertion: { type: 'toHaveValue', target: record, value: '', credential: credMarker, timeout: observedC },
+        });
+        return { ok: true };
+      }
+      const filled = boundFill ? boundFill.value : null;
       const expected = filled ?? input.value;
       if (expected == null) return { ok: false, error: 'toHaveValue needs value.' };
       const t0 = Date.now();
@@ -2668,7 +2864,8 @@ function accountsFromHappyLogins(ctx: ToolContext): string[] {
     const hasPassword = s.steps.some((st) => st.kind === 'fill' && PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`));
     if (!hasPassword) continue;
     for (const st of s.steps) {
-      if (st.kind === 'fill' && IDENTIFIER_FIELD_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`)) out.push(st.value);
+      // A marked fill recorded no value: the test account is in knownAccounts already.
+      if (st.kind === 'fill' && !st.credential && st.value !== '' && IDENTIFIER_FIELD_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`)) out.push(st.value);
     }
   }
   return out;
@@ -2692,6 +2889,9 @@ async function enforceFakeCredential(ctx: ToolContext, fieldHint: string, flowHi
   const ident = [...current.steps].reverse().find((st): st is Extract<TraceStep, { kind: 'fill' }> =>
     st.kind === 'fill' && IDENTIFIER_FIELD_RE.test(`${st.target.intent} ${JSON.stringify(st.target.arg)}`) && !PASSWORD_FIELD_RE.test(`${st.target.intent} ${String(st.target.arg)}`));
   if (!ident) return null;
+  // The test account's identifier is the point of a wrong-password negative
+  // (D7): the marker is never rewritten (invariant 70).
+  if (ident.credential) return null;
   const known = new Set([...ctx.knownAccounts, ...accountsFromHappyLogins(ctx)].map((v) => v.toLowerCase()));
   if (!known.has(ident.value.toLowerCase())) return null;
   const kind = ident.value.includes('@') ? 'email' : 'token';

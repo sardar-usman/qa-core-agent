@@ -7,7 +7,7 @@ import { regexLiteral } from './transcriber.js';
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { captureWaitNeeded } from './capture-ready.js';
 import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
-import { envForCredentialValue, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
+import { AUTH_ENV_PASS, AUTH_ENV_USER, envVarForFill, loginFeatureOf, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
 import type { RequirementsMap } from './requirements.js';
 import type { Assertion, CaptureSource, GenerateKind, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 
@@ -96,11 +96,14 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
   // step (a logged-in login test is vacuous, so they run without storage
   // state). Without authLogin the report passes through untouched, byte for
   // byte — the emitter-only guarantee.
+  // The login feature is the happy login's own feature (invariant 70: on
+  // Toolshop it is 'account'), 'login' for a report without the marker.
+  const loginFeature = loginFeatureOf(opts.authLogin);
   const report: RunReport = opts.authLogin
     ? {
         ...opts.report,
         scenarios: opts.report.scenarios.map((s) =>
-          s.feature === 'login' ? s : { ...s, steps: stripLeadingLogin(s.steps) },
+          s.feature === loginFeature ? s : { ...s, steps: stripLeadingLogin(s.steps) },
         ),
       }
     : opts.report;
@@ -153,6 +156,7 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
       param: paramPlans.get(pc.feature),
       authActive: Boolean(opts.authLogin),
       authCreds: opts.authLogin ? recordedCredentials(opts.authLogin) : null,
+      loginFeature,
     }));
     specFiles.push(specFile);
     features.push(pc.feature);
@@ -906,7 +910,7 @@ function renderSpec(
   report: RunReport,
   pc: PageClassPlan,
   ext: 'ts' | 'js',
-  extras: { param?: ParamPlan | undefined; authActive?: boolean; authCreds?: AuthCredentials | null } = {},
+  extras: { param?: ParamPlan | undefined; authActive?: boolean; authCreds?: AuthCredentials | null; loginFeature?: string } = {},
 ): string {
   // Spec lives at tests/<feature>/<feature>.spec.{ext} — two levels deep from
   // the framework root, so the page-object import path is `../../pages/...`.
@@ -919,7 +923,8 @@ function renderSpec(
   // references, and only in the login spec of an auth-enabled framework (the
   // setup file covers the rest of the tree). Wrong-credential values are test
   // data and stay literal.
-  const creds = authActive && pc.feature === 'login' ? extras.authCreds ?? null : null;
+  const loginFeature = extras.loginFeature ?? 'login';
+  const creds = authActive && pc.feature === loginFeature ? extras.authCreds ?? null : null;
   const out: string[] = [];
   // Generated fields (registration email, unique username) call uniqueEmail() /
   // uniqueToken() at the spec call site, so import whichever ones this spec uses.
@@ -982,7 +987,7 @@ function renderSpec(
   }
   out.push('');
   out.push(`  test.beforeEach(async ({ context, page }) => {`);
-  if (authActive && pc.feature !== 'login') {
+  if (authActive && pc.feature !== loginFeature) {
     // Authenticated specs run on the saved storageState session. Clearing
     // cookies here would destroy exactly the state the setup project built.
     out.push(`    // Session comes from playwright/.auth/user.json (the setup project); do not clear it.`);
@@ -1125,7 +1130,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
         // The REAL credentials in an auth-enabled login spec come from env,
         // never a literal (value-based match); a generated field passes a
         // fresh value on every run.
-        const env = creds ? envForCredentialValue(realFill.value, creds) : null;
+        const env = envVarForFill(realFill, creds);
         if (env) return `process.env.${env} ?? ''`;
         return realFill.generate ? uniqueCallExpr(realFill.generate) : q(realFill.value);
       });
@@ -1173,7 +1178,7 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
     }
     case 'fill': {
       const field = fieldFor(pc, step.target);
-      const env = creds ? envForCredentialValue(step.value, creds) : null;
+      const env = envVarForFill(step, creds);
       const valueArg = env ? `process.env.${env} ?? ''` : step.generate ? uniqueCallExpr(step.generate) : q(step.value);
       return [field
         ? `await ${handle}.${field}.fill(${valueArg});`
@@ -1342,7 +1347,9 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const field = fieldFor(pc, a.target);
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return `await expect(${loc}).toHaveValue(${q(a.value)}${opts});`;
+      // A field holding the test account reads it from env, never a literal (invariant 70).
+      const expected = a.credential ? `process.env.${a.credential === 'user' ? AUTH_ENV_USER : AUTH_ENV_PASS} ?? ''` : q(a.value);
+      return `await expect(${loc}).toHaveValue(${expected}${opts});`;
     }
   }
 }

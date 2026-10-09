@@ -100,6 +100,8 @@ const server = new McpServer(
 function outcomeText(outcome: RunExploreOutcome): { text: string; isError: boolean } {
   const lines: string[] = [];
   if (outcome.kind === 'empty') {
+    // A failed login preflight stopped the run before anything was spent (invariant 70).
+    if (outcome.report.stopped?.kind === 'login_preflight') return { text: `${outcome.report.stopped.reason}\nrun-report: ${outcome.reportPath}`, isError: true };
     lines.push('✗ No framework was written: 0 scenarios survived the pipeline.');
     lines.push(...(outcome.diagnosis ?? []));
     if (outcome.resumeHint) lines.push('', outcome.resumeHint);

@@ -357,6 +357,8 @@ async function handleExplore(request: ExploreRequest, model: string | undefined,
     });
 
     if (outcome.kind === 'empty') {
+      // A failed login preflight stopped the run before anything was spent (invariant 70).
+      if (outcome.report.stopped?.kind === 'login_preflight') { send(ws, { text: outcome.report.stopped.reason }); return; }
       send(ws, { text: ['✗ No framework was written: 0 scenarios survived the pipeline.', ...(outcome.diagnosis ?? [])].join('\n') });
       if (outcome.resumeHint) send(ws, { text: outcome.resumeHint });
       return;

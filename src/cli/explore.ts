@@ -20,6 +20,10 @@ import {
 import os from 'node:os';
 import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent } from '../server/events.js';
+import { maskForDisk } from '../agent/credential-leak.js';
+import { assertNoCredentialLeak, CredentialLeakError } from '../agent/credential-leak.js';
+import { postRunLockoutCheck, preflightStopReport, runLoginPreflightGate, writePreflightStopReport } from '../agent/login-preflight.js';
+import { retiredAuthEnvLine } from '../agent/test-credentials.js';
 
 /**
  * CLI:  npm run explore -- <url> [--lang ts|js] [--name <basename>] [--out <dir>]
@@ -44,7 +48,7 @@ function parseArgs(argv: string[]): ExploreRequest {
     console.error('                          [--features login,cart] [--srs requirements.md] [--discover]');
     console.error('                          [--urls /login,/cart] [--no-pom] [--no-replay]');
     console.error('                          [--no-stability] [--stability N] [--no-stabilize]');
-    console.error('                          [--stabilize-attempts N]');
+    console.error('                          [--stabilize-attempts N] [--login-url <url or path>]');
     console.error('  npm run explore -- --resume <checkpoint.json>   (continue an interrupted run)');
     console.error('  npm run explore -- --from-plan <plan.csv> [--lang ts|js] [--name foo] [--no-pom]');
     console.error('                                            [--no-replay] [--no-stability] [--stability N]');
@@ -52,6 +56,7 @@ function parseArgs(argv: string[]): ExploreRequest {
     console.error('');
     console.error('  --no-stabilize          Skip Stage 5b. Flaky scenarios always drop.');
     console.error('  --stabilize-attempts N  Max Stabilizer fix attempts per flaky scenario (default 3).');
+    console.error('  --login-url URL         The login page the test-account preflight tries first.');
     console.error('  --ceiling USD           Per-run QA_CORE_COST_CEILING (also --repair-reserve, --max-steps,');
     console.error('                          --planner-model, --explorer-model, --critic-model, --env NAME=VALUE).');
     process.exit(1);
@@ -106,6 +111,7 @@ function runFlags(req: ExploreRequest): Record<string, unknown> {
     lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
     resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
     stability: req.stability, stabilityIterations: req.stabilityIterations, emittedCheck: req.emittedCheck, env: req.env,
+    loginUrl: req.loginUrl ?? null,
   };
 }
 
@@ -206,6 +212,23 @@ async function main(): Promise<void> {
   // every end, so a run that stops early still records who started it.
   writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
 
+  // The test account (invariant 70): which variables hold it (names only),
+  // and does it sign in? Runs BEFORE the requirements map and the Planner, so
+  // a failure costs nothing. A failed preflight leaves a minimal stopped
+  // run-report and run-meta (the dashboard lists the run) and nothing else.
+  const retired = retiredAuthEnvLine(process.env);
+  if (retired) console.log(`  ${retired}`);
+  const gate = await runLoginPreflightGate({ url, ...(args.loginUrl ? { loginUrl: args.loginUrl } : {}), log: (line) => console.log(`  ${line}`) });
+  if (gate.stopLine) {
+    if (!resumeCp) {
+      writePreflightStopReport(outDir, preflightStopReport({ url, language: args.lang, line: gate.stopLine, startedAt: new Date().toISOString() }));
+      writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
+    }
+    console.error('');
+    console.error(gate.stopLine);
+    process.exit(1);
+  }
+
   // SRS ingestion — all of it happens BEFORE the browser launches, so a bad
   // document or an empty map fails fast and free. A resumed run restores the
   // map from the checkpoint instead of rebuilding it (no Haiku call).
@@ -236,7 +259,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     fs.mkdirSync(outDir, { recursive: true });
-    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(requirements, null, 2));
+    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(maskForDisk(requirements), null, 2));
     console.log(
       `  SRS: ${requirements.features.length} feature(s), ${countRules(requirements)} rule(s) · $${built.costUsd.toFixed(4)}` +
       `${requirements.truncated ? ' · truncated at cap' : ''}`,
@@ -257,6 +280,7 @@ async function main(): Promise<void> {
       ...(requirementsUsd !== undefined ? { requirementsUsd } : {}),
       ...(resumeCp ? { resume: resumeCp } : {}),
       ...(fromPlan ? { fromPlan } : {}),
+      loginPreflightDone: true,
     }),
     onEvent: (e) => {
       // The stored timeline for the Run Detail page, next to the report.
@@ -358,6 +382,9 @@ async function main(): Promise<void> {
   // placeholder framework — that's how we ended up writing "0 scenarios, 11
   // files" to disk on a bad URL. Bail with a clear message.
   if (!result.scenarios || result.scenarios.length === 0) {
+    // Wrong-password submits may have been spent before the funnel emptied.
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
+    if (result.lockoutWarning) writeReportFiles(outDir, result);
     const totalUsd = totalCost(result);
     console.error('');
     console.error('✗ No framework was written — 0 scenarios survived the pipeline.');
@@ -420,6 +447,8 @@ async function main(): Promise<void> {
       rescaffold: (r) => { scaffoldResult = scaffold({ report: r, ...scaffoldOpts }); },
       log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); },
     });
+    // After the last stage that submits: does the account still sign in?
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
     writeReportFiles(outDir, result);
     if (!result.stopped) markCheckpointPhase(outDir, 'emitted');
     const cpFile = path.join(outDir, 'checkpoint.json');
@@ -446,6 +475,9 @@ async function main(): Promise<void> {
     try {
       // The zip lives INSIDE the run directory, next to run-report.json, so a
       // run's files stay together; it is written atomically (temp name, rename).
+      // No test-account value ships (invariant 70): the framework tree and the
+      // run directory are grepped for every env value first; a hit refuses the zip.
+      assertNoCredentialLeak({ frameworkDir, runDir: outDir });
       const zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
       const zipPath = path.join(outDir, `${zipRootName}.zip`);
       const tmpZip = path.join(outDir, `.${zipRootName}.zip.${process.pid}.tmp`);
@@ -455,7 +487,12 @@ async function main(): Promise<void> {
       console.log(`  zip:          ${path.relative(process.cwd(), zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
       console.log(`  (framework files live in the zip; the run directory keeps its own files and the zip)`);
     } catch (err) {
-      console.log(`  zip:          skipped, ${(err as Error).message}`);
+      if (err instanceof CredentialLeakError) {
+        console.error(`\n✗ ${err.message}`);
+        process.exitCode = 1;
+      } else {
+        console.log(`  zip:          skipped, ${(err as Error).message}`);
+      }
     } finally {
       try { fs.rmSync(emitTmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }
@@ -466,6 +503,8 @@ async function main(): Promise<void> {
     const fin = finalizeRunDir(outDir);
     if (fin.latest) console.log(`  latest:       ${path.relative(process.cwd(), path.join(path.dirname(outDir), 'latest'))} -> ${path.basename(outDir)}`);
   } else {
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
+    if (result.lockoutWarning) writeReportFiles(outDir, result);
     const r = transcribe({ report: result, outDir, name: specName });
     primaryPath = r.specPath;
     scenarios = r.scenarios;

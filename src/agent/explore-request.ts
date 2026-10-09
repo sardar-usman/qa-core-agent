@@ -54,6 +54,12 @@ export interface ExploreRequest {
   fromPlan?: string;
   /** Output basename override (--name). */
   name?: string;
+  /**
+   * --login-url: the page the login preflight tries first (invariant 70),
+   * before the run URL and the common login paths: an http(s) URL, or a path
+   * resolved against the run URL. Only used when the run has test credentials.
+   */
+  loginUrl?: string;
   /** Output root override (--out). */
   outBase?: string;
   /** True when --lang was passed explicitly (resume conflict detection). */
@@ -153,6 +159,7 @@ export const EXPLORE_FLAGS: ReadonlyArray<{ flag: string; takesValue: boolean; m
   { flag: '--no-stabilize', takesValue: false, mcp: 'stabilize', gateway: true, form: 'stabilize' },
   { flag: '--stabilize-attempts', takesValue: true, mcp: 'stabilizeAttempts', gateway: true, form: 'stabilizeAttempts' },
   { flag: '--emitted-check', takesValue: false, mcp: 'emittedCheck', gateway: true },
+  { flag: '--login-url', takesValue: true, mcp: 'loginUrl', gateway: true },
   { flag: '--no-emitted-check', takesValue: false, mcp: 'emittedCheck', gateway: true },
   { flag: '--ceiling', takesValue: true, mcp: 'ceilingUsd', gateway: true, form: 'ceiling' },
   { flag: '--repair-reserve', takesValue: true, mcp: 'repairReserve', gateway: true, form: 'repairReserve' },
@@ -218,6 +225,11 @@ export function parseExploreTokens(tokens: string[]): ParseRequestResult {
         req.lang = v; req.langProvided = true; i++; break;
       }
       case '--name': { const v = need(a, i); if (!v) return { ok: false, error: '--name expects a value' }; req.name = v; i++; break; }
+      case '--login-url': {
+        const v = need(a, i);
+        if (!v || !/^(https?:\/\/|\/)/i.test(v)) return { ok: false, error: '--login-url expects the login page: an http(s) URL, or a path such as /auth/login' };
+        req.loginUrl = v; i++; break;
+      }
       case '--out': { const v = need(a, i); if (!v) return { ok: false, error: '--out expects a directory' }; req.outBase = v; i++; break; }
       case '--review': req.review = true; break;
       case '--from-plan': { const v = need(a, i); if (!v) return { ok: false, error: '--from-plan expects a plan.csv path' }; req.fromPlan = v; i++; break; }
@@ -334,6 +346,8 @@ export interface BuildExploreContext {
   fromPlan?: PlannedScenario[];
   /** Explorer model override from the dashboard's model chip. */
   model?: string;
+  /** True when the surface already ran the login preflight (before the requirements map). */
+  loginPreflightDone?: boolean;
 }
 
 /**
@@ -362,6 +376,8 @@ export function buildExploreOptions(req: ExploreRequest, ctx: BuildExploreContex
     discover: cp?.flags.discover ?? req.discover,
     urls: cp ? cp.flags.urls : req.urls,
     ...(cp ? { resume: cp } : {}),
+    ...(req.loginUrl ? { loginUrl: req.loginUrl } : {}),
+    ...(ctx.loginPreflightDone ? { loginPreflightDone: true } : {}),
     checkpointFlags: {
       pom: req.pom,
       ...(req.srs ? { srsPath: req.srs } : cp?.flags.srs ? { srsPath: cp.flags.srs } : {}),

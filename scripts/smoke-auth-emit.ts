@@ -206,7 +206,69 @@ check('E5. no phase-4 strings leak into the no-login tree',
     return !body.includes('storageState:') && !body.includes(AUTH_ENV_USER) && !body.includes('dataCases');
   }));
 
-for (const d of [authDir, plainA, plainB]) fs.rmSync(d, { recursive: true, force: true });
+/* ─── F. the credential marker activates auth whatever the feature is called (invariant 70) ─ */
+// Toolshop's map names the login feature `account` (runs 5 and 6), so the
+// feature === 'login' rule never activated there. The marker does.
+const ENV_USER = 'client.dedicated@shop.test';
+const ENV_PASS = 'Dedicated!Pass-2026';
+const prevUser = process.env[AUTH_ENV_USER];
+const prevPass = process.env[AUTH_ENV_PASS];
+process.env[AUTH_ENV_USER] = ENV_USER;
+process.env[AUTH_ENV_PASS] = ENV_PASS;
+const mfill = (intent: string, credential: 'user' | 'pass'): TraceStep =>
+  ({ kind: 'fill', target: { level: 'label', arg: intent, intent }, value: '', credential } as TraceStep);
+const MARKED_LOGIN: TraceStep[] = [
+  nav('https://practicesoftwaretesting.com/auth/login'),
+  mfill('email input', 'user'),
+  mfill('password input', 'pass'),
+  click('login button'),
+  { kind: 'assert', name: 'landed', assertion: { type: 'toHaveURL', pattern: '/account', timeout: 10000 } } as TraceStep,
+];
+const marked: RunReport = {
+  ...withLogin,
+  url: 'https://practicesoftwaretesting.com/',
+  scenarios: [
+    sc('logged in with valid credentials', 'happy', 'account', [...MARKED_LOGIN]),
+    sc('rejected login with a wrong password', 'negative', 'account', [
+      nav('https://practicesoftwaretesting.com/auth/login'),
+      mfill('email input', 'user'),
+      fill('password input', 'wrong-password'),
+      click('login button'),
+      { kind: 'assert', name: 'error', assertion: { type: 'toContainText', target: { level: 'css', arg: '.alert', intent: 'error message' }, text: 'Invalid email or password', timeout: 10000 } } as TraceStep,
+    ]),
+    sc('saw the order history', 'happy', 'orders', [
+      ...MARKED_LOGIN,
+      nav('https://practicesoftwaretesting.com/account/orders'),
+      { kind: 'assert', name: 'h', assertion: { type: 'toBeVisible', target: { level: 'css', arg: 'h1', intent: 'orders heading' }, timeout: 10000 } } as TraceStep,
+    ]),
+  ],
+} as unknown as RunReport;
+const markedDir = path.join(process.cwd(), 'output', 'auth-emit-smoke-marked');
+fs.rmSync(markedDir, { recursive: true, force: true });
+scaffold({ report: marked, outDir: markedDir, siteName: 'practicesoftwaretesting.com' });
+const mread = (rel: string): string => fs.readFileSync(path.join(markedDir, rel), 'utf8');
+check('F1. findHappyLoginScenario keys on the marker: the happy login of feature "account" is found', findHappyLoginScenario(marked)?.name === 'logged in with valid credentials');
+check('F2. feature "account" activates the auth setup: tests/auth.setup.ts reads the env pair', fs.existsSync(path.join(markedDir, 'tests', 'auth.setup.ts')) && mread('tests/auth.setup.ts').includes(`process.env.${AUTH_ENV_USER} ?? ''`) && mread('tests/auth.setup.ts').includes(`process.env.${AUTH_ENV_PASS} ?? ''`));
+const mconfig = mread('playwright.config.ts');
+check('F3. the login project runs the account specs WITHOUT storageState, the main project ignores them',
+  mconfig.includes(`testMatch: 'account/**/*.spec.ts'`) && mconfig.includes(`testIgnore: ['**/account/**', '**/auth.setup.*']`), mconfig.match(/name: 'login'[^\n]*/)?.[0]);
+const accountSpec = mread('tests/account/account.spec.ts');
+check('F4. the account spec keeps its full login with env references and clears state per test',
+  accountSpec.includes(`process.env.${AUTH_ENV_USER} ?? ''`) && accountSpec.includes(`process.env.${AUTH_ENV_PASS} ?? ''`) && accountSpec.includes('clearCookies'));
+check('F5. the wrong-password negative reads the account identifier from env and keeps its literal wrong password', /wrong-password/.test(accountSpec));
+const ordersSpec = mread('tests/orders/orders.spec.ts');
+check('F6. an authenticated feature loses its leading login and keeps the session', !ordersSpec.includes('password') && !ordersSpec.includes('clearCookies'), ordersSpec.slice(0, 400));
+const markedOffenders = tree(markedDir).filter((f) => { const b = fs.readFileSync(f, 'utf8'); return b.includes(ENV_USER) || b.includes(ENV_PASS); }).map((f) => path.relative(markedDir, f));
+check('F7. NO file in the tree holds an env credential value (the tree grep)', markedOffenders.length === 0, JSON.stringify(markedOffenders));
+const envEx = mread('.env.example');
+check('F8. .env.example keeps the generic names, says the framework reads only them, and seeds nothing even for a demo host',
+  envEx.includes(`${AUTH_ENV_USER}=\n`) && envEx.includes(`${AUTH_ENV_PASS}=\n`) && envEx.includes('This framework reads only the generic') && envEx.includes(`${AUTH_ENV_USER}_<HOST>`), envEx);
+const legacyAccount = { ...withLogin, scenarios: withLogin.scenarios.map((x) => ({ ...x, feature: x.feature === 'login' ? 'account' : x.feature })) } as RunReport;
+check('F9. an older report with feature "account" and no marker keeps the legacy rule: no auth', findHappyLoginScenario(legacyAccount) === null);
+if (prevUser === undefined) delete process.env[AUTH_ENV_USER]; else process.env[AUTH_ENV_USER] = prevUser;
+if (prevPass === undefined) delete process.env[AUTH_ENV_PASS]; else process.env[AUTH_ENV_PASS] = prevPass;
+
+for (const d of [authDir, plainA, plainB, markedDir]) fs.rmSync(d, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: happy-login runs emit the storageState setup + projects with env-only credentials; no-login runs emit exactly the pre-phase framework.');
+console.log('OK: happy-login runs emit the storageState setup + projects with env-only credentials, keyed on the credential marker whatever the feature is called; no-login runs emit exactly the pre-phase framework.');

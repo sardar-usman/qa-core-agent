@@ -1,6 +1,9 @@
 import { chromium, type Browser, type FrameLocator, type Locator, type Page } from 'playwright';
-import fs from 'node:fs';
 import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js';
+import {
+  CREDENTIALS_NOT_PROVIDED, canSubmitWrongPassword, credentialValue, recordWrongPassword, refuseWrongPassword,
+  wrongPasswordCapReason, wrongPasswordSubmits, type WrongPasswordLedger,
+} from './test-credentials.js';
 import { generateUnique } from './unique-data.js';
 import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
@@ -24,10 +27,22 @@ import { parseNumber, noNumberMessage } from './parse-number.js';
  * Zero LLM cost. Pure Playwright execution.
  */
 
-export interface ReplayOptions {
+/**
+ * What a re-run needs from the run besides the trace (invariant 70): the
+ * test account a credential-marked step fills (read from the env by the
+ * caller, never recorded) and the wrong-password counter every execution of
+ * a wrong-password scenario spends from. Every context starts clean: no
+ * saved storage state is loaded (the playwright/.auth/user.json load is
+ * retired).
+ */
+export interface ReplayAccess {
+  credentials?: { user: string; pass: string } | null;
+  wrongPassword?: WrongPasswordLedger;
+  stage?: 'replay' | 'stability';
+}
+
+export interface ReplayOptions extends ReplayAccess {
   scenarios: Scenario[];
-  /** Storage state reused from the Explorer run, when present. */
-  storageStatePath?: string;
   /** Per-step timeout. Defaults to 10s. */
   timeoutMs?: number;
   /** Streaming progress hook. */
@@ -104,7 +119,7 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     for (const scenario of opts.scenarios) {
       opts.onEvent?.({ type: 'scenario_started', name: scenario.name, index: i, total: opts.scenarios.length });
 
-      const verdict = await replayScenarioOnce(browser, scenario, opts.storageStatePath, timeoutMs);
+      const verdict = await replayScenarioOnce(browser, scenario, { ...opts, stage: 'replay' }, timeoutMs);
       verdicts.push(verdict);
 
       if (verdict.passed) {
@@ -140,13 +155,24 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
 export async function replayScenarioOnce(
   browser: Browser,
   scenario: Scenario,
-  storageStatePath: string | undefined,
+  access: ReplayAccess | undefined,
   timeoutMs: number,
 ): Promise<ReplayVerdict> {
   const scenarioStart = Date.now();
 
-  const useStorage = storageStatePath && fs.existsSync(storageStatePath);
-  const context = await browser.newContext(useStorage ? { storageState: storageStatePath } : undefined);
+  // A wrong-password scenario spends from the cap on every execution; one
+  // that would pass it is refused without running (invariant 70).
+  const submits = wrongPasswordSubmits(scenario);
+  const ledger = access?.wrongPassword;
+  if (submits > 0 && ledger) {
+    if (!canSubmitWrongPassword(ledger, submits)) {
+      refuseWrongPassword(ledger, scenario.name, access?.stage ?? 'replay');
+      return { name: scenario.name, passed: false, failedStep: -1, error: wrongPasswordCapReason(ledger), durationMs: 0 };
+    }
+    recordWrongPassword(ledger, submits, access?.stage ?? 'replay');
+  }
+
+  const context = await browser.newContext();
   await installEvalShim(context);
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
@@ -169,7 +195,7 @@ export async function replayScenarioOnce(
     let j = 0;
     for (const step of scenario.steps) {
       try {
-        await runStep(page, step, timeoutMs, captures, captureRelations);
+        await runStep(page, step, timeoutMs, captures, captureRelations, access?.credentials ?? null);
       } catch (err) {
         failedStep = j;
         stepKind = step.kind;
@@ -262,6 +288,8 @@ export async function runStep(
   captures: Map<string, string>,
   /** varName -> relation map from relationsByVarName; drives capture readiness. */
   captureRelations?: Map<string, string>,
+  /** The test account a credential-marked step fills, from the env (invariant 70). */
+  credentials: { user: string; pass: string } | null = null,
 ): Promise<void> {
   switch (step.kind) {
     case 'navigate':
@@ -274,8 +302,10 @@ export async function runStep(
       // A field that feeds a uniqueness constraint gets a fresh value every run,
       // matching what the emitted spec does. Without this a register replay would
       // reuse the recorded email and fail the second time on a duplicate.
+      // The test account comes from the env at every re-run, like a generated value.
+      if (step.credential && !credentials) throw new Error(`${CREDENTIALS_NOT_PROVIDED}: a credential-marked fill (${step.credential}) cannot replay without the test account`);
       await locatorFromRecord(page, step.target).fill(
-        step.generate ? generateUnique(step.generate) : step.value,
+        step.credential ? credentialValue(credentials!, step.credential) : step.generate ? generateUnique(step.generate) : step.value,
         { timeout: timeoutMs },
       );
       return;
@@ -309,7 +339,7 @@ export async function runStep(
     case 'checkpoint':
       return;
     case 'assert':
-      await runAssertion(page, step.assertion, timeoutMs);
+      await runAssertion(page, step.assertion, timeoutMs, credentials);
       return;
     case 'capture': {
       await awaitCaptureReady(page, step, captureRelations?.get(step.varName), timeoutMs);
@@ -433,7 +463,7 @@ function compareHolds(relation: string, captured: string, current: string): bool
   }
 }
 
-async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promise<void> {
+async function runAssertion(page: Page, a: Assertion, timeoutMs: number, credentials: { user: string; pass: string } | null = null): Promise<void> {
   switch (a.type) {
     case 'toBeVisible': {
       const effectiveTimeout = a.timeout ?? timeoutMs;
@@ -527,10 +557,12 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number): Promis
       // settles after an async action is not raced.
       const loc = locatorFromRecord(page, a.target).first();
       const effectiveTimeout = a.timeout ?? timeoutMs;
+      if (a.credential && !credentials) throw new Error(`${CREDENTIALS_NOT_PROVIDED}: a toHaveValue on the test account cannot replay without it`);
+      const expected = a.credential ? credentialValue(credentials!, a.credential) : a.value;
       await pollUntil(effectiveTimeout, async () => {
         const val = await loc.inputValue();
-        return val === a.value;
-      }, `toHaveValue: expected "${a.value}"`);
+        return val === expected;
+      }, a.credential ? `toHaveValue: expected the test account's ${a.credential === 'user' ? 'identifier' : 'password'}` : `toHaveValue: expected "${a.value}"`);
       return;
     }
   }

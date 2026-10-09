@@ -23,7 +23,7 @@ Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
 from scripts/, 87 smokes, 2 of them live and skipped unless
 QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "87 smokes, 85 passed, 0
 failed, 2 skipped (live)").
-Before any live run: npx tsx scripts/preflight-site.ts <url> --login.
+Before any live run: npx tsx scripts/preflight-site.ts <url> --login (every run now makes the same login preflight itself before any spend, invariant 70).
 
 ## Maturity pass: complete (Phases 1 to 5 merged, Sept 3 to 14)
 
@@ -85,7 +85,10 @@ Oct 6.
 3. Test credentials (audit item 1, D7; decided Oct 8): the client supplies
    a dedicated test account through the host .env; self-registration is
    not the login source. Brief first (docs/design/test-credentials.md),
-   then PR.
+   then PR. Built, PR #45, pending the saucedemo regression run (invariant
+   70: the fill marker, the login preflight before any spend, the
+   wrong-password cap, no account value under output/, QA_CORE_AUTH_*
+   retired).
 4. Action-first discovery rung for state-dependent pages (item 3).
 5. Console honesty: D8 plus the critique seam reaching the repair block
    (item 9).
@@ -332,6 +335,11 @@ using the qa-core-heal evaluation report as the template.
   live Discovery panel has numbers.
 - The smoke suite takes about 10 minutes because four smokes wait out a 60s
   timeout each.
+- Authenticated pages beyond the login form (an account page, checkout,
+  order history): the Planner has no "needs login" tag, so such a scenario
+  logs in through its own recorded steps. Owner decision A (Oct 9): no new
+  tag in PR #45; design it with the action-first discovery rung (phase
+  item 4).
 
 ## Then: go to market
 

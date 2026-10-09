@@ -324,15 +324,70 @@ function buildLoginReport(withContact: boolean): RunReport {
   const { dropped, lines } = await stage(report, { credentials: null, observeChildEnv: (env) => { envs.push(env); } });
   check('H1. with nothing to supply the child env carries no credential variable', envs.length >= 1 && envs.every((e) => e[AUTH_ENV_USER] === undefined && e[AUTH_ENV_PASS] === undefined));
   const loginDrop = dropped.find((d) => d.scenario === 'logged in with the recorded account');
-  check('H2. the login test fails twice and is recorded in emitted_failed with an error that names the unset credentials, distinguishable from a rejected recorded login', !!loginDrop && /no happy-login credentials were available to the check/.test(loginDrop.error) && /QA_CORE_TEST_USER/.test(loginDrop.error) && /Welcome back|toContainText/.test(loginDrop.error), JSON.stringify(loginDrop));
+  check('H2. the login test fails twice and is recorded in emitted_failed with an error that names the unset credentials, distinguishable from a rejected recorded login', !!loginDrop && /test credentials not provided to the check/.test(loginDrop.error) && /QA_CORE_TEST_USER/.test(loginDrop.error) && /Welcome back|toContainText/.test(loginDrop.error), JSON.stringify(loginDrop));
   check('H3. the outcome is on the report: the login scenario is gone from the shipped list and named in the bucket', !report.scenarios.some((s) => s.feature === 'login') && report.reconciliation!.emitted_failed?.[0]?.name === 'logged in with the recorded account' && report.reconciliation!.balanced, JSON.stringify(report.reconciliation!.emitted_failed));
-  check('H4. the stage said it ran with no login credentials', lines.some((l) => /with no login credentials/.test(l)), lines.join('\n'));
+  check('H4. the stage said it ran with no test account', lines.some((l) => /with no test account \(test credentials not provided\)/.test(l)), lines.join('\n'));
   const loginTrace = report.droppedTraces?.find((t) => t.name === 'logged in with the recorded account');
   check('H5. the dropped happy login keeps its trace, its credential values redacted in memory (and so in the working-directory report)', !!loginTrace && loginTrace.steps.filter((st) => st.kind === 'fill' && st.value === '[redacted:credential]').length === 2 && !JSON.stringify(report.droppedTraces).includes(PASS) && !JSON.stringify(report.droppedTraces).includes(USER), JSON.stringify(loginTrace?.steps.filter((st) => st.kind === 'fill')));
+}
+
+/* ─── I. the test account from the env (invariant 70): marked steps, the child env, the cap ─ */
+{
+  // The agent's own env holds the host-scoped pair for 127.0.0.1; the
+  // framework reads the generic names, so the child gets them under those.
+  const hostUser = 'QA_CORE_TEST_USER_127_0_0_1';
+  const hostPass = 'QA_CORE_TEST_PASS_127_0_0_1';
+  const saved = { u: process.env[hostUser], p: process.env[hostPass] };
+  process.env[hostUser] = USER;
+  process.env[hostPass] = PASS;
+  const marked: Scenario[] = [
+    { name: 'logged in with the test account', category: 'happy', feature: 'account', steps: [
+      { kind: 'navigate', url: `${base}/login.html` },
+      { kind: 'fill', target: emailInput, value: '', credential: 'user' },
+      { kind: 'fill', target: passwordInput, value: '', credential: 'pass' },
+      { kind: 'click', target: loginButton },
+      { kind: 'assert', name: 'w', assertion: { type: 'toContainText', target: alertBox, text: 'Welcome back', timeout: 5000 } },
+    ] },
+    { name: 'rejected login with a wrong password', category: 'negative', feature: 'account', steps: [
+      { kind: 'navigate', url: `${base}/login.html` },
+      { kind: 'fill', target: emailInput, value: '', credential: 'user' },
+      { kind: 'fill', target: passwordInput, value: 'not-the-password' },
+      { kind: 'click', target: loginButton },
+      { kind: 'assert', name: 'e', assertion: { type: 'toContainText', target: alertBox, text: 'Invalid credentials', timeout: 5000 } },
+    ] },
+  ];
+  const report: RunReport = {
+    url: `${base}/`, language: 'ts', scenarios: marked,
+    plan: marked.map((sc) => ({ name: sc.name, category: sc.category, rationale: 'fails if it breaks', feature: sc.feature })),
+    cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
+    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
+    steps: 0, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+    // One submit already spent of a cap of 1: the wrong-password test cannot run.
+    wrongPasswordAttempts: { cap: 1, capSource: 'QA_CORE_WRONG_PASSWORD_CAP=1', count: 1, byStage: { stability: 1 }, refused: [] },
+  };
+  report.reconciliation = reconcile(report);
+  const envs: NodeJS.ProcessEnv[] = [];
+  const { frameworkDir, lines } = await stage(report, { observeChildEnv: (env) => { envs.push({ [AUTH_ENV_USER]: env[AUTH_ENV_USER], [AUTH_ENV_PASS]: env[AUTH_ENV_PASS], [hostUser]: env[hostUser] }); } });
+  const run = report.emittedRun!;
+  check('I1. the child env carries the env account under the generic names the framework reads', envs.length >= 1 && envs.every((e) => e[AUTH_ENV_USER] === USER && e[AUTH_ENV_PASS] === PASS), JSON.stringify(envs.map((e) => Object.keys(e))));
+  const loginT = run.tests.find((t) => t.name === testTitleFor(marked[0]!));
+  check('I2. the marked happy login (feature account) passes, through the auth setup the marker activated', loginT?.status === 'passed' && run.tests.some((t) => /authenticate/.test(t.name) && t.status === 'passed'), JSON.stringify(run.tests.map((t) => `${t.status}:${t.name}`)));
+  const wrongT = run.tests.find((t) => t.name === testTitleFor(marked[1]!));
+  check('I3. the wrong-password test past the cap is not run: recorded skipped with the reason, kept in the framework, the count unchanged',
+    wrongT?.status === 'skipped' && wrongT.error === 'would exceed the wrong-password cap (1)' && report.scenarios.some((sc) => sc.name === marked[1]!.name)
+    && fs.readFileSync(path.join(frameworkDir, 'tests', 'account', 'account.spec.ts'), 'utf8').includes(marked[1]!.name)
+    && report.wrongPasswordAttempts!.count === 1 && report.wrongPasswordAttempts!.refused.some((r) => r.stage === 'emitted'), JSON.stringify({ wrongT, w: report.wrongPasswordAttempts }));
+  check('I4. the stage names the variables it read the account from and the count, never a value',
+    lines.some((l) => l.includes(`${AUTH_ENV_USER} / ${AUTH_ENV_PASS} from ${hostUser} / ${hostPass}`)) && lines.includes('wrong-password attempts against the test account: 1 of cap 1 (after emitted)') && lines.every((l) => !l.includes(USER) && !l.includes(PASS)), lines.join('\n'));
+  const offenders = tree(frameworkDir).filter((f) => { try { const b = fs.readFileSync(f, 'utf8'); return b.includes(USER) || b.includes(PASS); } catch { return false; } });
+  check('I5. no file under the framework directory holds either value', offenders.length === 0, JSON.stringify(offenders));
+  fs.rmSync(path.dirname(frameworkDir), { recursive: true, force: true });
+  if (saved.u === undefined) delete process.env[hostUser]; else process.env[hostUser] = saved.u;
+  if (saved.p === undefined) delete process.env[hostPass]; else process.env[hostPass] = saved.p;
 }
 
 server.close();
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the emitted-spec check runs the written framework, drops a test that fails twice into emitted_failed with its error, keeps the funnel balanced, stays inconclusive when the site is down, passes the recorded login credentials in memory only, removes a failed data case from the JSON, and is skipped by --no-emitted-check.');
+console.log('OK: the emitted-spec check runs the written framework, drops a test that fails twice into emitted_failed with its error, keeps the funnel balanced, stays inconclusive when the site is down, passes the test account from the env (or the recorded login of an older report) in memory only, keeps a wrong-password test past the cap unrun, removes a failed data case from the JSON, and is skipped by --no-emitted-check.');

@@ -18,6 +18,10 @@ import {
 import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent, appendRunNote } from './events.js';
 import os from 'node:os';
+import { maskForDisk } from '../agent/credential-leak.js';
+import { assertNoCredentialLeak } from '../agent/credential-leak.js';
+import { postRunLockoutCheck, preflightLogin, preflightStopReport, runLoginPreflightGate, writePreflightStopReport } from '../agent/login-preflight.js';
+import { retiredAuthEnvLine } from '../agent/test-credentials.js';
 
 /**
  * The explore run the gateway and the MCP server share: prepare (resume
@@ -54,6 +58,8 @@ export interface RunExploreInput {
    * model. Production callers leave it unset.
    */
   exploreImpl?: typeof explore;
+  /** Test seam: replaces the browser login preflight (invariant 70). */
+  preflight?: typeof preflightLogin;
 }
 
 export interface SrsUpload { name: string; base64: string }
@@ -140,6 +146,7 @@ function runFlags(req: ExploreRequest): Record<string, unknown> {
     lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
     resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, emittedCheck: req.emittedCheck, replay: req.replay,
     stability: req.stability, stabilityIterations: req.stabilityIterations, env: req.env,
+    loginUrl: req.loginUrl ?? null,
   };
 }
 
@@ -170,6 +177,13 @@ export interface PreparedRun {
   /** Absolute path of the uploaded SRS saved in the run directory, when one was attached. */
   srsFile?: string;
   notes: string[];
+  /**
+   * Set when the login preflight failed (invariant 70): the run stops with
+   * this line before the requirements map, and nothing else is prepared.
+   */
+  preflightStop?: string;
+  /** Where the preflight found the login form, for the post-run lockout check. */
+  loginUrl?: string;
 }
 
 /**
@@ -230,6 +244,17 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
   notes.push(`  language: ${req.lang}`);
   notes.push(`  output:   ${rel(root, outDir)}`);
 
+  // The test account (invariant 70): names of the variables used, and does
+  // it sign in? Before the SRS is saved and before the requirements map, so
+  // a failure costs nothing and leaves only the stopped report and run-meta.
+  const retired = retiredAuthEnvLine(process.env);
+  if (retired) notes.push(`  ${retired}`);
+  const gate = await runLoginPreflightGate({ url, ...(req.loginUrl ? { loginUrl: req.loginUrl } : {}), log: (line) => notes.push(`  ${line}`), ...(input.preflight ? { preflight: input.preflight } : {}) });
+  if (gate.stopLine) {
+    notes.push(gate.stopLine);
+    return { request: req, url, outDir, ...(resumeCp ? { resume: resumeCp } : {}), notes, preflightStop: gate.stopLine };
+  }
+
   // An uploaded SRS lands in the run directory under its original name and
   // becomes --srs <that path>, so Run Detail lists it as an artifact.
   let srsFile: string | undefined;
@@ -265,12 +290,12 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
       throw new Error(`The SRS at ${req.srs} yielded no features. Nothing to plan from; check the document.`);
     }
     fs.mkdirSync(outDir, { recursive: true });
-    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(requirements, null, 2));
+    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(maskForDisk(requirements), null, 2));
     notes.push(`  SRS: ${requirements.features.length} feature(s), ${countRules(requirements)} rule(s) · $${built.costUsd.toFixed(4)}${requirements.truncated ? ' · truncated at cap' : ''}`);
     if (req.features.length > 0) notes.push('  (--features wins for feature selection; the SRS rules still steer the Planner)');
   }
 
-  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(requirementsUsd !== undefined ? { requirementsUsd } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes };
+  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(requirementsUsd !== undefined ? { requirementsUsd } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}) };
 }
 
 /** Prepare, run, emit. */
@@ -289,6 +314,15 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
     input.onPrepared?.({ runId: path.basename(outDir), outDir, url, resume: !!prepared.resume });
     for (const n of prepared.notes) note(n);
 
+    // A failed login preflight (owner decision B): a minimal stopped report
+    // and run-meta, so the dashboard lists the run; no model was called.
+    if (prepared.preflightStop) {
+      const report = preflightStopReport({ url, language: req.lang, line: prepared.preflightStop, startedAt: new Date().toISOString() });
+      if (!prepared.resume) writePreflightStopReport(outDir, report);
+      return { kind: 'empty', report, outDir, reportPath: rel(root, path.join(outDir, 'run-report.json')), summary: [], diagnosis: [prepared.preflightStop] };
+    }
+    const lockoutLog = (line: string): void => { const e: AgentEvent = { type: 'message', text: line }; appendRunEvent(outDir, e); input.onEvent?.(e); };
+
     const exploreFn = input.exploreImpl ?? explore;
     const result = await exploreFn({
       ...buildExploreOptions(req, {
@@ -297,6 +331,7 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
         ...(prepared.requirementsUsd !== undefined ? { requirementsUsd: prepared.requirementsUsd } : {}),
         ...(prepared.resume ? { resume: prepared.resume } : {}),
         ...(input.model ? { model: input.model } : {}),
+        loginPreflightDone: true,
       }),
       // Every event is also appended to <runDir>/events.jsonl, the stored
       // timeline the Run Detail page renders.
@@ -312,6 +347,9 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
     const cpFile = path.join(outDir, 'checkpoint.json');
 
     if (!report.scenarios || report.scenarios.length === 0) {
+      // Wrong-password submits may have been spent before the funnel emptied.
+      await postRunLockoutCheck({ report, ...(prepared.loginUrl ? { loginUrl: prepared.loginUrl } : {}), log: lockoutLog, ...(input.preflight ? { preflight: input.preflight } : {}) });
+      if (report.lockoutWarning) writeReportFiles(outDir, report);
       const diag = diagnoseEmptyRun(report);
       const lines = diag ? [...diag.lines] : [];
       if (diag?.cause === 'planner-none') {
@@ -361,9 +399,13 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
           rescaffold: (r) => { scaffoldResult = scaffold({ report: r, ...scaffoldOpts }); },
           log: (line) => { const e: AgentEvent = { type: 'message', text: line }; appendRunEvent(outDir, e); input.onEvent?.(e); },
         });
+        // After the last stage that submits: does the account still sign in?
+        await postRunLockoutCheck({ report, ...(prepared.loginUrl ? { loginUrl: prepared.loginUrl } : {}), log: lockoutLog, ...(input.preflight ? { preflight: input.preflight } : {}) });
         writeReportFiles(outDir, report);
         if (!report.stopped) markCheckpointPhase(outDir, 'emitted');
         summary = summarize(report);
+        // No test-account value ships (invariant 70): a hit refuses the zip.
+        assertNoCredentialLeak({ frameworkDir, runDir: outDir });
         zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
       } finally {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -390,6 +432,8 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       };
     }
 
+    await postRunLockoutCheck({ report, ...(prepared.loginUrl ? { loginUrl: prepared.loginUrl } : {}), log: lockoutLog, ...(input.preflight ? { preflight: input.preflight } : {}) });
+    if (report.lockoutWarning) writeReportFiles(outDir, report);
     const r = transcribe({ report, outDir, name: req.name ?? frameworkDirName(url).replace(/-automation-framework$/, '') });
     if (!report.stopped) deleteCheckpoint(outDir);
     writeRunMeta(outDir, meta);
@@ -497,6 +541,9 @@ export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string
   try {
     const frameworkDir = path.join(tmp, rootName);
     const result = scaffold({ report, outDir: frameworkDir, siteName: hostnameOf(report.url), ...(requirements ? { requirements } : {}) });
+    // No test-account value ships (invariant 70). A regenerate writes only the
+    // zip, so only the tree it zips is checked; a hit refuses the zip.
+    assertNoCredentialLeak({ frameworkDir });
     const zipBuf = zipFrameworkToBuffer(frameworkDir, rootName);
     const zip: FrameworkZip = { buffer: zipBuf, filename, sizeBytes: zipBuf.length, fileCount: result.fileCount, scenarios: result.pomResult.scenarios };
 
