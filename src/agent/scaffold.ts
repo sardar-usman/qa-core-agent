@@ -12,8 +12,10 @@ import {
   AUTH_ENV_USER,
   findHappyLoginScenario,
   isDemoHost,
+  loginFeatureOf,
   recordedCredentials,
   renderAuthSetup,
+  reportUsesTestAccount,
   STORAGE_STATE_PATH,
 } from './auth-emit.js';
 
@@ -121,7 +123,7 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   };
 
   writeFile('package.json', renderPackageJson(opts, lang));
-  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang, authLogin !== null));
+  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang, authLogin !== null, loginFeatureOf(authLogin)));
   if (lang === 'ts') {
     writeFile('tsconfig.json', renderTsConfig());
   }
@@ -134,7 +136,9 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   writeFile(`helpers/assertions.${ext}`, renderAssertionsHelper(lang));
   writeFile(`helpers/unique-data.${ext}`, renderUniqueDataHelper(lang));
   writeFile(`helpers/parse-number.${ext}`, renderParseNumberHelper(lang));
-  writeFile('README.md', renderReadme(opts, pomResult, lang));
+  // The README quotes the Critic's summary: free text, rendered from the
+  // credential-redacted report like the run-report copy (invariant 70).
+  writeFile('README.md', renderReadme({ ...opts, report: redactCredentialValues(opts.report) }, pomResult, lang));
 
   // Self-sufficient framework dir: write run-report.json here too. This copy
   // ships inside the framework zip, so credential fill values are REDACTED
@@ -292,7 +296,7 @@ function renderPackageJson(opts: ScaffoldOptions, lang: 'ts' | 'js'): string {
   return JSON.stringify(obj, null, 2) + '\n';
 }
 
-function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false): string {
+function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false, loginFeature = 'login'): string {
   const baseUrl = opts.report.url;
   if (auth) {
     // storageState flow: the setup project logs in once and saves the session;
@@ -302,13 +306,13 @@ function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth =
     // Logs in once (tests/auth.setup) and saves the session to ${STORAGE_STATE_PATH}.
     { name: 'setup', testMatch: /.*auth\\.setup\\.(ts|js)$/ },
     // Login tests drive the login UI themselves — never with a saved session.
-    { name: 'login', use: { ...devices['Desktop Chrome'] }, testMatch: 'login/**/*.spec.${lang}' },
+    { name: 'login', use: { ...devices['Desktop Chrome'] }, testMatch: '${loginFeature}/**/*.spec.${lang}' },
     // Everything else starts authenticated via the saved storage state.
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], storageState: ${JSON.stringify(STORAGE_STATE_PATH)} },
       dependencies: ['setup'],
-      testIgnore: ['**/login/**', '**/auth.setup.*'],
+      testIgnore: ['**/${loginFeature}/**', '**/auth.setup.*'],
     },
   ],`;
     if (lang === 'js') {
@@ -475,7 +479,20 @@ function renderEnvExample(opts: ScaffoldOptions, authLogin: Scenario | null = nu
 # Base URL the tests run against. Override locally to point at staging.
 BASE_URL=${opts.report.url}
 `;
+  // The agent may have run with a host-scoped pair; the framework reads only
+  // the generic names, and says so (invariant 70).
+  const genericNote = `# This framework reads only the generic ${AUTH_ENV_USER} / ${AUTH_ENV_PASS}.
+# A host-scoped pair (${AUTH_ENV_USER}_<HOST> / ${AUTH_ENV_PASS}_<HOST>) is read by
+# the QA-Core agent only; copy its values into the generic names here.
+`;
   if (!authLogin) {
+    if (reportUsesTestAccount(opts.report)) {
+      return base + `
+# The test account some tests type (a wrong-password or duplicate-email check).
+${genericNote}${AUTH_ENV_USER}=
+${AUTH_ENV_PASS}=
+`;
+    }
     return base + `
 # Optional: credentials for auth-gated tests.
 # These are consumed by fixtures/credentials.{ts,js}.
@@ -486,11 +503,14 @@ BASE_URL=${opts.report.url}
   // Auth setup credentials. Recorded values are seeded ONLY for known public
   // demo sites; anything else gets empty placeholders — real credentials are
   // never written into a generated framework.
+  // A credential-marked login recorded no value, so nothing is seeded for it
+  // (invariant 70): the dedicated account's values never enter the tree.
   const demo = isDemoHost(opts.report.url) ? recordedCredentials(authLogin) : {};
+  const note = reportUsesTestAccount(opts.report) ? genericNote : '';
   return base + `
 # Credentials the auth setup (tests/auth.setup) signs in with before saving
 # the shared session. Also consumed by fixtures/credentials.{ts,js}.
-${AUTH_ENV_USER}=${demo.user ?? ''}
+${note}${AUTH_ENV_USER}=${demo.user ?? ''}
 ${AUTH_ENV_PASS}=${demo.pass ?? ''}
 `;
 }
@@ -504,7 +524,7 @@ function renderCredentialsFixture(opts: ScaffoldOptions, lang: 'ts' | 'js', auth
   if (!auth) {
     for (const scenario of opts.report.scenarios) {
       for (const step of scenario.steps) {
-        if (step.kind === 'fill') {
+        if (step.kind === 'fill' && !step.credential) {
           const intent = step.target.intent.toLowerCase();
           if (/(user|email|login)/.test(intent) && !/password/.test(intent)) {
             seenUsernames.add(step.value);

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { RunReport } from './trace.js';
+import { maskForDisk } from './credential-leak.js';
 
 /**
  * Per-run output layout (dashboard v2 plan, section 5, "Run identity").
@@ -126,7 +127,7 @@ export interface RunMeta {
 /** Write the surface's metadata next to the report. Engine data never lives here. */
 export function writeRunMeta(runDir: string, meta: Omit<RunMeta, 'writtenAt'>): void {
   fs.mkdirSync(runDir, { recursive: true });
-  fs.writeFileSync(path.join(runDir, RUN_META), JSON.stringify({ ...meta, writtenAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(path.join(runDir, RUN_META), JSON.stringify(maskForDisk({ ...meta, writtenAt: new Date().toISOString() }), null, 2));
 }
 
 export function readRunMeta(runDir: string): RunMeta | null {

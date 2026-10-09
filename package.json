@@ -38,7 +38,6 @@
     "test:ci": "playwright test --reporter=github,html",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke-all.ts",
-    "auth:setup": "playwright test --project=setup",
     "dashboard:dev": "npm --prefix dashboard run dev",
     "dashboard:build": "npm --prefix dashboard run build"
   },

@@ -12,7 +12,7 @@ Generated: 2026-06-10 (v2 hardening pass complete).
 |---|---|
 | `package.json` | Node project manifest. Defines the four runtime scripts (`explore`, `generate`, `heal`, `eval`) plus the gateway and MCP server entry points. Dependencies pin Anthropic SDK, Playwright, MCP SDK, axe-core, zod, ws, dotenv. |
 | `tsconfig.json` | TypeScript compiler config. Targets ESM modules with strict type-checking. Used only for `tsc --noEmit` validation; runtime execution happens through `tsx`. |
-| `playwright.config.ts` | Playwright runner config used by `npm test` and by the eval harness when it re-executes generated specs. Defines the chromium project and the auth-setup project. |
+| `playwright.config.ts` | Playwright runner config used by `npm test` and by the eval harness when it re-executes generated specs. Defines the browser projects (the auth-setup project is retired with `tests/auth.setup.ts`). |
 | `setup.sh` | One-shot bootstrapping script. Installs deps, runs `playwright install chromium`, and copies `.env.example` to `.env` if it doesn't exist. |
 | `.env.example` | Template for the environment variables QA-Core reads at startup. Copy to `.env` and fill in `ANTHROPIC_API_KEY` at minimum. |
 | `README.md` | Public-facing README for GitHub visitors. Quick start, commands, model routing, eval table. |
@@ -39,7 +39,10 @@ The 5-stage pipeline lives here. Each stage is one module. Shared types (trace, 
 | `trace.ts` | shared | Type definitions only. `TraceStep`, `Scenario`, `SelectorRecord`, `Assertion`, and `RunReport`. The shape every other agent module reads or writes. |
 | `transcriber.ts` | spec output | Deterministic (no LLM) conversion of the verified trace into a single inline Playwright spec file. Emits `beforeEach` that clears cookies + storage. Emits `.first()` only when the cascade marked the record ambiguous. |
 | `pom.ts` | spec output | Same role as `transcriber.ts`, but produces a Page Object Model framework: `pages/BasePage.ts`, one page class per feature, fields keyed by the locator's identity (never by intent) and named from a unique intent or the locator, action-method synthesis for repeated step sequences, a shared `beforeEach` goto only when every scenario in the feature starts on one URL, dedicated `tests/` directory, and an auto-injected a11y check. The default `/explore` output. |
-| `emitted-check.ts` | final stage | The emitted-spec check, run by the CLI and the gateway after `scaffold` and before the zip: the written framework runs once with Playwright (chromium, one worker, JSON reporter) against the live site through a symlink to the agent repo's own `node_modules` (no npm install), a failed test is retried once, a test that fails twice is dropped into the `emitted_failed` reconciliation bucket with its error and the framework is re-scaffolded, a data-driven case that fails twice is removed from `data/<feature>.json` and recorded under `<feature>: <case>`, the run's recorded happy-login credentials reach the Playwright child's environment in memory only (never a file, never the zip, never a log line), and a site that is down leaves the stage inconclusive with the framework whole. `--no-emitted-check` skips it. |
+| `test-credentials.ts` | every stage | The dedicated test account (invariant 70): `resolveTestCredentials` / `readTestCredentials` read the host-scoped pair (`QA_CORE_TEST_USER_<HOST>`) before the generic one, never mixing a half-set pair, and print variable names only; `needsTestAccount` flags the planned scenarios skipped without credentials; `wrongPasswordSubmits` and the ledger functions count wrong-password submits against `QA_CORE_WRONG_PASSWORD_CAP` (default 10, lowered by a stated lockout); `retiredAuthEnvLine` prints the `QA_CORE_AUTH_*` retirement once. |
+| `login-preflight.ts` | before planning | `preflightLogin` (moved out of `scripts/preflight-site.ts`): opens `--login-url`, the run URL, a login link or a common login path, signs in and reports ok, failed (the page text verbatim) or unreached (every URL tried). `runLoginPreflightGate` runs it on every surface before the requirements map; `preflightStopReport` is the minimal stopped report a failure leaves; `postRunLockoutCheck` signs in once more after the last wrong-password submit and sets `lockoutWarning`. |
+| `credential-leak.ts` | every write | `maskForDisk` / `maskDeep` mask every test-account value inside any string before a file under `output/` is written (run-report, checkpoint, events.jsonl, run-meta, requirements map, rule coverage, the zipped copy); `assertNoCredentialLeak` greps the framework tree and the run directory before the zip and refuses it with `CredentialLeakError`, naming file and field, never the value. |
+| `emitted-check.ts` | final stage | The emitted-spec check, run by the CLI and the gateway after `scaffold` and before the zip: the written framework runs once with Playwright (chromium, one worker, JSON reporter) against the live site through a symlink to the agent repo's own `node_modules` (no npm install), a failed test is retried once, a test that fails twice is dropped into the `emitted_failed` reconciliation bucket with its error and the framework is re-scaffolded, a data-driven case that fails twice is removed from `data/<feature>.json` and recorded under `<feature>: <case>`, the test account from the agent's env (host-scoped or generic, the recorded happy login only for an older report) reaches the Playwright child's environment under the generic names in memory only, a wrong-password test past the run's cap is not run and is kept, recorded skipped, (never a file, never the zip, never a log line), and a site that is down leaves the stage inconclusive with the framework whole. `--no-emitted-check` skips it. |
 | `generate.ts` | story → spec | The `/generate` command. A single LLM call that converts a user story into a Playwright spec marked UNVERIFIED in the file header. Does not drive a browser. |
 | `doctrine.ts` | shared | `ASSERTION_DOCTRINE`, the assertion doctrine shared word for word by the Explorer prompt (`runtime.ts`) and the Critic prompt (`critic.ts`) so the two cannot drift. Locked by `smoke-critic-parse.ts`. |
 | `volatile-id.ts` | shared | The generated-id shapes (uuid, 16+ hex, 20+ alphanumeric with digits): `isVolatilePath` for discovered pages and `generatedIdFragment` for the gate's RULE 6. |
@@ -102,6 +105,7 @@ This directory is mixed: the eval harness is production code, the smoke tests ar
 
 | File | Purpose |
 |---|---|
+| `credential-leak-scan.ts` | Read-only, $0 (invariant 70). Scans every run folder under `output/` and every zip in it for the Toolshop and saucedemo demo passwords and the current `QA_CORE_TEST_USER*` / `QA_CORE_TEST_PASS*` values, and prints the file, the JSON path (or line) and the count for each hit, naming the secret, never printing it. Modifies nothing. |
 | `rework-shapes.ts` | Read-only audit evidence, $0. Reads `events.jsonl` of runs 51d535 and 44cb3d (or the run directories passed as arguments) and, for every scenario the first Critic pass reworked, prints which record-time rule (the counter literal and count capture, the generated email in a creation flow, the 10000 ms floor after an action) would have refused, rewritten or floored a recorded call, with its line number, or "no new rule applies". Judges through the same exported functions the tools and the gate use. Exits non-zero naming the path when a run folder, its events or its first `critic_done` is missing. |
 | `eval.ts` | The `npm run eval` harness. Runs `/explore` against the three baseline target sites (saucedemo, the-internet, practice-todo), executes the generated specs through Playwright, and writes `eval-results/<timestamp>/{results.json,summary.md}` with per-site metrics including the v2 columns (Replay pass/fail, Stable/Flaky/Broken, flake_rate). |
 
@@ -111,6 +115,7 @@ These run with `npx tsx scripts/<name>.ts`. They are deterministic and fast. Eac
 
 | File | What it locks in |
 |---|---|
+| `smoke-test-credentials.ts` | The dedicated test account (invariant 70): the host-scoped pair wins over the generic one and a half-set host pair never mixes; the printed line names variables only; the `QA_CORE_AUTH_*` line prints once; without credentials the scenarios that need the account are skipped before the Explorer with a balanced funnel and no model call; a failed preflight on a local fixture login page leaves only a stopped run-report (cost 0, the page text verbatim) and run-meta, before the requirements map; the fill marker types the env value and records none, a typed password in a happy login is refused, a reset flow is skipped; replay fills a marked step from the env; the 11th wrong-password submit is refused and skipped, a stated lockout after 3 caps at 2, the post-run preflight sets `lockoutWarning` on a fixture that locks; a credential in a skip reason, a Critic reason and a finding message reaches no file in the run folder or the zip, and a planted value refuses the zip naming the file. |
 | `smoke-tools.ts` | `get_dom` surfaces `required` + `disabled` + `validation` form-state fields and begins with the test-id attribute line; count and absence probes fail in about 10 s on a zero-match selector while the recorded timeout stays the model's or the adaptive one; RULE 3, 6 and 8 are refused at the tool call with nothing recorded, a positional selector inside a table and a price-free prefix pass. Runs against real Chromium. |
 | `smoke-host-memory.ts` | The per-host fingerprint records the dominant test-id attribute, the memory block states it, a run that saw none keeps it, a run that saw the other replaces it; runs in a temporary working directory. |
 | `smoke-finish.ts` | `finish()` drops abandoned assert-less scenarios but keeps complete ones. |
@@ -136,14 +141,6 @@ These run with `npx tsx scripts/<name>.ts`. They are deterministic and fast. Eac
 | `smoke-run-detail.ts` | Run Detail endpoint and page: seeded verdicts (pass shipped, rework repaired, reject dropped) and one finding come back exactly as stored; the finding is never a scenario row; unknown or vanished report is a 404 naming the path; legacy returns `legacy: true` without scenarios; artifacts only from the run directory; the page renders the finding under "Product behavior to review", "No findings recorded" for a quiet run, the legacy notice, and the back link. |
 | `smoke-ui-pipeline.ts` | The live run view renders from a realistic event sequence, then from a fixture run-report: funnel counts equal the reconciliation arrays' lengths, verdict journeys match `review.repair`, the cost split sums the report's fields, rule coverage lists considered-not-automated rules with reasons; history shows Resume only with a checkpoint and Regenerate only on a completed run; both themes keep 4.5:1 contrast. |
 | `smoke-dashboard-math.ts` | Compares the old (buggy) vs new (fixed) per-site dashboard math against real on-disk runs. Confirms the fix produces sensible numbers, not just "different" numbers. |
-
----
-
-## `tests/` — Playwright auth setup
-
-| File | Purpose |
-|---|---|
-| `auth.setup.ts` | Authenticates once and saves the storage state to `playwright/.auth/user.json`. Reads `QA_CORE_AUTH_URL` / `QA_CORE_AUTH_USER` / `QA_CORE_AUTH_PASS` from env. Skipped cleanly if those env vars are missing. The Explorer, Replay, and Stability stages all pick up this storage state automatically when present. |
 
 ---
 
@@ -179,7 +176,6 @@ Markdown files that describe QA-Core's commands to the OpenClaw skill router. Ea
 |---|---|---|
 | `output/<timestamp>-<host>/` | `explore.ts` and `gateway.ts` | One directory per `/explore` run. Contains `run-report.json` plus the generated spec (or the POM framework subdirectories). |
 | `eval-results/<timestamp>/<site>/` | `eval.ts` | One directory per eval run, one subdirectory per target site. Contains `run-report.json`, the generated spec, `pw-results.json` from the Playwright execution, plus the eval-wide `results.json` and `summary.md` at the root. |
-| `playwright/.auth/user.json` | `tests/auth.setup.ts` | Persisted storage state from a successful login. Reused by every subsequent agent context that finds this file. |
 | `.qa-core/sites/<host>.json` | `memory.ts` | Per-host fingerprint. Cascade distribution, known intents, auth hints. Read at the start of a run, refreshed at the end. |
 | `.qa-core/memory.json` | `memory.ts` | Project-wide memory: recent runs, prevailing cascade distribution, any user-pinned overrides. |
 | `node_modules/` | npm | Dependencies. |
@@ -245,7 +241,7 @@ All seven should print `OK:` on the last line. `tsc --noEmit` should print nothi
 For clarity — features that are listed in the LinkedIn v3 roadmap but are not yet built:
 
 - **PR-aware test selection** — would read a git diff and propose which existing scenarios to re-run vs extend.
-- **Multi-role auth** — single `playwright/.auth/user.json` exists today; a multi-role scheme (`admin.json`, `user.json`, `guest.json` with CLI flag) is not yet implemented.
+- **Multi-role auth**: one dedicated test account per host today (QA_CORE_TEST_USER / QA_CORE_TEST_PASS, invariant 70); a multi-role scheme (admin, user, guest) is not yet implemented.
 - **Visual regression** — `expect(page).toHaveScreenshot()` is not emitted by the transcriber.
 - **Network mocking** — the Explorer's tool surface has no `route()` tool.
 - **GitHub Action** — no workflow file ships with the repo today.

@@ -100,7 +100,7 @@ check('L. resume options identical across surfaces', !!resOpts && gwRes.kind ===
 const exploreSchema = z.object(exploreArgs);
 const resumeSchema = z.object(resumeArgs);
 for (const f of EXPLORE_FLAGS) {
-  const sample = f.flag === '--lang' ? 'js' : f.flag === '--env' ? 'QA_CORE_COST_CEILING=3' : /model/.test(f.flag) ? 'claude-haiku-4-5' : /reserve/.test(f.flag) ? '0.2' : /ceiling|steps|stability|attempts/.test(f.flag) ? '2' : 'x';
+  const sample = f.flag === '--lang' ? 'js' : f.flag === '--env' ? 'QA_CORE_COST_CEILING=3' : f.flag === '--login-url' ? 'https://shop.example/login' : /model/.test(f.flag) ? 'claude-haiku-4-5' : /reserve/.test(f.flag) ? '0.2' : /ceiling|steps|stability|attempts/.test(f.flag) ? '2' : 'x';
   const tokens = f.takesValue ? [f.flag, sample] : [f.flag];
   const parsed = parseExploreTokens(tokens);
   check(`M. ${f.flag} parses`, parsed.ok, parsed.ok ? '' : parsed.error);

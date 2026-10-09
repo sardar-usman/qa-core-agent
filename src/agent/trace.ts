@@ -31,6 +31,14 @@ export type TraceStep =
        * generated identifier actually filled.
        */
       override?: 'non-existent-account';
+      /**
+       * Set when the fill typed the dedicated test account (invariant 70):
+       * 'user' is QA_CORE_TEST_USER, 'pass' is QA_CORE_TEST_PASS (or their
+       * host-scoped forms). The value is read from the env at every stage
+       * (exploration, replay, stability, the emitted spec) and never
+       * recorded: `value` is '' on a marked step.
+       */
+      credential?: CredentialMarker;
     }
   | {
       kind: 'press';
@@ -167,6 +175,9 @@ export type TraceStep =
  */
 export type GenerateKind = 'email' | 'token' | 'password';
 
+/** Which half of the dedicated test account a credential-marked step reads (invariant 70). */
+export type CredentialMarker = 'user' | 'pass';
+
 /** What a capture reads off an element. */
 export type CaptureSource = 'attribute' | 'text' | 'count';
 
@@ -269,7 +280,9 @@ export type Assertion =
    * assert the current value of an input, textarea, or select. Emits
    * `toHaveValue(value)`.
    */
-  | { type: 'toHaveValue'; target: SelectorRecord; value: string; timeout?: number };
+  | { type: 'toHaveValue'; target: SelectorRecord; value: string; timeout?: number;
+      /** Set when the field holds the test account (a credential-marked fill): the expected value is read from the env, `value` is ''. */
+      credential?: CredentialMarker };
 
 /**
  * A named scenario (e.g. "Login with valid credentials") composed of trace steps.
@@ -310,7 +323,7 @@ export interface RunReport {
    * so the run can be resumed instead of restarted.
    */
   stopped?: {
-    kind: 'cost_ceiling' | 'billing' | 'api';
+    kind: 'cost_ceiling' | 'billing' | 'api' | 'login_preflight';
     reason: string;
     /**
      * Set when the cost ceiling tripped mid-scenario and the scenario already
@@ -593,6 +606,29 @@ export interface RunReport {
   droppedTraces?: import('./dropped-traces.js').DroppedTrace[];
   /** Set when the dropped traces and the drop names disagree (a missing or an extra trace), with the names. */
   droppedTracesWarning?: string;
+  /**
+   * Wrong-password submits against the test account (invariant 70): every
+   * execution of a login scenario that fills the test account's identifier
+   * with a password that is not the account's, counted across exploration,
+   * the repair pass, replay, stability and the emitted-spec check. `cap` is
+   * QA_CORE_WRONG_PASSWORD_CAP (default 10), lowered to N - 1 when the
+   * requirements map states a lockout after N attempts. A submit past the cap
+   * is refused. Absent when the run had no test credentials.
+   */
+  wrongPasswordAttempts?: {
+    cap: number;
+    capSource: string;
+    count: number;
+    byStage: Partial<Record<'explorer' | 'repair' | 'replay' | 'stability' | 'emitted', number>>;
+    /** Scenarios refused because a submit would pass the cap, with the stage that refused them. */
+    refused: Array<{ scenario: string; stage: string }>;
+  };
+  /**
+   * Set when the post-run login preflight failed after wrong-password
+   * submits: "the test account no longer signs in after N wrong-password
+   * attempts". The account is probably locked.
+   */
+  lockoutWarning?: string;
   /**
    * Rule coverage against the requirements map (SRS runs only). Also written
    * to rule-coverage.json in the run output directory. Absent without --srs.

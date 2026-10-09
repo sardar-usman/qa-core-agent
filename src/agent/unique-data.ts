@@ -76,13 +76,20 @@ export interface UniqueFieldHints {
   value?: string;
 }
 
-const CREATION_FLOW_RE = /regist|sign[\s_-]?up|create|join|enrol|new[\s_-]?account|onboard/i;
+export const CREATION_FLOW_RE = /regist|sign[\s_-]?up|create|join|enrol|new[\s_-]?account|onboard/i;
 const EMAIL_FIELD_RE = /e[\s_-]?mail/i;
 // A scenario that is ABOUT the email already being taken keeps its literal:
 // generating a fresh one would make the duplicate test pass for the wrong reason.
-const DUPLICATE_EMAIL_RE = /duplicate|\bexisting\b|already[\s_-]+(?:registered|in[\s_-]+use|used|taken|exists)/i;
+export const DUPLICATE_EMAIL_RE = /duplicate|\bexisting\b|already[\s_-]+(?:registered|in[\s_-]+use|used|taken|exists)/i;
 // A login flow: the credential rules (invariants 43 and 56) own its fields.
-const LOGIN_NAME_RE = /\blog(?:s|ged|ging)?[\s_-]?in\b|\bsign(?:s|ed|ing)?[\s_-]?in\b/i;
+export const LOGIN_NAME_RE = /\blog(?:s|ged|ging)?[\s_-]?in\b|\bsign(?:s|ed|ing)?[\s_-]?in\b/i;
+/**
+ * A forgot-password or reset flow (invariant 70, owner decision F): its email
+ * is generated, never the test account's, because a reset sends mail to the
+ * address typed. Judged like a creation flow: feature, name and page URL for
+ * a happy scenario, the canonical name for a negative or edge one.
+ */
+export const FORGOT_FLOW_RE = /forgot|reset[\s_-]+(?:your[\s_-]+|the[\s_-]+)?password|password[\s_-]+(?:reset|recovery)|recover(?:y|ed|ing)?[\s_-]+(?:your[\s_-]+|the[\s_-]+)?(?:password|account)/i;
 
 /** True when the field hints name an email field (the same pattern the creation-email rule uses). */
 export function isEmailField(fieldHint: string): boolean {
@@ -116,7 +123,8 @@ export function isWellFormedEmail(value: string): boolean {
  *    rejected for a weak or breached value the model happened to type.
  */
 export function detectUniqueField(h: UniqueFieldHints): GenerateKind | undefined {
-  if (h.category && h.category !== 'happy') return nonHappyCreationEmail(h);
+  if (h.category && h.category !== 'happy') return nonHappyCreationEmail(h) ?? nonHappyForgotEmail(h);
+  if (FORGOT_FLOW_RE.test(h.flowHint) && EMAIL_FIELD_RE.test(h.fieldHint)) return 'email';
   const isCreationFlow = CREATION_FLOW_RE.test(h.flowHint);
   if (!isCreationFlow) return undefined;
   if (EMAIL_FIELD_RE.test(h.fieldHint)) return 'email';
@@ -138,6 +146,18 @@ export function detectUniqueField(h: UniqueFieldHints): GenerateKind | undefined
  * the email check: "an already registered account" names no email), and a
  * login flow.
  */
+/**
+ * A negative or edge forgot-password scenario's well-formed email is
+ * generated too (a reset mail never goes to a real address); an empty or
+ * malformed one is the field under test and stays literal.
+ */
+function nonHappyForgotEmail(h: UniqueFieldHints): GenerateKind | undefined {
+  if (!FORGOT_FLOW_RE.test(h.canonicalName ?? '')) return undefined;
+  if (!EMAIL_FIELD_RE.test(h.fieldHint)) return undefined;
+  if (!isWellFormedEmail(h.value ?? '')) return undefined;
+  return 'email';
+}
+
 function nonHappyCreationEmail(h: UniqueFieldHints): GenerateKind | undefined {
   const name = h.canonicalName ?? '';
   if (!CREATION_FLOW_RE.test(name)) return undefined;

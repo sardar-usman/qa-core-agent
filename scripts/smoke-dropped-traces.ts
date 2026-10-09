@@ -268,7 +268,42 @@ const loginReport = (): RunReport => {
   check('E6. a later stage still masks the password in a newly dropped trace (the secret set is remembered on the report object)', report.droppedTraces?.length === 2 && !JSON.stringify(report.droppedTraces).includes(PASSWORD), JSON.stringify(report.droppedTraces?.map((x) => x.name)));
   const envSecrets = credentialSecrets({ ...loginReport(), droppedTraces: undefined }, { QA_CORE_TEST_USER: 'env-user', QA_CORE_TEST_PASS: 'env-pass' });
   check('E7. the env credential variables the run used join the secret set; an unset or empty one does not', envSecrets.has('env-user') && envSecrets.has('env-pass') && credentialSecrets(loginReport(), { QA_CORE_TEST_PASS: '' }).size === 0);
+  const hostSecrets = credentialSecrets({ ...loginReport(), droppedTraces: undefined }, { QA_CORE_TEST_USER_SHOP_EXAMPLE_COM: 'host-user', QA_CORE_TEST_PASS_SHOP_EXAMPLE_COM: 'host-pass' });
+  check('E7b. a host-scoped pair joins the secret set too (invariant 70)', hostSecrets.has('host-user') && hostSecrets.has('host-pass'));
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+/* ─── E8. free text in a dropped trace is masked (invariant 70) ─────────── */
+// Run 5's zip shipped the demo password in a skip reason the model wrote:
+// masking reached fill steps only. A secret inside any string of a dropped
+// trace (its drop reason, an assertion's text) is masked now, in memory and
+// in both written copies, while the rest of the text stays readable.
+{
+  const ENV_PASS = 'Env-Dedicated-Pass-77';
+  const ENV_USER = 'client@shop.example.com';
+  const prev = { u: process.env.QA_CORE_TEST_USER, p: process.env.QA_CORE_TEST_PASS };
+  process.env.QA_CORE_TEST_USER = ENV_USER;
+  process.env.QA_CORE_TEST_PASS = ENV_PASS;
+  const leaky = sc('greeted the signed-in user by name', [nav('/account'), { kind: 'assert', name: 'greeting', assertion: { type: 'toContainText', target: t('greeting', 'greeting'), text: `Welcome ${ENV_USER}`, timeout: 10000 } }], 'happy', 'account');
+  const r: RunReport = {
+    url: URL, language: 'ts', cascadeStats, cost, steps: 0, startedAt: '', finishedAt: '',
+    scenarios: [], plan: [planEntry(leaky.name)],
+    replay: { passed: 0, failed: 1, durationMs: 0, verdicts: [{ name: leaky.name, passed: false, failedStep: 1, stepKind: 'assert', error: `expected "Welcome ${ENV_USER}" after typing ${ENV_PASS}`, durationMs: 0 }] },
+    findings: [],
+  } as unknown as RunReport;
+  r.reconciliation = reconcile(r);
+  attachDroppedTraces(r, traceStoreForRun({ gateBroken: new Map(), recorded: [leaky], repaired: [], repairAttempts: {}, replayed: [leaky], stabilityInput: [] }), () => {});
+  const mem = JSON.stringify(r.droppedTraces);
+  check('E8. a secret in a dropped trace\'s reason and assertion text is masked in memory, the rest of the text kept',
+    !mem.includes(ENV_USER) && !mem.includes(ENV_PASS) && mem.includes(`Welcome ${CREDENTIAL_REDACTION}`) && r.droppedTraces?.[0]?.reason.includes('after typing') === true, mem);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-dropped-free-'));
+  writeReportFiles(path.join(root, 'run'), r);
+  scaffold({ report: { ...r, scenarios: [] }, outDir: path.join(root, 'fw'), siteName: 'shop.example.com' });
+  const both = [fs.readFileSync(path.join(root, 'run', 'run-report.json'), 'utf8'), fs.readFileSync(path.join(root, 'fw', 'run-report.json'), 'utf8')];
+  check('E9. both written copies, read from disk, hold neither value anywhere (the replay verdict\'s error included)', both.every((b) => !b.includes(ENV_USER) && !b.includes(ENV_PASS)));
+  fs.rmSync(root, { recursive: true, force: true });
+  if (prev.u === undefined) delete process.env.QA_CORE_TEST_USER; else process.env.QA_CORE_TEST_USER = prev.u;
+  if (prev.p === undefined) delete process.env.QA_CORE_TEST_PASS; else process.env.QA_CORE_TEST_PASS = prev.p;
 }
 
 /* ─── F. transcribe ignores the field ──────────────────────────────────── */

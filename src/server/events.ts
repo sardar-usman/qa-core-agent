@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentEvent } from '../agent/runtime.js';
+import { maskForDisk } from '../agent/credential-leak.js';
 
 /**
  * Trim an AgentEvent for the dashboard's event stream. Only tool payloads
@@ -60,7 +61,9 @@ export function appendRunEvent(runDir: string, e: AgentEvent, now: Date = new Da
   if (SKIP_ON_DISK.has(e.type)) return;
   try {
     fs.mkdirSync(runDir, { recursive: true });
-    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...eventForDisk(e) }) + '\n');
+    // Masked BEFORE the preview is cut (invariant 70), so a cut can never
+    // leave half a test-account value behind.
+    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...eventForDisk(maskForDisk(e)) }) + '\n');
   } catch { /* a failed log line never fails the run */ }
 }
 
@@ -74,7 +77,7 @@ export interface StoredEvent { t: string; type: string; [k: string]: unknown }
 export function appendRunNote(runDir: string, note: { type: string; [k: string]: unknown }, now: Date = new Date()): void {
   try {
     fs.mkdirSync(runDir, { recursive: true });
-    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...note }) + '\n');
+    fs.appendFileSync(path.join(runDir, EVENTS_FILE), JSON.stringify({ t: now.toISOString(), ...maskForDisk(note) }) + '\n');
   } catch { /* a failed log line never fails the regenerate */ }
 }
 
