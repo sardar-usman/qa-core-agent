@@ -292,6 +292,8 @@ using the qa-core-heal evaluation report as the template.
   docs/audit/run-44cb3d-diagnosis.md section 3, D8.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
+- A login-preflight stop lists as Empty run on the dashboard; the report
+  carries stopped.kind login_preflight (Runs page PR).
 - Run Detail keys rows by exact name; a replay or stability drop whose
   recorded name differs from the plan name shows as two rows (found in the
   #43 review).

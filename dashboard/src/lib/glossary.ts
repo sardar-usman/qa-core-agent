@@ -165,8 +165,11 @@ export const GLOSSARY = {
   // Source: src/agent/cost-total.ts totalCost (explorer including the repair pass, planner, critic, stabilizer and requirements map); CLAUDE.md invariant 50 (the one place a total is summed).
   cost: { term: 'Cost', text: 'Model spend for the run, API cost only: the explorer (repair pass included), planner, critic, stabilizer and requirements map lines, summed in one place. Browser time and your own machine are not counted.' },
 
-  // Source: src/agent/stability.ts (flakeRate = flaked.length / total, over the scenarios that reached stability); src/server/db/indexer.ts runRowFromReport (null when stability did not run).
-  flakeRate: { term: 'Flake rate', text: 'The share of scenarios that failed at least one of the three stability re-runs, over all scenarios that reached stability. A pre-v2 record has none.' },
+  // Source: src/agent/stability.ts (flakeRate = flaked.length / (total - refused), over the scenarios that ran a stability iteration); src/server/db/indexer.ts runRowFromReport (null when stability did not run).
+  flakeRate: { term: 'Flake rate', text: 'The share of scenarios that failed at least one of the three stability re-runs, over the scenarios that ran them, so one refused by the wrong-password cap is left out. A pre-v2 record has none.' },
+
+  // Source: CLAUDE.md invariant 70 (the wrong-password cap); src/agent/replay.ts (ReplayVerdict.refused) and src/agent/stability.ts (classification refused).
+  wrongPasswordRefused: { term: 'Refused', text: 'Not run, because running it would pass the wrong-password cap for the test account. It is dropped, but it is not a failure: it never counts as failed, flaky or broken.' },
 
   // Source: src/server/db/indexer.ts (started_at and ended_at from the report; a legacy record\'s start is its finish minus durationSec); dashboard/src/lib/utils.ts duration (the formatting).
   duration: { term: 'Duration', text: 'The time between the run\'s recorded start and finish. For a pre-v2 record the start is the finish time minus the duration the record kept.' },

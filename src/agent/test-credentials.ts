@@ -158,9 +158,13 @@ export function needsTestAccount(s: Pick<Scenario, 'name' | 'category'> & { feat
   return null;
 }
 
-/** The plan line printed when credentials are missing. */
-export function missingCredentialsPlanLine(n: number): string {
-  return `${n} planned scenario${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} the test account; credentials not provided`;
+/**
+ * The plan line printed when the run has no test account: credentials not
+ * provided, or (the generic pair with no login page found) the preflight's
+ * own reason.
+ */
+export function missingCredentialsPlanLine(n: number, reason: string = 'credentials not provided'): string {
+  return `${n} planned scenario${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} the test account; ${reason}`;
 }
 
 /* ─── the wrong-password counter ────────────────────────────────────────── */

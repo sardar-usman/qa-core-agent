@@ -348,6 +348,8 @@ export interface BuildExploreContext {
   model?: string;
   /** True when the surface already ran the login preflight (before the requirements map). */
   loginPreflightDone?: boolean;
+  /** The preflight's skip reason when the run continues without the test account (the generic pair found no login page). */
+  accountSkipReason?: string;
 }
 
 /**
@@ -378,6 +380,7 @@ export function buildExploreOptions(req: ExploreRequest, ctx: BuildExploreContex
     ...(cp ? { resume: cp } : {}),
     ...(req.loginUrl ? { loginUrl: req.loginUrl } : {}),
     ...(ctx.loginPreflightDone ? { loginPreflightDone: true } : {}),
+    ...(ctx.accountSkipReason ? { accountSkipReason: ctx.accountSkipReason } : {}),
     checkpointFlags: {
       pom: req.pom,
       ...(req.srs ? { srsPath: req.srs } : cp?.flags.srs ? { srsPath: cp.flags.srs } : {}),

@@ -38,8 +38,8 @@ export interface RunDetailScenario {
   /** none: no repair pass touched it; repaired: rework -> pass, kept; failed: rework -> rework/reject/not re-recorded, dropped. */
   repair: 'none' | 'repaired' | 'failed';
   repair_second: string | null;
-  /** Reality-check replay outcome as recorded, null when the scenario never reached replay. */
-  replay: 'pass' | 'fail' | null;
+  /** Reality-check replay outcome as recorded, null when the scenario never reached replay. 'refused': the wrong-password cap refused it before it ran (invariant 70), never a fail. */
+  replay: 'pass' | 'fail' | 'refused' | null;
   replay_error: string | null;
   /** Stability as recorded: passes of iterations, the per-attempt pattern (P/F per attempt), classification. */
   stability: { passes: number; iterations: number; pattern: string | null; classification: string | null; recovered: boolean } | null;
@@ -136,15 +136,25 @@ export interface RunDetailStages {
   };
   verify: {
     status: StageStatus; stat: string;
-    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
+    /**
+     * refused: report.replay.refused, the scenarios the wrong-password cap
+     * refused before they ran (invariant 70), never in `failed`; null on a
+     * report written before the field. A refused verdict row carries
+     * `refused: true` and the cap reason in `error`.
+     */
+    replay: { passed: number; failed: number; refused: number | null; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; refused: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
     stability: {
       iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null;
+      /** report.stability.refused: refused by the wrong-password cap, outside flaked and flake_rate; null on a report written before the field. */
+      refused: number | null;
       /** Sum of every verdict's attempts; the page says "none recorded" only when this is 0 AND the stabilizer cost is 0. */
       attempts_total: number;
       /** report.stability.warning: stabilizer spend with no attempt recorded. */
       warning: string | null;
       verdicts: Array<{
         name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean;
+        /** On a refused verdict: the cap reason. */
+        refused_reason: string | null;
         first_failure: { iteration: number; failed_step: number; step_kind: string; error: string; observed: ObservedOnFailure | null } | null;
         attempts: Array<{ attempt: number; kind: string; change: string; reason: string; pattern: string | null; outcome: string }>;
       }>;
@@ -322,7 +332,7 @@ export function buildRunDetail(db: Database.Database, root: string, id: string):
   };
   for (const p of report.plan ?? []) { if (findingNames.has(p.name)) continue; const r = rowFor(p.name); r.feature = p.feature ?? null; r.category = p.category ?? null; }
   for (const s of report.scenarios ?? []) { const r = rowFor(s.name); r.shipped = true; r.feature = s.feature ?? r.feature; r.category = s.category ?? r.category; }
-  for (const v of report.replay?.verdicts ?? []) { const r = rowFor(v.name); r.replay = v.passed ? 'pass' : 'fail'; r.replay_error = v.error ?? null; }
+  for (const v of report.replay?.verdicts ?? []) { const r = rowFor(v.name); r.replay = v.passed ? 'pass' : v.refused ? 'refused' : 'fail'; r.replay_error = v.error ?? null; }
   for (const v of report.stability?.verdicts ?? []) {
     const r = rowFor(v.name);
     r.stability = { passes: v.passes, iterations: v.iterations, pattern: v.pattern ?? null, classification: v.classification ?? (v.stable ? 'stable' : null), recovered: v.relaxed === true };
@@ -451,14 +461,17 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
   const stab = report.stability && !report.stability.skipped ? report.stability : null;
   const verify: RunDetailStages['verify'] = {
     status: !rep && !stab ? 'not-applicable' : (rep?.failed ?? 0) > 0 || (stab?.flaked ?? 0) > 0 ? 'warning' : 'done',
-    stat: stab ? `${stab.passed} stable / ${stab.flaked} flaky` : rep ? `${rep.passed} passed replay / ${rep.failed} dropped` : 'replay skipped',
-    replay: rep ? { passed: rep.passed, failed: rep.failed, duration_ms: rep.durationMs, verdicts: rep.verdicts.map((v) => ({ name: v.name, passed: v.passed, failed_step: v.failedStep ?? null, step_kind: v.stepKind ?? null, error: v.error ?? null, observed: observedOf(v.observed) })) } : null,
+    // A scenario the wrong-password cap refused is named apart, never as flaky or dropped by a failure.
+    stat: stab ? `${stab.passed} stable / ${stab.flaked} flaky${(stab.refused ?? 0) > 0 ? ` / ${stab.refused} refused` : ''}` : rep ? `${rep.passed} passed replay / ${rep.failed} dropped${(rep.refused ?? 0) > 0 ? ` / ${rep.refused} refused` : ''}` : 'replay skipped',
+    replay: rep ? { passed: rep.passed, failed: rep.failed, refused: rep.refused ?? null, duration_ms: rep.durationMs, verdicts: rep.verdicts.map((v) => ({ name: v.name, passed: v.passed, refused: v.refused === true, failed_step: v.failedStep ?? null, step_kind: v.stepKind ?? null, error: v.error ?? null, observed: observedOf(v.observed) })) } : null,
     stability: stab ? {
       iterations: stab.iterations, passed: stab.passed, flaked: stab.flaked, flaky: stab.flaky ?? null, broken: stab.broken ?? null, recovered: stab.recovered ?? null, flake_rate: stab.flakeRate, stabilizer_cost_usd: stab.stabilizerCostUsd ?? null,
+      refused: stab.refused ?? null,
       attempts_total: stab.verdicts.reduce((n, v) => n + (v.attempts ?? []).length, 0),
       warning: stab.warning ?? null,
       verdicts: stab.verdicts.map((v) => ({
         name: v.name, iterations: v.iterations, passes: v.passes, pattern: v.pattern ?? null, classification: v.classification ?? (v.stable ? 'stable' : null), recovered: v.relaxed === true, gave_up: v.gaveUp === true,
+        refused_reason: v.refusedReason ?? null,
         first_failure: v.firstFailure ? { iteration: v.firstFailure.iteration, failed_step: v.firstFailure.failedStep, step_kind: String(v.firstFailure.stepKind), error: v.firstFailure.error, observed: observedOf(v.firstFailure.observed) } : null,
         attempts: (v.attempts ?? []).map((a) => ({ attempt: a.attempt, kind: a.kind, change: a.change, reason: a.reason, pattern: a.pattern ?? null, outcome: a.outcome })),
       })),

@@ -8,7 +8,7 @@ import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
-import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { diagnoseEmptyRun, refusedNote, renderReconciliation } from '../agent/reconcile.js';
 import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
@@ -281,6 +281,7 @@ async function main(): Promise<void> {
       ...(resumeCp ? { resume: resumeCp } : {}),
       ...(fromPlan ? { fromPlan } : {}),
       loginPreflightDone: true,
+      ...(gate.accountSkipReason ? { accountSkipReason: gate.accountSkipReason } : {}),
     }),
     onEvent: (e) => {
       // The stored timeline for the Run Detail page, next to the report.
@@ -326,8 +327,10 @@ async function main(): Promise<void> {
           console.log(`      ✓ ${e.name}  (${e.durationMs}ms)`); break;
         case 'replay_scenario_failed':
           console.log(`      ✗ ${e.name}  (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
+        case 'replay_scenario_refused':
+          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
         case 'replay_done':
-          console.log(`      ${e.passed} passed · ${e.failed} dropped · ${(e.durationMs / 1000).toFixed(1)}s`); break;
+          console.log(`      ${e.passed} passed · ${e.failed} dropped${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ${(e.durationMs / 1000).toFixed(1)}s`); break;
         case 'stability_started': {
           const stage = args.replay ? 5 : 4;
           console.log(`\n[${stage}/${totalStages}] Stability · ${e.iterations}× re-run on ${e.total} survivor(s) …`);
@@ -337,13 +340,15 @@ async function main(): Promise<void> {
           console.log(`      ✓ ${e.name}  iter ${e.iteration}  (${e.durationMs}ms)`); break;
         case 'stability_iteration_failed':
           console.log(`      ✗ ${e.name}  iter ${e.iteration} (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
+        case 'stability_scenario_refused':
+          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
         case 'stability_done': {
           const recovered = e.recovered ?? 0;
           const recoveredChip = recovered > 0 ? ` · ${recovered} recovered by Stabilizer` : '';
           const stabilizerCost = e.stabilizerCostUsd ?? 0;
           const stabilizerCostChip = stabilizerCost > 0 ? ` · stabilizer $${stabilizerCost.toFixed(4)}` : '';
           console.log(
-            `      ${e.stable} stable${recoveredChip} · ${e.flaked} flaked · flake_rate=${(e.flakeRate * 100).toFixed(1)}% · ` +
+            `      ${e.stable} stable${recoveredChip} · ${e.flaked} flaked · flake_rate=${(e.flakeRate * 100).toFixed(1)}%${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ` +
             `${(e.durationMs / 1000).toFixed(1)}s${stabilizerCostChip}`,
           );
           break;
@@ -527,7 +532,7 @@ async function main(): Promise<void> {
   if (result.replay && !result.replay.skipped) {
     const total = result.replay.passed + result.replay.failed;
     const pct = total > 0 ? Math.round((result.replay.passed / total) * 100) : 0;
-    console.log(`Reality check: ${result.replay.passed}/${total} passed twice (${pct}%) · ${(result.replay.durationMs / 1000).toFixed(1)}s`);
+    console.log(`Reality check: ${result.replay.passed}/${total} passed twice (${pct}%)${refusedNote(result.replay.refused)} · ${(result.replay.durationMs / 1000).toFixed(1)}s`);
   } else if (result.replay?.skipped) {
     console.log('Reality check: skipped (--no-replay)');
   }
@@ -539,7 +544,7 @@ async function main(): Promise<void> {
     const strictStable = result.reconciliation ? result.reconciliation.stable : result.stability.passed;
     const recovered = result.reconciliation?.recovered ?? result.stability.recovered ?? 0;
     const recoveredNote = recovered > 0 ? ` (+${recovered} recovered)` : '';
-    console.log(`Stability:     ${strictStable}/${total} stable across ${result.stability.iterations}×${recoveredNote} · flake_rate=${pct}% · ${(result.stability.durationMs / 1000).toFixed(1)}s`);
+    console.log(`Stability:     ${strictStable}/${total} stable across ${result.stability.iterations}×${recoveredNote} · flake_rate=${pct}%${refusedNote(result.stability.refused)} · ${(result.stability.durationMs / 1000).toFixed(1)}s`);
   } else if (result.stability?.skipped) {
     console.log('Stability:     skipped (--no-stability)');
   }

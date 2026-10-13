@@ -1,6 +1,6 @@
 import { chromium, type Browser } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
-import type { Scenario, TraceStep } from './trace.js';
+import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { replayScenarioOnce, type ObservedState, type ReplayAccess } from './replay.js';
 import { canSubmitWrongPassword, refuseWrongPassword, wrongPasswordCapReason, wrongPasswordSubmits } from './test-credentials.js';
 import {
@@ -87,18 +87,27 @@ export type StabilityEvent =
       flakeRate: number;
       durationMs: number;
       stabilizerCostUsd: number;
-    };
+      /** Scenarios the wrong-password cap refused before any iteration; never in flaked or flakeRate. */
+      refused: number;
+    }
+  /** The wrong-password cap refused a scenario before any iteration ran (invariant 70); not a failure. */
+  | { type: 'scenario_refused'; name: string; reason: string };
 
 /**
  * - `stable`: every iteration passed (e.g. P-P-P)
  * - `flaky`: at least one pass AND at least one fail (e.g. P-F-P)
  * - `broken`: every iteration failed (e.g. F-F-F)
  *
+ * - `refused`: the wrong-password cap could not cover every iteration, so no
+ *   iteration ran (invariant 70). A guard, not a failure: it is dropped, but
+ *   never counted in flaked, broken or flakeRate and never sent to the
+ *   Stabilizer (standing rule 2).
+ *
  * Both `flaky` and `broken` are dropped from the emitted spec, but the
  * distinction matters for diagnosis — flaky implies a race or non-determinism
  * in the app/test, broken implies the scenario was never replayable.
  */
-export type StabilityClassification = 'stable' | 'flaky' | 'broken';
+export type StabilityClassification = 'stable' | 'flaky' | 'broken' | 'refused';
 
 /**
  * One Stabilizer attempt on a scenario: what it changed and what happened.
@@ -142,6 +151,8 @@ export interface StabilityVerdict {
   gaveUp?: boolean;
   /** Every Stabilizer attempt on this scenario, in order. Empty when it did not run on it. */
   attempts: StabilizerAttempt[];
+  /** Set on a `refused` verdict: why no iteration ran ("would exceed the wrong-password cap (N)"). */
+  refusedReason?: string;
   /** Earliest failing iteration, if any. Iteration numbers are 1-based. */
   firstFailure?: {
     iteration: number;
@@ -166,8 +177,10 @@ export interface StabilityResult {
   broken: Scenario[];
   /** Subset of `emitted` that needed the Stabilizer to become stable. */
   recovered: Scenario[];
+  /** Refused by the wrong-password cap before any iteration: dropped, never in flaked. */
+  refused: Scenario[];
   iterations: number;
-  /** flaked / total. 0 when there are no scenarios. */
+  /** flaked / (total - refused). 0 when no scenario ran an iteration. */
   flakeRate: number;
   durationMs: number;
   /** USD cost of all Stabilizer LLM calls during this stage. */
@@ -206,6 +219,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
   const flaky: Scenario[] = [];
   const broken: Scenario[] = [];
   const recovered: Scenario[] = [];
+  const refused: Scenario[] = [];
   let stabilizerCostUsd = 0;
 
   opts.onEvent?.({ type: 'stability_started', total: opts.scenarios.length, iterations });
@@ -219,18 +233,20 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
       // A wrong-password scenario spends from the cap on every iteration
       // (invariant 70). One the remaining cap cannot cover in full is refused
       // without running a single iteration, and never reaches the Stabilizer.
+      // A refusal is the run's own guard, not a failure of the scenario: it
+      // has its own classification and never counts as flaked or broken
+      // (standing rule 2).
       const submits = wrongPasswordSubmits(scenario);
       if (submits > 0 && opts.wrongPassword && !canSubmitWrongPassword(opts.wrongPassword, submits * iterations)) {
         refuseWrongPassword(opts.wrongPassword, scenario.name, 'stability');
-        const error = wrongPasswordCapReason(opts.wrongPassword);
-        opts.onEvent?.({ type: 'iteration_failed', name: scenario.name, iteration: 1, failedStep: -1, stepKind: 'unknown', error });
+        const reason = wrongPasswordCapReason(opts.wrongPassword);
+        opts.onEvent?.({ type: 'scenario_refused', name: scenario.name, reason });
         verdicts.push({
-          name: scenario.name, iterations, passes: 0, stable: false, classification: 'broken', pattern: 'refused', gaveUp: true, attempts: [],
-          firstFailure: { iteration: 1, failedStep: -1, stepKind: 'unknown', error },
+          name: scenario.name, iterations, passes: 0, stable: false, classification: 'refused', pattern: 'refused', attempts: [],
+          refusedReason: reason,
           durationMs: 0,
         });
-        flaked.push(scenario);
-        broken.push(scenario);
+        refused.push(scenario);
         continue;
       }
       const firstPass = await runIterations(browser, scenario, iterations, timeoutMs, opts);
@@ -428,8 +444,9 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
     await browser?.close().catch(() => undefined);
   }
 
-  const total = opts.scenarios.length;
-  const flakeRate = total > 0 ? flaked.length / total : 0;
+  // A refused scenario never ran an iteration, so it is outside the rate.
+  const ran = opts.scenarios.length - refused.length;
+  const flakeRate = ran > 0 ? flaked.length / ran : 0;
   const durationMs = Date.now() - startMs;
 
   opts.onEvent?.({
@@ -441,6 +458,7 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
     flakeRate,
     durationMs,
     stabilizerCostUsd,
+    refused: refused.length,
   });
 
   return {
@@ -450,11 +468,37 @@ export async function stability(opts: StabilityOptions): Promise<StabilityResult
     flaky,
     broken,
     recovered,
+    refused,
     iterations,
     flakeRate,
     durationMs,
     stabilizerCostUsd,
     ...(stabilizerWarningFor(stabilizerCostUsd, verdicts) ? { warning: stabilizerWarningFor(stabilizerCostUsd, verdicts) } : {}),
+  };
+}
+
+/**
+ * The run-report's stability block for a finished stage. A scenario the
+ * wrong-password cap refused is counted in `refused`, never in flaked,
+ * broken or flakeRate (invariant 70, standing rule 2). The runtime and the
+ * smokes build the block through here.
+ */
+export function stabilityReportBlock(s: StabilityResult): NonNullable<RunReport['stability']> {
+  return {
+    iterations: s.iterations,
+    passed: s.emitted.length,
+    flaked: s.flaked.length,
+    flaky: s.flaky.length,
+    broken: s.broken.length,
+    recovered: s.recovered.length,
+    refused: s.refused.length,
+    stabilizerCostUsd: s.stabilizerCostUsd,
+    flakeRate: s.flakeRate,
+    durationMs: s.durationMs,
+    verdicts: s.verdicts,
+    // Stabilizer spend with no attempt recorded is an inconsistency, never
+    // shown as "none recorded": the report carries the warning.
+    ...(s.warning ? { warning: s.warning } : {}),
   };
 }
 

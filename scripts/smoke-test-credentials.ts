@@ -29,6 +29,16 @@
  *      and a finding message is masked in every file of the run folder and
  *      the zip, read back from disk; a planted value refuses the zip and the
  *      refusal names the file, never the value.
+ *   H. a cap refusal is not a failure (standing rule 2): one scenario refused
+ *      at replay and one at stability leave replay.failed and flakeRate
+ *      exactly as a run without them, are counted 1 and 1 as refused, never
+ *      reach the Stabilizer, and are named in reconciliation with the cap
+ *      reason; the funnel balances; the CLI and gateway lines and the run
+ *      page's verify stage show refused apart.
+ *   I. a missing login page: the generic pair continues without the account,
+ *      prints one line naming every URL tried, and skips the scenarios that
+ *      need it "no login page found"; a host-scoped pair, or --login-url to a
+ *      missing page, stops; a login page that rejects the generic pair stops.
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -42,7 +52,7 @@ import { replayScenarioOnce } from '../src/agent/replay.js';
 import { explore } from '../src/agent/runtime.js';
 import { runExploreRequest } from '../src/server/run-explore.js';
 import { defaultExploreRequest } from '../src/agent/explore-request.js';
-import { LOGIN_PATHS, preflightLogin, preflightStopLine, postRunLockoutCheck } from '../src/agent/login-preflight.js';
+import { LOGIN_PATHS, NO_LOGIN_PAGE_REASON, noLoginPageLine, preflightLogin, preflightStopLine, postRunLockoutCheck } from '../src/agent/login-preflight.js';
 import {
   RETIRED_AUTH_LINE, hostEnvSuffix, lockoutThreshold, needsTestAccount, newWrongPasswordLedger, resetRetiredAuthWarning,
   resolveTestCredentials, retiredAuthEnvLine, wrongPasswordCap, wrongPasswordSubmits, wrongPasswordCountLine,
@@ -53,7 +63,12 @@ import { writeCheckpoint, CHECKPOINT_VERSION } from '../src/agent/checkpoint.js'
 import { appendRunEvent } from '../src/server/events.js';
 import { scaffold } from '../src/agent/scaffold.js';
 import { zipFrameworkToBuffer } from '../src/agent/zip-framework.js';
-import { reconcile } from '../src/agent/reconcile.js';
+import { reconcile, renderReconciliation } from '../src/agent/reconcile.js';
+import { replay, replayReportBlock } from '../src/agent/replay.js';
+import { stability, stabilityReportBlock } from '../src/agent/stability.js';
+import { summarize } from '../src/server/run-explore.js';
+import { buildStages } from '../src/server/run-detail.js';
+import type Anthropic from '@anthropic-ai/sdk';
 import { totalCost } from '../src/agent/cost-total.js';
 import type { RunReport, Scenario, TraceStep } from '../src/agent/trace.js';
 import type { PlannedScenario } from '../src/agent/planner.js';
@@ -99,10 +114,13 @@ for (const k of Object.keys(process.env)) if (/^QA_CORE_(TEST_|AUTH_|WRONG_PASSW
 }
 
 /* ─── fixture site: a login page that knows one account and can lock it ── */
-interface Site { url: string; close: () => Promise<void>; failures: () => number; lockAfter: (n: number | null) => void }
+interface Site { url: string; close: () => Promise<void>; failures: () => number; lockAfter: (n: number | null) => void; flipReady: (n: number) => void }
 async function startSite(): Promise<Site> {
   let failures = 0;
   let lockAt: number | null = null;
+  // /flip shows "Ready" for the next n requests, then "Not ready": a scenario
+  // that passes replay and fails every stability iteration (section H).
+  let ready = 0;
   const page = (body: string): string => `<!doctype html><html><head><title>Fixture</title></head><body>${body}</body></html>`;
   const loginForm = (msg: string): string => page(`<h1>Login</h1>${msg ? `<div class="alert alert-danger" role="alert">${msg}</div>` : ''}
 <form method="post" action="/login"><label for="email">Email</label><input id="email" name="email" type="email" data-test="email">
@@ -123,6 +141,7 @@ async function startSite(): Promise<Site> {
       });
       return;
     }
+    if (u.pathname === '/flip') { const ok = ready > 0; if (ok) ready--; res.writeHead(200, { 'content-type': 'text/html' }); res.end(page(`<h1>${ok ? 'Ready' : 'Not ready'}</h1>`)); return; }
     if (u.pathname === '/account') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(page('<h1>My account</h1><a href="/logout">Log out</a>')); return; }
     if (u.pathname === '/forgot-password') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(page('<h1>Forgot password</h1><form><input id="email" type="email" data-test="email"><button type="button">Send</button></form>')); return; }
     if (u.pathname === '/auth/register') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(page('<h1>Register</h1><form><input id="email" type="email" data-test="email"><input id="password" type="password" data-test="password"><button type="button" data-test="register-submit">Register</button></form>')); return; }
@@ -136,7 +155,20 @@ async function startSite(): Promise<Site> {
     close: () => new Promise<void>((r) => server.close(() => r())),
     failures: () => failures,
     lockAfter: (n) => { lockAt = n; failures = 0; },
+    flipReady: (n) => { ready = n; },
   };
+}
+
+/** A site with no login page anywhere: a home page with no password field, 404 elsewhere (section I). */
+async function startNoLoginSite(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://x');
+    if (u.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><html><head><title>Shop</title></head><body><h1>Shop</h1><a href="/products">Products</a></body></html>'); return; }
+    res.writeHead(404); res.end('not found');
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  return { url: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
 const site = await startSite();
@@ -481,6 +513,222 @@ try {
     delete process.env.QA_CORE_TEST_USER;
     delete process.env.QA_CORE_TEST_PASS;
   }
+  /* ─── H. a cap refusal is not a failure ───────────────────────────────── */
+  {
+    site.lockAfter(null);
+    const page = await newPage();
+    const ctx = createContext(page, 400);
+    ctx.testCredentials = { user: USER, pass: PASS };
+    ctx.wrongPassword = newWrongPasswordLedger({ QA_CORE_WRONG_PASSWORD_CAP: '50' });
+    const record = async (name: string, category: 'happy' | 'negative', body: () => Promise<unknown>): Promise<Scenario> => {
+      const b = await runTool(ctx, { name: 'begin_scenario', input: { name, category, feature: 'account' } });
+      await body();
+      const e = await runTool(ctx, { name: 'end_scenario', input: {} });
+      if (!b.ok || !e.ok) check(`H0. "${name}" records`, false, JSON.stringify({ b, e }));
+      return ctx.scenarios[ctx.scenarios.length - 1]!;
+    };
+    // One assertion timeout for the scenarios that fail on purpose, so the section stays fast.
+    const fastFail = (sc: Scenario, name: string, text?: string): Scenario => {
+      const c = structuredClone(sc);
+      c.name = name;
+      for (const st of c.steps) if (st.kind === 'assert' && st.assertion.type === 'toHaveText') { st.assertion.timeout = 1000; if (text !== undefined) st.assertion.text = text; }
+      return c;
+    };
+    const okSc = await record('saw the login heading', 'happy', async () => {
+      await runTool(ctx, { name: 'navigate', input: { url: `${site.url}/login` } });
+      await runTool(ctx, { name: 'assert', input: { type: 'toHaveText', css: 'h1', text: 'Login', intent: 'login heading' } });
+    });
+    site.flipReady(1);
+    const flipRec = await record('saw the ready heading', 'happy', async () => {
+      await runTool(ctx, { name: 'navigate', input: { url: `${site.url}/flip` } });
+      await runTool(ctx, { name: 'assert', input: { type: 'toHaveText', css: 'h1', text: 'Ready', intent: 'ready heading' } });
+    });
+    const wpRec = await record('rejected login with a wrong password', 'negative', async () => {
+      await runTool(ctx, { name: 'navigate', input: { url: `${site.url}/login` } });
+      await runTool(ctx, { name: 'fill', input: { intent: 'email input', testid: 'email', credential: 'user' } });
+      await runTool(ctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrong-h' } });
+      await runTool(ctx, { name: 'click', input: { intent: 'login button', testid: 'login-submit' } });
+      await runTool(ctx, { name: 'assert', input: { type: 'toContainText', css: '.alert', text: 'Invalid email or password', timeout: 10000 } });
+    });
+    await page.context().close();
+    const broken = fastFail(okSc, 'saw a heading that is not there', 'Nope');
+    const flip = fastFail(flipRec, 'saw the ready heading');
+    const wpStab = { ...structuredClone(wpRec), name: 'rejected login with a wrong password at stability' };
+    const wpReplay = { ...structuredClone(wpRec), name: 'rejected login with a wrong password at replay' };
+    check('H0. the wrong-password fixture spends one submit per execution', wrongPasswordSubmits(wpStab) === 1 && wrongPasswordSubmits(wpReplay) === 1);
+    const credentials = { user: USER, pass: PASS };
+
+    // The baseline: the same real scenarios with no wrong-password scenario in the run.
+    const baseReplay = replayReportBlock(await replay({ scenarios: [okSc, broken], credentials, timeoutMs: 3000 }));
+    site.flipReady(0);
+    const baseStab = stabilityReportBlock(await stability({ scenarios: [okSc, flip], credentials, iterations: 3, timeoutMs: 3000, stabilize: false }));
+
+    // The run: a cap of 1. The first wrong-password scenario spends it at replay, so the
+    // second is refused at replay, and the first is refused at stability (3 more submits).
+    const ledger = newWrongPasswordLedger({ QA_CORE_WRONG_PASSWORD_CAP: '1' });
+    site.flipReady(1);
+    const r = await replay({ scenarios: [okSc, broken, flip, wpStab, wpReplay], credentials, wrongPassword: ledger, timeoutMs: 3000 });
+    let stabilizerCalls = 0;
+    const stabilizerClient = { messages: { create: async () => { stabilizerCalls++; throw new Error('the Stabilizer must not run on a refused scenario'); } } } as unknown as Anthropic;
+    const stabEvents: string[] = [];
+    const s = await stability({ scenarios: r.emitted, credentials, wrongPassword: ledger, iterations: 3, timeoutMs: 3000, stabilize: true, stabilizerClient, onEvent: (e) => stabEvents.push(e.type) });
+    const replayBlock = replayReportBlock(r);
+    const stabBlock = stabilityReportBlock(s);
+    const capReason = 'would exceed the wrong-password cap (1)';
+    const rv = replayBlock.verdicts.find((v) => v.name === wpReplay.name);
+    check('H1. replay.failed is unchanged by the refusal (1, the same as without it) and refused counts 1',
+      baseReplay.failed === 1 && replayBlock.failed === baseReplay.failed && replayBlock.refused === 1 && replayBlock.passed === 3, JSON.stringify({ base: baseReplay.failed, run: replayBlock.failed, refused: replayBlock.refused }));
+    check('H2. the refused replay verdict carries refused and the cap reason, and never opened a page', rv?.refused === true && rv.passed === false && rv.error === capReason && rv.durationMs === 0 && rv.failedStep === undefined, JSON.stringify(rv));
+    const sv = stabBlock.verdicts.find((v) => v.name === wpStab.name);
+    check('H3. flakeRate is unchanged by the refusal (0.5, the same as without it); flaked and broken leave it out, refused counts 1',
+      baseStab.flakeRate === 0.5 && stabBlock.flakeRate === baseStab.flakeRate && stabBlock.flaked === 1 && stabBlock.broken === 1 && stabBlock.refused === 1 && stabBlock.passed === 1
+      && !s.flaked.some((x) => x.name === wpStab.name) && !s.broken.some((x) => x.name === wpStab.name), JSON.stringify({ base: baseStab.flakeRate, run: stabBlock.flakeRate, flaked: stabBlock.flaked, broken: stabBlock.broken, refused: stabBlock.refused }));
+    check('H4. the refused stability verdict is classification refused with the cap reason, not broken, not gave up, no iteration failure',
+      sv?.classification === 'refused' && sv.refusedReason === capReason && sv.gaveUp === undefined && sv.firstFailure === undefined && stabEvents.filter((t) => t === 'scenario_refused').length === 1, JSON.stringify(sv));
+    check('H5. the Stabilizer is never called for a refused scenario', stabilizerCalls === 0);
+    check('H6. the ledger records both refusals at their stage', JSON.stringify(ledger.refused) === JSON.stringify([{ scenario: wpReplay.name, stage: 'replay' }, { scenario: wpStab.name, stage: 'stability' }]) && ledger.count === 1, JSON.stringify(ledger));
+
+    const all = [okSc, broken, flip, wpStab, wpReplay];
+    const report = {
+      url: `${site.url}/login`, language: 'ts',
+      plan: all.map((x) => ({ name: x.name, category: x.category, rationale: 'smoke', feature: 'account' })),
+      scenarios: s.emitted, replay: replayBlock, stability: stabBlock, findings: [],
+      cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
+      cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, plannerUsd: 0, criticUsd: 0 },
+      steps: 0, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+    } as unknown as RunReport;
+    const rec = reconcile(report);
+    report.reconciliation = rec;
+    const dropOf = (n: string) => rec.dropped.find((d) => d.name === n);
+    check('H7. reconciliation names both refusals at their stage with the cap reason',
+      dropOf(wpReplay.name)?.stage === 'replay' && dropOf(wpReplay.name)?.reason === capReason && dropOf(wpStab.name)?.stage === 'stability' && dropOf(wpStab.name)?.reason === capReason, JSON.stringify(rec.dropped));
+    check('H8. the funnel balances: planned 5 = generated 1 + dropped 4; flaky 0, broken 1, refused 2',
+      rec.planned === 5 && rec.generated === 1 && rec.dropped.length === 4 && rec.balanced === true && rec.flaky === 0 && rec.broken === 1 && rec.refused === 2, JSON.stringify({ planned: rec.planned, generated: rec.generated, dropped: rec.dropped.length, flaky: rec.flaky, broken: rec.broken, refused: rec.refused }));
+    const rendered = renderReconciliation(rec).join('\n');
+    const gw = summarize(report).join('\n');
+    check('H9. the reconciliation and the gateway summary show refused apart from failed and flaky',
+      rendered.includes('flaky 0 · broken 1 · refused by the wrong-password cap 2')
+      && gw.includes('Reality check: 3/4 passed twice (75%) · 1 refused by the wrong-password cap (not run, not counted as failed)')
+      && gw.includes('flake_rate=50.0% · 1 refused by the wrong-password cap (not run, not counted as failed)'), `${rendered}\n${gw}`);
+    const stages = buildStages(report, [], 0);
+    const vrow = stages.verify.replay?.verdicts.find((v) => v.name === wpReplay.name);
+    const srow = stages.verify.stability?.verdicts.find((v) => v.name === wpStab.name);
+    check('H10. the run page verify stage reads refused from the report, apart from failed and flaked',
+      stages.verify.stat === '1 stable / 1 flaky / 1 refused' && stages.verify.replay?.failed === 1 && stages.verify.replay.refused === 1 && vrow?.refused === true
+      && stages.verify.stability?.flaked === 1 && stages.verify.stability.refused === 1 && stages.verify.stability.flake_rate === 0.5 && srow?.classification === 'refused' && srow.refused_reason === capReason && srow.gave_up === false,
+      JSON.stringify({ stat: stages.verify.stat, vrow, srow }));
+    const older = buildStages({ ...report, replay: { ...replayBlock, refused: undefined }, stability: { ...stabBlock, refused: undefined } } as RunReport, [], 0);
+    check('H11. a report written before the field reads refused as null, never 0', older.verify.replay?.refused === null && older.verify.stability?.refused === null);
+  }
+
+  /* ─── I. a missing login page ─────────────────────────────────────────── */
+  {
+    const bare = await startNoLoginSite();
+    const plan: PlannedScenario[] = [
+      { name: 'logged in with valid credentials', category: 'happy', rationale: 'fails if login breaks', feature: 'account' },
+      { name: 'rejected login with a wrong password', category: 'negative', rationale: 'fails if a wrong password is accepted', feature: 'account' },
+    ];
+    const runGateway = async (name: string, request: Partial<ReturnType<typeof defaultExploreRequest>>) => {
+      const root = path.join(tmpRoot, name);
+      fs.mkdirSync(root, { recursive: true });
+      const notes: string[] = [];
+      let seen: Parameters<NonNullable<Parameters<typeof runExploreRequest>[0]['exploreImpl']>>[0] | null = null;
+      let report: RunReport | null = null;
+      const lines: string[] = [];
+      let outcome: Awaited<ReturnType<typeof runExploreRequest>> | null = null;
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = 'fake-key-no-call-made';
+      process.chdir(root); // explore() saves per-host memory under the cwd
+      try {
+        outcome = await runExploreRequest({
+          request: { ...defaultExploreRequest(), url: `${bare.url}/`, env: {}, ...request }, projectRoot: root, source: 'cli',
+          // The real explore() on a plan of scenarios that need the account, then stop before emission.
+          exploreImpl: async (o) => {
+            seen = o;
+            report = await explore({ ...o, fromPlan: plan, onEvent: (e) => { if (e.type === 'message') lines.push(e.text); } }) as RunReport;
+            throw new Error('stop after explore');
+          },
+          preflight: fastPreflight,
+          onNote: (t) => notes.push(t),
+        });
+      } catch (err) { if ((err as Error).message !== 'stop after explore') throw err; }
+      finally {
+        process.chdir(origCwd);
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+      return { notes, seen: seen as { loginPreflightDone?: boolean; accountSkipReason?: string } | null, report: report as RunReport | null, lines, outcome };
+    };
+    const allTried = (u: string, notes: string[]): boolean => [`${u}/`, ...LOGIN_PATHS.map((p) => `${u}${p}`)].every((x) => notes.some((n) => n.includes(x)));
+
+    // I1 to I4: the generic pair on a site with no login page continues without the account.
+    process.env.QA_CORE_TEST_USER = USER;
+    process.env.QA_CORE_TEST_PASS = PASS;
+    const g = await runGateway('i-generic', {});
+    const goLine = g.notes.find((n) => n.includes('login page not found'));
+    check('I1. the generic pair with no login page continues: explore() runs without the test account', g.seen?.loginPreflightDone === true && g.seen.accountSkipReason === NO_LOGIN_PAGE_REASON && g.report !== null && g.report.stopped === undefined, JSON.stringify({ seen: g.seen, notes: g.notes }));
+    check('I2. one line names every URL tried and says the run continues without the test account',
+      goLine !== undefined && goLine.trim().startsWith('login page not found (tried ') && goLine.trim().endsWith('); continuing without the test account') && allTried(bare.url, [goLine]) && g.notes.filter((n) => n.includes('login page not found')).length === 1 && !g.notes.some((n) => n.startsWith('Run stopped')) && !g.notes.some((n) => n.includes('--login-url')), JSON.stringify(g.notes));
+    check('I3. every scenario that needs the account is skipped "no login page found", with the plan line, and the funnel balances',
+      g.lines.includes('2 planned scenarios need the test account; no login page found')
+      && (g.report?.skipped ?? []).length === 2 && g.report!.skipped!.every((x) => x.reason === 'no login page found')
+      && g.report!.reconciliation?.planned === 2 && g.report!.reconciliation.skipped.length === 2 && g.report!.reconciliation.balanced === true, JSON.stringify({ lines: g.lines, skipped: g.report?.skipped }));
+    check('I4. nothing else changes: no wrong-password counter, no account value in any note or line', g.report?.wrongPasswordAttempts === undefined && ![...g.notes, ...g.lines].join('\n').includes(USER) && ![...g.notes, ...g.lines].join('\n').includes(PASS));
+    check('I5. the line itself', noLoginPageLine(['a', 'b']) === 'login page not found (tried a, b); continuing without the test account');
+
+    // I6: a direct explore() caller (no surface preflight) behaves the same.
+    {
+      const work = path.join(tmpRoot, 'i-direct');
+      fs.mkdirSync(work, { recursive: true });
+      process.chdir(work);
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = 'fake-key-no-call-made';
+      const msgs: string[] = [];
+      let direct: RunReport;
+      try {
+        direct = await explore({ url: `${bare.url}/`, language: 'ts', outDir: path.join(work, 'out'), fromPlan: plan, preflight: fastPreflight, onEvent: (e) => { if (e.type === 'message') msgs.push(e.text); } }) as RunReport;
+      } finally {
+        process.chdir(origCwd);
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+      check('I6. a direct explore() call continues too and skips "no login page found"', direct.stopped === undefined && msgs.some((m) => m.startsWith('login page not found (tried ')) && (direct.skipped ?? []).every((x) => x.reason === 'no login page found') && (direct.skipped ?? []).length === 2, JSON.stringify({ msgs, skipped: direct.skipped }));
+    }
+
+    // I7: --login-url to a missing page stops, even with the generic pair.
+    const lu = await runGateway('i-login-url', { loginUrl: `${bare.url}/members/sign-in` });
+    check('I7. --login-url to a missing page stops the run before explore(), naming every URL tried',
+      lu.seen === null && lu.outcome?.kind === 'empty' && (lu.outcome.diagnosis?.[0] ?? '').startsWith('Run stopped: the test account did not sign in (no login page was found; tried ') && (lu.outcome.diagnosis?.[0] ?? '').includes(`${bare.url}/members/sign-in`) && !lu.notes.some((n) => n.includes('continuing without the test account')), JSON.stringify(lu.notes));
+    delete process.env.QA_CORE_TEST_USER;
+    delete process.env.QA_CORE_TEST_PASS;
+
+    // I8: a host-scoped pair on the same site stops, and names the flag that points at the login page.
+    const hostVars = { user: `QA_CORE_TEST_USER_${hostEnvSuffix('127.0.0.1')}`, pass: `QA_CORE_TEST_PASS_${hostEnvSuffix('127.0.0.1')}` };
+    process.env[hostVars.user] = USER;
+    process.env[hostVars.pass] = PASS;
+    const h = await runGateway('i-host', {});
+    check('I8. a host-scoped pair with no login page stops the run before explore()',
+      h.seen === null && h.outcome?.kind === 'empty' && (h.outcome.diagnosis?.[0] ?? '').startsWith('Run stopped: the test account did not sign in (no login page was found; tried ') && !h.notes.some((n) => n.includes('continuing without the test account')), JSON.stringify(h.notes));
+    check('I9. the host-scoped stop says to pass --login-url, naming the variables, never a value',
+      h.notes.some((n) => n.includes(`${hostVars.user} / ${hostVars.pass} is a host-scoped pair, so this host should have a login page; pass --login-url <page> to name it`)) && !h.notes.join('\n').includes(USER), JSON.stringify(h.notes));
+    delete process.env[hostVars.user];
+    delete process.env[hostVars.pass];
+    await bare.close();
+
+    // I10: the generic pair on a login page that rejects it stops (LOGIN FAILED stops whatever the scope).
+    process.env.QA_CORE_TEST_USER = USER;
+    process.env.QA_CORE_TEST_PASS = 'still-not-the-password';
+    const rootR = path.join(tmpRoot, 'i-rejects');
+    fs.mkdirSync(rootR, { recursive: true });
+    let calledR = false as boolean;
+    const rejected = await runExploreRequest({
+      request: { ...defaultExploreRequest(), url: `${site.url}/login`, env: {} }, projectRoot: rootR, source: 'cli',
+      exploreImpl: async () => { calledR = true; throw new Error('explore must not run after a rejected login'); },
+      preflight: fastPreflight,
+    });
+    check('I10. the generic pair on a login page that rejects it stops the run (LOGIN FAILED), explore() never called',
+      calledR === false && rejected.kind === 'empty' && rejected.diagnosis?.[0] === 'Run stopped: the test account did not sign in (Invalid email or password). Nothing was spent.', JSON.stringify(rejected.diagnosis));
+    delete process.env.QA_CORE_TEST_USER;
+    delete process.env.QA_CORE_TEST_PASS;
+  }
 } finally {
   process.chdir(origCwd);
   await browser.close();
@@ -490,4 +738,4 @@ try {
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
-console.log('OK: the test account comes from the host .env by marker, is preflighted before any spend, is capped on wrong passwords, and never reaches a file under output/.');
+console.log('OK: the test account comes from the host .env by marker, is preflighted before any spend (a missing login page stops only for a host-scoped pair or --login-url), is capped on wrong passwords (a cap refusal is never a failure), and never reaches a file under output/.');

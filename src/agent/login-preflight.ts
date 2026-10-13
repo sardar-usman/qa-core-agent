@@ -206,6 +206,21 @@ export interface LoginPreflightGateResult {
   stopLine: string | null;
   /** Where the form was found, for the post-run check. */
   loginUrl?: string;
+  /**
+   * Set when the run continues without the test account although
+   * credentials were set: only the generic pair, no --login-url, and no login
+   * page found. Every planned scenario that needs the account is skipped with
+   * this reason (NO_LOGIN_PAGE_REASON); `creds` is null.
+   */
+  accountSkipReason?: string;
+}
+
+/** The skip reason of a scenario that needs the account when the generic pair found no login page. */
+export const NO_LOGIN_PAGE_REASON = 'no login page found';
+
+/** The one line printed when the generic pair found no login page and the run continues. */
+export function noLoginPageLine(tried: string[]): string {
+  return `login page not found (tried ${tried.join(', ')}); continuing without the test account`;
 }
 
 /**
@@ -213,6 +228,13 @@ export interface LoginPreflightGateResult {
  * it before the requirements map and the Planner, so a failure costs $0. It
  * prints which variables were used (names only) and the preflight's lines;
  * with no credentials it prints why and returns no stop.
+ *
+ * When to stop. LOGIN FAILED (a login page was found and the account was
+ * rejected) always stops. PAGE NOT REACHED stops only when the owner said
+ * this site has a login: a host-scoped pair, or --login-url. With only the
+ * generic pair, which is not tied to any one site, a site with no login
+ * page is not an error: the run prints noLoginPageLine and continues
+ * without the account, skipping the scenarios that need it.
  */
 export async function runLoginPreflightGate(opts: LoginPreflightGateOptions): Promise<LoginPreflightGateResult> {
   const resolution = resolveTestCredentials(opts.env ?? process.env, opts.url);
@@ -222,7 +244,13 @@ export async function runLoginPreflightGate(opts: LoginPreflightGateOptions): Pr
   for (const l of r.lines) opts.log(`login preflight: ${l.trim()}`);
   if (r.outcome === 'ok') return { creds: resolution.creds, stopLine: null, ...(r.loginUrl ? { loginUrl: r.loginUrl } : {}) };
   if (r.outcome === 'unreached') {
-    opts.log(`login preflight: no login page was found with ${resolution.creds.userVar} / ${resolution.creds.passVar} set; pass --login-url <page>, or, for a site with no login, run without a test account (a host-scoped pair applies to one site only)`);
+    if (resolution.creds.scope === 'generic' && !opts.loginUrl) {
+      opts.log(noLoginPageLine(r.tried));
+      return { creds: null, stopLine: null, accountSkipReason: NO_LOGIN_PAGE_REASON };
+    }
+    // A host-scoped pair says this host has a login; name the flag that
+    // points at it. With --login-url given, the stop line names that URL.
+    if (!opts.loginUrl) opts.log(`login preflight: ${resolution.creds.userVar} / ${resolution.creds.passVar} is a host-scoped pair, so this host should have a login page; pass --login-url <page> to name it`);
   }
   return { creds: resolution.creds, stopLine: maskForDisk(preflightStopLine(r)), ...(r.loginUrl ? { loginUrl: r.loginUrl } : {}) };
 }

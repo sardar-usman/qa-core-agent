@@ -436,6 +436,13 @@ export interface RunReport {
     passed: number;
     /** Count of scenarios that failed replay and were dropped from the emitted spec. */
     failed: number;
+    /**
+     * Count of scenarios the wrong-password cap refused before they ran
+     * (invariant 70): dropped, never counted in `failed` (standing rule 2).
+     * Absent on a report written before the field; read as 0 there, since
+     * that runtime counted a refusal in `failed`.
+     */
+    refused?: number;
     /** Wall-clock time spent on replay. */
     durationMs: number;
     /** Per-scenario verdicts including failure step index and error excerpt. */
@@ -447,6 +454,8 @@ export interface RunReport {
       /** The page as it was when the step failed: URL, the failing target's text, visible messages. */
       observed?: { url: string; target: string | null; messages: string[] };
       error?: string;
+      /** The wrong-password cap refused the execution; `error` is the cap reason. Not a failed replay. */
+      refused?: true;
       durationMs: number;
     }>;
   };
@@ -472,8 +481,14 @@ export interface RunReport {
     passed: number;
     /** Scenarios that failed at least one iteration (dropped as flaky). */
     flaked: number;
-    /** flaked / (passed + flaked). 0 when there were no scenarios to test. */
+    /** flaked / (passed + flaked). 0 when there were no scenarios to test. Refused scenarios are outside it. */
     flakeRate: number;
+    /**
+     * Scenarios the wrong-password cap refused before any iteration
+     * (invariant 70): dropped with the cap reason, never in `flaked`,
+     * `broken` or `flakeRate`. Absent on a report written before the field.
+     */
+    refused?: number;
     durationMs: number;
     /** Subset of `flaked` classified flaky (≥1 pass, ≥1 fail). */
     flaky?: number;
@@ -498,8 +513,10 @@ export interface RunReport {
       iterations: number;
       passes: number;
       stable: boolean;
-      classification?: 'stable' | 'flaky' | 'broken';
+      classification?: 'stable' | 'flaky' | 'broken' | 'refused';
       pattern?: string;
+      /** On a refused verdict: why no iteration ran ("would exceed the wrong-password cap (N)"). */
+      refusedReason?: string;
       /** Shipped only after a Stabilizer relaxed-rule fix — excluded from strict stable. */
       relaxed?: boolean;
       /** True whenever the classification is broken: the Stabilizer gave up, or never had a pass to work from. */

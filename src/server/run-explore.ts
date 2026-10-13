@@ -7,7 +7,7 @@ import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/sc
 import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
-import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { diagnoseEmptyRun, refusedNote, renderReconciliation } from '../agent/reconcile.js';
 import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
@@ -184,6 +184,8 @@ export interface PreparedRun {
   preflightStop?: string;
   /** Where the preflight found the login form, for the post-run lockout check. */
   loginUrl?: string;
+  /** Set when the generic pair found no login page: the run continues without the account and skips what needs it with this reason. */
+  accountSkipReason?: string;
 }
 
 /**
@@ -295,7 +297,7 @@ export async function prepareExploreRun(input: Omit<RunExploreInput, 'onEvent' |
     if (req.features.length > 0) notes.push('  (--features wins for feature selection; the SRS rules still steer the Planner)');
   }
 
-  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(requirementsUsd !== undefined ? { requirementsUsd } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}) };
+  return { request: req, url, outDir, ...(requirements ? { requirements } : {}), ...(requirementsUsd !== undefined ? { requirementsUsd } : {}), ...(resumeCp ? { resume: resumeCp } : {}), ...(srsFile ? { srsFile } : {}), notes, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), ...(gate.accountSkipReason ? { accountSkipReason: gate.accountSkipReason } : {}) };
 }
 
 /** Prepare, run, emit. */
@@ -332,6 +334,7 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
         ...(prepared.resume ? { resume: prepared.resume } : {}),
         ...(input.model ? { model: input.model } : {}),
         loginPreflightDone: true,
+        ...(prepared.accountSkipReason ? { accountSkipReason: prepared.accountSkipReason } : {}),
       }),
       // Every event is also appended to <runDir>/events.jsonl, the stored
       // timeline the Run Detail page renders.
@@ -461,13 +464,13 @@ export function summarize(report: RunReport): string[] {
   if (report.replay && !report.replay.skipped) {
     const total = report.replay.passed + report.replay.failed;
     const pct = total > 0 ? Math.round((report.replay.passed / total) * 100) : 0;
-    out.push(`Reality check: ${report.replay.passed}/${total} passed twice (${pct}%)`);
+    out.push(`Reality check: ${report.replay.passed}/${total} passed twice (${pct}%)${refusedNote(report.replay.refused)}`);
   }
   if (report.stability && !report.stability.skipped) {
     const total = report.stability.passed + report.stability.flaked;
     const strictStable = report.reconciliation ? report.reconciliation.stable : report.stability.passed;
     const recovered = report.reconciliation?.recovered ?? report.stability.recovered ?? 0;
-    out.push(`Stability: ${strictStable}/${total} stable across ${report.stability.iterations}x${recovered > 0 ? ` (+${recovered} recovered)` : ''} · flake_rate=${(report.stability.flakeRate * 100).toFixed(1)}%`);
+    out.push(`Stability: ${strictStable}/${total} stable across ${report.stability.iterations}x${recovered > 0 ? ` (+${recovered} recovered)` : ''} · flake_rate=${(report.stability.flakeRate * 100).toFixed(1)}%${refusedNote(report.stability.refused)}`);
   }
   if (report.reconciliation) out.push(...renderReconciliation(report.reconciliation));
   if (report.ruleCoverage) out.push(...renderRuleCoverage(report.ruleCoverage));

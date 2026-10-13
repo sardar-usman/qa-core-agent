@@ -8,8 +8,8 @@ import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
-import { replay, type ReplayEvent } from './replay.js';
-import { stability, type StabilityEvent } from './stability.js';
+import { replay, replayReportBlock, type ReplayEvent } from './replay.js';
+import { stability, stabilityReportBlock, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned } from './rule-coverage.js';
@@ -245,6 +245,13 @@ export interface ExploreOptions {
    * unset and explore() runs the preflight itself before the Planner.
    */
   loginPreflightDone?: boolean;
+  /**
+   * Set by the surface's preflight when the generic pair found no login page
+   * (invariant 70): the run continues WITHOUT the test account, and every
+   * planned scenario that needs it is skipped with this reason instead of
+   * "test credentials not provided".
+   */
+  accountSkipReason?: string;
   /** Test seam: replaces the browser login preflight. */
   preflight?: typeof preflightLogin;
   onEvent?: (event: AgentEvent) => void;
@@ -632,11 +639,15 @@ export type AgentEvent =
   | { type: 'replay_started'; total: number }
   | { type: 'replay_scenario_passed'; name: string; durationMs: number }
   | { type: 'replay_scenario_failed'; name: string; failedStep: number; stepKind: string; error: string }
-  | { type: 'replay_done'; passed: number; failed: number; durationMs: number }
+  // The wrong-password cap refused a scenario at replay or stability
+  // (invariant 70): its own event, never a failed replay or a flaked iteration.
+  | { type: 'replay_scenario_refused'; name: string; reason: string }
+  | { type: 'stability_scenario_refused'; name: string; reason: string }
+  | { type: 'replay_done'; passed: number; failed: number; refused?: number; durationMs: number }
   | { type: 'stability_started'; total: number; iterations: number }
   | { type: 'stability_iteration_passed'; name: string; iteration: number; durationMs: number }
   | { type: 'stability_iteration_failed'; name: string; iteration: number; failedStep: number; stepKind: string; error: string }
-  | { type: 'stability_done'; stable: number; flaked: number; recovered?: number; iterations: number; flakeRate: number; durationMs: number; stabilizerCostUsd?: number }
+  | { type: 'stability_done'; stable: number; flaked: number; recovered?: number; refused?: number; iterations: number; flakeRate: number; durationMs: number; stabilizerCostUsd?: number }
   | { type: 'gate_injection'; scenario: string; step: number; assertionType: string; detail: string }
   | { type: 'gate_broken'; scenario: string; reason: string; attempts: number }
   // Reports an IN-RUN SELECTOR RECOVERY (a locator that failed to resolve was
@@ -720,8 +731,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // preflight before the requirements map; a direct caller gets it here,
   // before the Planner, so a failure still costs nothing.
   let testCredentials: TestCredentials | null;
+  // Why the scenarios that need the account are skipped when there is none.
+  let accountSkipReason = opts.accountSkipReason ?? CREDENTIALS_NOT_PROVIDED;
   if (opts.loginPreflightDone) {
-    testCredentials = readTestCredentials(process.env, opts.url);
+    testCredentials = opts.accountSkipReason ? null : readTestCredentials(process.env, opts.url);
   } else {
     const gate = await runLoginPreflightGate({
       url: opts.url,
@@ -730,6 +743,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       ...(opts.preflight ? { preflight: opts.preflight } : {}),
     });
     testCredentials = gate.creds;
+    if (gate.accountSkipReason) accountSkipReason = gate.accountSkipReason;
     if (gate.stopLine) {
       opts.onEvent?.({ type: 'message', text: gate.stopLine });
       const stoppedReport = preflightStopReport({ url: opts.url, language: opts.language, line: gate.stopLine, startedAt: new Date().toISOString() });
@@ -1266,8 +1280,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // Explorer, one skip each, with the plan line saying how many.
     accountSkips = testCredentials ? [] : plannedNow.filter((s) => needsTestAccount(s) !== null);
     if (accountSkips.length > 0) {
-      opts.onEvent?.({ type: 'message', text: missingCredentialsPlanLine(accountSkips.length) });
-      for (const s of accountSkips) opts.onEvent?.({ type: 'message', text: `Skipped "${s.name}": ${CREDENTIALS_NOT_PROVIDED} (${needsTestAccount(s)})` });
+      opts.onEvent?.({ type: 'message', text: missingCredentialsPlanLine(accountSkips.length, ...(accountSkipReason !== CREDENTIALS_NOT_PROVIDED ? [accountSkipReason] : [])) });
+      for (const s of accountSkips) opts.onEvent?.({ type: 'message', text: `Skipped "${s.name}": ${accountSkipReason} (${needsTestAccount(s)})` });
     }
     const toExplore = plannedNow.filter((s) => !accountSkips.includes(s));
 
@@ -1422,7 +1436,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     incomplete = ctx.incomplete;
     findings = ctx.findings;
     heals = ctx.heals;
-    skipped = [...accountSkips.map((s) => ({ scenario: s.name, reason: CREDENTIALS_NOT_PROVIDED })), ...ctx.skipped];
+    skipped = [...accountSkips.map((s) => ({ scenario: s.name, reason: accountSkipReason })), ...ctx.skipped];
     wrongPasswordLine('explorer');
     // Phase boundary: explorer done. On an abnormal stop this is the state a
     // resume continues from; print the hint alongside.
@@ -1701,11 +1715,15 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
                 error: ev.error,
               });
               return;
+            case 'scenario_refused':
+              opts.onEvent?.({ type: 'replay_scenario_refused', name: ev.name, reason: ev.reason });
+              return;
             case 'replay_done':
               opts.onEvent?.({
                 type: 'replay_done',
                 passed: ev.passed,
                 failed: ev.failed,
+                refused: ev.refused,
                 durationMs: ev.durationMs,
               });
               return;
@@ -1716,12 +1734,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
       emittedScenarios = r.emitted;
       wrongPasswordLine('replay');
-      replayInfo = {
-        passed: r.emitted.length,
-        failed: r.dropped.length,
-        durationMs: r.durationMs,
-        verdicts: r.verdicts,
-      };
+      replayInfo = replayReportBlock(r);
     } catch (err) {
       opts.onEvent?.({ type: 'message', text: `Replay skipped: ${(err as Error).message}` });
       replayInfo = { skipped: true, passed: 0, failed: 0, durationMs: 0, verdicts: [] };
@@ -1770,12 +1783,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
                 error: ev.error,
               });
               return;
+            case 'scenario_refused':
+              opts.onEvent?.({ type: 'stability_scenario_refused', name: ev.name, reason: ev.reason });
+              return;
             case 'stability_done':
               opts.onEvent?.({
                 type: 'stability_done',
                 stable: ev.stable,
                 flaked: ev.flaked,
                 recovered: ev.recovered,
+                refused: ev.refused,
                 iterations: ev.iterations,
                 flakeRate: ev.flakeRate,
                 durationMs: ev.durationMs,
@@ -1820,21 +1837,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
       emittedScenarios = s.emitted;
       wrongPasswordLine('stability');
-      stabilityInfo = {
-        iterations: s.iterations,
-        passed: s.emitted.length,
-        flaked: s.flaked.length,
-        flaky: s.flaky.length,
-        broken: s.broken.length,
-        recovered: s.recovered.length,
-        stabilizerCostUsd: s.stabilizerCostUsd,
-        flakeRate: s.flakeRate,
-        durationMs: s.durationMs,
-        verdicts: s.verdicts,
-        // Stabilizer spend with no attempt recorded is an inconsistency, never
-        // shown as "none recorded": the report carries the warning.
-        ...(s.warning ? { warning: s.warning } : {}),
-      };
+      stabilityInfo = stabilityReportBlock(s);
       if (s.warning) opts.onEvent?.({ type: 'message', text: `WARNING: ${s.warning}` });
     } catch (err) {
       opts.onEvent?.({ type: 'message', text: `Stability skipped: ${(err as Error).message}` });

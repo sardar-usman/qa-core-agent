@@ -1,5 +1,5 @@
 import { chromium, type Browser, type FrameLocator, type Locator, type Page } from 'playwright';
-import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js';
+import type { Assertion, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import {
   CREDENTIALS_NOT_PROVIDED, canSubmitWrongPassword, credentialValue, recordWrongPassword, refuseWrongPassword,
   wrongPasswordCapReason, wrongPasswordSubmits, type WrongPasswordLedger,
@@ -54,7 +54,9 @@ export type ReplayEvent =
   | { type: 'scenario_started'; name: string; index: number; total: number }
   | { type: 'scenario_passed'; name: string; durationMs: number }
   | { type: 'scenario_failed'; name: string; failedStep: number; stepKind: string; error: string }
-  | { type: 'replay_done'; passed: number; failed: number; durationMs: number };
+  /** The wrong-password cap refused the execution (invariant 70); not a failure. */
+  | { type: 'scenario_refused'; name: string; reason: string }
+  | { type: 'replay_done'; passed: number; failed: number; refused: number; durationMs: number };
 
 /**
  * What the page showed when a step failed on a re-run: the URL, the text at
@@ -80,6 +82,13 @@ export interface ReplayVerdict {
   error?: string;
   /** The page as it was when the step failed. Absent on a pass. */
   observed?: ObservedState;
+  /**
+   * True when the wrong-password cap refused the execution before a page
+   * opened (invariant 70). `passed` is false and `error` carries the cap
+   * reason, but it is not a failed replay: never counted in replay.failed
+   * (standing rule 2).
+   */
+  refused?: true;
   durationMs: number;
 }
 
@@ -89,6 +98,8 @@ export interface ReplayResult {
   emitted: Scenario[];
   /** Scenarios that were dropped because at least one step failed. */
   dropped: Scenario[];
+  /** Scenarios the wrong-password cap refused before running: dropped, never counted as failed. */
+  refused: Scenario[];
   /** Total replay wall-clock time across all scenarios. */
   durationMs: number;
 }
@@ -108,6 +119,7 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
   const verdicts: ReplayVerdict[] = [];
   const emitted: Scenario[] = [];
   const dropped: Scenario[] = [];
+  const refused: Scenario[] = [];
 
   opts.onEvent?.({ type: 'replay_started', total: opts.scenarios.length });
 
@@ -125,6 +137,9 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
       if (verdict.passed) {
         emitted.push(scenario);
         opts.onEvent?.({ type: 'scenario_passed', name: scenario.name, durationMs: verdict.durationMs });
+      } else if (verdict.refused) {
+        refused.push(scenario);
+        opts.onEvent?.({ type: 'scenario_refused', name: scenario.name, reason: verdict.error ?? '' });
       } else {
         dropped.push(scenario);
         opts.onEvent?.({
@@ -146,10 +161,21 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     type: 'replay_done',
     passed: emitted.length,
     failed: dropped.length,
+    refused: refused.length,
     durationMs,
   });
 
-  return { verdicts, emitted, dropped, durationMs };
+  return { verdicts, emitted, dropped, refused, durationMs };
+}
+
+/**
+ * The run-report's replay block for a finished replay: `failed` counts real
+ * failures only, and a scenario the wrong-password cap refused is counted in
+ * `refused` (invariant 70, standing rule 2). The runtime and the smokes build
+ * the block through here.
+ */
+export function replayReportBlock(r: ReplayResult): NonNullable<RunReport['replay']> {
+  return { passed: r.emitted.length, failed: r.dropped.length, refused: r.refused.length, durationMs: r.durationMs, verdicts: r.verdicts };
 }
 
 export async function replayScenarioOnce(
@@ -167,7 +193,7 @@ export async function replayScenarioOnce(
   if (submits > 0 && ledger) {
     if (!canSubmitWrongPassword(ledger, submits)) {
       refuseWrongPassword(ledger, scenario.name, access?.stage ?? 'replay');
-      return { name: scenario.name, passed: false, failedStep: -1, error: wrongPasswordCapReason(ledger), durationMs: 0 };
+      return { name: scenario.name, passed: false, refused: true, error: wrongPasswordCapReason(ledger), durationMs: 0 };
     }
     recordWrongPassword(ledger, submits, access?.stage ?? 'replay');
   }

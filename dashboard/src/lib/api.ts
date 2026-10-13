@@ -72,7 +72,7 @@ export interface RunDetailScenario {
   name: string; feature: string | null; category: string | null;
   verdict: 'pass' | 'rework' | 'reject' | null; reasons: string[]; required_fixes: string[];
   repair: 'none' | 'repaired' | 'failed'; repair_second: string | null;
-  replay: 'pass' | 'fail' | null; replay_error: string | null;
+  replay: 'pass' | 'fail' | 'refused' | null; replay_error: string | null;
   stability: { passes: number; iterations: number; pattern: string | null; classification: string | null; recovered: boolean } | null;
   shipped: boolean; dropped_at: string | null; dropped_reason: string | null; incomplete_reason: string | null; skipped_reason: string | null;
 }
@@ -110,12 +110,15 @@ export interface RunDetailStages {
   };
   verify: {
     status: StageStatus; stat: string;
-    replay: { passed: number; failed: number; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
+    /** refused: scenarios the wrong-password cap refused before they ran, never in failed (null on an older report). */
+    replay: { passed: number; failed: number; refused: number | null; duration_ms: number; verdicts: Array<{ name: string; passed: boolean; refused: boolean; failed_step: number | null; step_kind: string | null; error: string | null; observed: ObservedOnFailure | null }> } | null;
     stability: {
       iterations: number; passed: number; flaked: number; flaky: number | null; broken: number | null; recovered: number | null; flake_rate: number; stabilizer_cost_usd: number | null;
+      refused: number | null;
       attempts_total: number; warning: string | null;
       verdicts: Array<{
         name: string; iterations: number; passes: number; pattern: string | null; classification: string | null; recovered: boolean; gave_up: boolean;
+        refused_reason: string | null;
         first_failure: { iteration: number; failed_step: number; step_kind: string; error: string; observed: ObservedOnFailure | null } | null;
         attempts: Array<{ attempt: number; kind: string; change: string; reason: string; pattern: string | null; outcome: string }>;
       }>;

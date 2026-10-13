@@ -298,13 +298,14 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
     <>
       {v.replay ? (
         <>
-          <SubLabel>Reality check <span className="mono font-normal text-fg-2">{v.replay.passed} passed · {v.replay.failed} dropped</span></SubLabel>
+          <SubLabel>Reality check <span className="mono font-normal text-fg-2">{v.replay.passed} passed · {v.replay.failed} dropped{(v.replay.refused ?? 0) > 0 ? <> · <span data-testid="replay-refused">{v.replay.refused}</span> <Term term="wrongPasswordRefused">refused</Term></> : null}</span></SubLabel>
           <ul data-testid="replay-list">
             {v.replay.verdicts.map((x) => (
-              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="replay-row" data-passed={x.passed ? 'yes' : 'no'}>
-                <span className={x.passed ? 'text-pass' : 'text-reject'}>{x.passed ? 'pass' : 'fail'}</span>
+              <li key={x.name} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 text-small first:border-t-0" data-testid="replay-row" data-passed={x.passed ? 'yes' : x.refused ? 'refused' : 'no'}>
+                <span className={x.passed ? 'text-pass' : x.refused ? 'text-fg-2' : 'text-reject'}>{x.passed ? 'pass' : x.refused ? 'refused' : 'fail'}</span>
                 <span className="text-fg">{x.name}</span>
-                {!x.passed ? <span className="text-fg-2">step {(x.failed_step ?? 0) + 1} {x.step_kind ?? ''}{x.error ? `: ${x.error}` : ''}</span> : null}
+                {x.refused ? <span className="text-fg-2">not run: {x.error}</span> : null}
+                {!x.passed && !x.refused ? <span className="text-fg-2">step {(x.failed_step ?? 0) + 1} {x.step_kind ?? ''}{x.error ? `: ${x.error}` : ''}</span> : null}
                 {!x.passed && x.observed?.target ? <span className="text-fg-2" data-testid="replay-observed">saw: {x.observed.target}</span> : null}
               </li>
             ))}
@@ -314,7 +315,7 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
       {v.stability ? (
         <>
           <SubLabel>
-            Stability <span className="mono font-normal text-fg-2"><span data-testid="stability-iterations">{v.stability.iterations}</span>x re-run · <span data-testid="stability-passed">{v.stability.passed}</span> stable · <span data-testid="stability-flaked">{v.stability.flaked}</span> flaked · <span data-testid="stability-recovered">{v.stability.recovered ?? 0}</span> recovered · flake rate {pct(v.stability.flake_rate)}</span>
+            Stability <span className="mono font-normal text-fg-2"><span data-testid="stability-iterations">{v.stability.iterations}</span>x re-run · <span data-testid="stability-passed">{v.stability.passed}</span> stable · <span data-testid="stability-flaked">{v.stability.flaked}</span> flaked · <span data-testid="stability-recovered">{v.stability.recovered ?? 0}</span> recovered · flake rate {pct(v.stability.flake_rate)}{(v.stability.refused ?? 0) > 0 ? <> · <span data-testid="stability-refused">{v.stability.refused}</span> <Term term="wrongPasswordRefused">refused</Term></> : null}</span>
           </SubLabel>
           <ul data-testid="stability-list">
             {v.stability.verdicts.map((x) => (
@@ -322,6 +323,7 @@ function Verify({ v }: { v: RunDetailStages['verify'] }) {
                 <span className="text-fg">{x.name}</span>
                 <span className={`mono ${x.gave_up ? 'text-reject' : x.recovered ? 'text-pass' : x.classification === 'flaky' ? 'text-rework' : 'text-fg-2'}`} data-testid="stability-pattern">{x.pattern ?? `${x.passes}/${x.iterations}`}</span>
                 <Badge variant={x.gave_up ? 'reject' : x.recovered ? 'pass' : x.classification === 'stable' ? 'pass' : x.classification === 'flaky' ? 'rework' : 'neutral'}>{x.gave_up ? 'broken' : x.recovered ? 'recovered' : x.classification ?? 'unknown'}</Badge>
+                {x.refused_reason ? <span className="basis-full text-fg-2" data-testid="stability-refused-reason">not run: {x.refused_reason}</span> : null}
                 {x.first_failure ? <span className="basis-full text-fg-2" data-testid="stability-failure">iteration {x.first_failure.iteration} step {x.first_failure.failed_step + 1} {x.first_failure.step_kind}: {x.first_failure.error}{x.first_failure.observed?.target ? ` · saw: ${x.first_failure.observed.target}` : ''}</span> : null}
                 {x.attempts.length ? (
                   <ul className="basis-full pl-3" data-testid="stability-attempts-list">
