@@ -36,6 +36,24 @@ const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB — pathological cap, real fr
 export const RUN_ARTIFACTS: readonly string[] = ['checkpoint.json', 'events.jsonl', 'run-meta.json', 'requirements-map.json', 'rule-coverage.json', '*.zip', '*-srs.md', '*-srs.txt', '*-srs.pdf', '*-srs.docx'];
 
 /**
+ * Folders a Playwright run leaves inside a framework tree, excluded from
+ * EVERY zip by path, whatever they hold (invariant 70). playwright/.auth/
+ * holds the saved session of the auth setup: a live session cookie for the
+ * test account. Run 4b0e43's zip was refused only because saucedemo's
+ * session cookie equals the username; on a site whose cookie is a random
+ * token the value grep would miss it and the session would ship. The
+ * report folders hold traces and screenshots of the run. The emitted-spec
+ * check deletes all four after it runs, and the pre-zip guard refuses a
+ * tree that still has a session file; this list is the last line.
+ */
+export const RUN_OUTPUT_DIRS: readonly string[] = ['playwright/.auth', 'test-results', 'playwright-report', 'blob-report'];
+
+/** zip -x patterns for RUN_OUTPUT_DIRS under an archive root: the folder entry and everything below it, at any depth. */
+function runOutputExcludes(base: string): string[] {
+  return RUN_OUTPUT_DIRS.flatMap((d) => [`${base}/${d}/*`, `${base}/${d}/`, `${base}/*/${d}/*`, `${base}/*/${d}/`]);
+}
+
+/**
  * Where to run `zip` from and what to name the archive root. By default the
  * root is the source directory's own name. A run directory is named by its
  * run id, so callers pass `rootName` (the <brand>-automation-framework name)
@@ -65,7 +83,7 @@ export interface ZipResult {
  * as its top-level folder (so unzipping it produces `srcDir-basename/...`,
  * not loose files dumped into cwd).
  */
-export function zipFrameworkToFile(srcDir: string, destZipPath: string, rootName?: string): ZipResult {
+export function zipFrameworkToFile(srcDir: string, destZipPath: string, rootName?: string, exclude: readonly string[] = RUN_ARTIFACTS): ZipResult {
   if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
     throw new Error(`Source is not a directory: ${srcDir}`);
   }
@@ -73,7 +91,9 @@ export function zipFrameworkToFile(srcDir: string, destZipPath: string, rootName
   if (fs.existsSync(destZipPath)) fs.unlinkSync(destZipPath);
 
   const root = zipRoot(srcDir, rootName);
-  const result = spawnSync('zip', ['-rqX', path.resolve(destZipPath), root.base], { cwd: root.cwd, encoding: 'buffer' });
+  // Run-folder artifacts by name, and the run output folders always (RUN_OUTPUT_DIRS).
+  const excludeArgs = ['-x', ...exclude.map((name) => `${root.base}/${name}`), ...runOutputExcludes(root.base)];
+  const result = spawnSync('zip', ['-rqX', path.resolve(destZipPath), root.base, ...excludeArgs], { cwd: root.cwd, encoding: 'buffer' });
   root.cleanup();
   if (result.error) {
     throw new Error(
@@ -105,8 +125,10 @@ export function zipFrameworkToBuffer(srcDir: string, rootName?: string, exclude:
   }
   const root = zipRoot(srcDir, rootName);
 
-  // `zip -rqX -` writes the archive to stdout. Run-folder artifacts are excluded by name, never moved aside.
-  const excludeArgs = exclude.length ? ['-x', ...exclude.map((name) => `${root.base}/${name}`)] : [];
+  // `zip -rqX -` writes the archive to stdout. Run-folder artifacts are
+  // excluded by name, never moved aside; the run output folders
+  // (RUN_OUTPUT_DIRS) are excluded whatever `exclude` says.
+  const excludeArgs = ['-x', ...exclude.map((name) => `${root.base}/${name}`), ...runOutputExcludes(root.base)];
   const result = spawnSync('zip', ['-rqX', '-', root.base, ...excludeArgs], {
     cwd: root.cwd,
     maxBuffer: MAX_ZIP_BYTES,

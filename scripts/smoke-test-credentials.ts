@@ -39,12 +39,16 @@
  *      prints one line naming every URL tried, and skips the scenarios that
  *      need it "no login page found"; a host-scoped pair, or --login-url to a
  *      missing page, stops; a login page that rejects the generic pair stops.
+ *   J. scripts/preflight-site.ts spawned as a child process: the URL is found
+ *      in any position and the value after --login-url is never taken as the
+ *      URL; four argument orders reach the login step; --login-url with no
+ *      value, or no URL, prints usage and exits 2.
  */
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { createContext, runTool } from '../src/agent/tools.js';
@@ -728,6 +732,48 @@ try {
       calledR === false && rejected.kind === 'empty' && rejected.diagnosis?.[0] === 'Run stopped: the test account did not sign in (Invalid email or password). Nothing was spent.', JSON.stringify(rejected.diagnosis));
     delete process.env.QA_CORE_TEST_USER;
     delete process.env.QA_CORE_TEST_PASS;
+  }
+  /* ─── J. preflight-site.ts arguments, as a child process ──────────────── */
+  {
+    // Async: the fixture site is served from this process, so a spawnSync
+    // would block the server the child must reach.
+    const runChild = (args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> => new Promise((resolve) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, QA_CORE_TEST_USER: USER, QA_CORE_TEST_PASS: PASS };
+      // cwd outside the repo, so dotenv in the script reads no .env.
+      const child = spawn(path.join(origCwd, 'node_modules', '.bin', 'tsx'), [path.join(origCwd, 'scripts', 'preflight-site.ts'), ...args], { cwd: tmpRoot, env });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += String(d); });
+      child.stderr.on('data', (d) => { stderr += String(d); });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 90_000);
+      child.on('close', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+    const first = (t: string): string => t.split('\n')[0] ?? '';
+    const loginPage = `${site.url}/login`;
+    const home = `${site.url}/`;
+    const cases: Array<{ label: string; args: string[]; url: string }> = [
+      { label: '"<url> --login"', args: [loginPage, '--login'], url: loginPage },
+      { label: '"--login <url>"', args: ['--login', loginPage], url: loginPage },
+      { label: '"<url> --login-url <path>"', args: [home, '--login-url', '/login'], url: home },
+      { label: '"--login-url <path> <url>"', args: ['--login-url', '/login', home], url: home },
+    ];
+    site.lockAfter(null);
+    for (const [i, c] of cases.entries()) {
+      const r = await runChild(c.args);
+      check(`J${i + 1}. ${c.label} finds the URL and reaches the login step: exit 0, first line HEAD <url>, LOGIN OK`,
+        r.status === 0 && first(r.stdout).startsWith(`HEAD ${c.url}: HTTP 200`) && r.stdout.includes('test credentials: QA_CORE_TEST_USER / QA_CORE_TEST_PASS') && r.stdout.includes('LOGIN OK') && !r.stdout.includes(PASS) && !r.stdout.includes(USER), `${r.status}\n${r.stdout}\n${r.stderr}`);
+    }
+    const usage = 'usage: npx tsx scripts/preflight-site.ts <url> [--login] [--login-url <url-or-path>]';
+    const bad: Array<{ label: string; args: string[] }> = [
+      { label: '"--login-url" with no value and no URL', args: ['--login-url'] },
+      { label: '"<url> --login-url" with no value', args: [home, '--login-url'] },
+      { label: '"--login" with no URL', args: ['--login'] },
+      { label: '"--login-url --login <url>" (a flag is never the value)', args: ['--login-url', '--login', home] },
+    ];
+    for (const [i, c] of bad.entries()) {
+      const r = await runChild(c.args);
+      check(`J${i + 5}. ${c.label} prints usage and exits 2, nothing attempted`, r.status === 2 && first(r.stderr) === usage && r.stdout === '', `${r.status}\n${r.stdout}\n${r.stderr}`);
+    }
   }
 } finally {
   process.chdir(origCwd);

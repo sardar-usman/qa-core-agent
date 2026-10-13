@@ -14,6 +14,7 @@ import {
   wrongPasswordCountLine, wrongPasswordSubmits,
 } from './test-credentials.js';
 import { maskForDisk } from './credential-leak.js';
+import { RUN_OUTPUT_DIRS } from './zip-framework.js';
 
 /**
  * The emitted-spec check: the last stage before the zip.
@@ -35,8 +36,10 @@ import { maskForDisk } from './credential-leak.js';
  * agent repo's own node_modules for the duration of the run (the same
  * @playwright/test, @axe-core/playwright and dotenv the scaffold pins), and
  * Playwright is started through that package's cli.js. The symlink and the
- * run's own files (the JSON report, test-results/) are removed before the
- * caller zips, so the zip is exactly the framework.
+ * run's own files (the JSON report and RUN_OUTPUT_DIRS: playwright/.auth/
+ * with the auth setup's saved session, test-results/, playwright-report/,
+ * blob-report/) are removed after every run, pass or fail, with one console
+ * line naming what went, so the zip is exactly the framework (invariant 70).
  *
  * Site-down guard: when the entry URL cannot be fetched, when every test
  * fails including the a11y spec, or when every failure is a network error,
@@ -250,11 +253,30 @@ async function probeUrl(url: string): Promise<string | null> {
   }
 }
 
-/** Remove what the run left inside the framework so the zip is exactly the framework. */
-function cleanRunFiles(frameworkDir: string): void {
-  for (const f of [JSON_NAME, 'test-results', 'playwright-report', 'blob-report']) {
-    try { fs.rmSync(path.join(frameworkDir, f), { recursive: true, force: true }); } catch { /* best effort */ }
+/**
+ * Remove what the run left inside the framework so the zip is exactly the
+ * framework: the JSON report and every RUN_OUTPUT_DIRS folder, the saved
+ * session under playwright/.auth/ included (an emptied playwright/ goes
+ * too). Adds each one it found to `removed`. A folder that cannot be removed
+ * stays, and the pre-zip guard refuses the zip by its path.
+ */
+function cleanRunFiles(frameworkDir: string, removed: Set<string> = new Set()): Set<string> {
+  for (const f of [JSON_NAME, ...RUN_OUTPUT_DIRS]) {
+    const p = path.join(frameworkDir, f);
+    if (!fs.existsSync(p)) continue;
+    try { fs.rmSync(p, { recursive: true, force: true }); removed.add(fs.existsSync(p) ? `${f} (could not be removed)` : f); } catch { removed.add(`${f} (could not be removed)`); }
   }
+  const pw = path.join(frameworkDir, 'playwright');
+  try { if (fs.existsSync(pw) && fs.readdirSync(pw).length === 0) fs.rmdirSync(pw); } catch { /* best effort */ }
+  return removed;
+}
+
+/** The one line the stage prints after its cleanup. */
+export function cleanupLine(removed: Set<string>): string {
+  const dirs = [...removed].filter((f) => f !== JSON_NAME);
+  return dirs.length > 0
+    ? `Emitted-spec check: removed ${dirs.map((d) => (d.endsWith(')') ? d : `${d}/`)).join(', ')} from the framework tree; a saved session and the run's reports never ship`
+    : 'Emitted-spec check: no session or report folders left in the framework tree';
 }
 
 /**
@@ -411,6 +433,8 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
   }
 
   const unlink = linkNodeModules(frameworkDir, agentRoot);
+  // What the cleanup removed across the run (a drop cleans before the re-scaffold too); one line at the end.
+  const removed = new Set<string>();
   try {
     const first = await runPlaywright(frameworkDir, agentRoot, null, timeoutMs, childEnv, opts.observeChildEnv, capExcluded);
     countRun(first.tests);
@@ -523,7 +547,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     for (const d of dropped) log(`Dropped from the framework (emitted-spec check failed twice): "${d.scenario}": ${d.error.split('\n')[0] ?? ''}`);
     rebuildAccounting(report, opts.requirements, log, removeScenarios, dropped, emittedTraces);
     unlink();
-    cleanRunFiles(frameworkDir);
+    cleanRunFiles(frameworkDir, removed);
     fs.rmSync(frameworkDir, { recursive: true, force: true });
     opts.rescaffold(report);
     // The re-scaffold regenerates the data files from the report; the failed
@@ -532,6 +556,7 @@ export async function emittedCheckStage(opts: EmittedCheckOptions): Promise<Emit
     return { report, dropped };
   } finally {
     unlink();
-    cleanRunFiles(frameworkDir);
+    cleanRunFiles(frameworkDir, removed);
+    log(cleanupLine(removed));
   }
 }

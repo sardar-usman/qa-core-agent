@@ -5,6 +5,7 @@ import type { RunReport } from '../agent/trace.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
 import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
+import { writeFrameworkZip, type FrameworkZipOutcome } from '../agent/framework-zip.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { diagnoseEmptyRun, refusedNote, renderReconciliation } from '../agent/reconcile.js';
@@ -388,7 +389,7 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
       const zipRootName = req.name ? `${req.name}-automation-framework` : frameworkDirName(url);
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-emit-'));
       let scaffoldResult: ReturnType<typeof scaffold>;
-      let zipBuf: Buffer;
+      let zipOutcome: FrameworkZipOutcome;
       try {
         const frameworkDir = path.join(tmp, zipRootName);
         const scaffoldOpts = { outDir: frameworkDir, siteName: hostnameOf(url), features: req.features, ...(prepared.requirements ? { requirements: prepared.requirements } : {}) };
@@ -407,16 +408,23 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
         writeReportFiles(outDir, report);
         if (!report.stopped) markCheckpointPhase(outDir, 'emitted');
         summary = summarize(report);
-        // No test-account value ships (invariant 70): a hit refuses the zip.
-        assertNoCredentialLeak({ frameworkDir, runDir: outDir });
-        zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
+        // No test-account value and no session file ships (invariant 70):
+        // the guard refuses the zip, the same writer the CLI uses.
+        zipOutcome = writeFrameworkZip({ frameworkDir, destDir: outDir, zipRootName, runDir: outDir, report });
       } finally {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
       }
+      if (!zipOutcome.written) {
+        // A refusal is recorded on the report and in the events, and the run
+        // fails loudly: never a framework outcome without a zip on disk.
+        const line = zipOutcome.refused ? zipOutcome.refused.reason : `zip not written: ${zipOutcome.failed ?? 'unknown error'}`;
+        if (zipOutcome.refused) writeReportFiles(outDir, report);
+        lockoutLog(line);
+        writeRunMeta(outDir, meta);
+        throw new Error(line);
+      }
+      const zipBuf = zipOutcome.written.buffer;
       const filename = `${zipRootName}.zip`;
-      const tmpZip = path.join(outDir, `.${filename}.${process.pid}.tmp`);
-      fs.writeFileSync(tmpZip, zipBuf);
-      fs.renameSync(tmpZip, path.join(outDir, filename));
       // Checkpoint lifecycle: deleted only on a fully complete run; a stopped run keeps it for --resume.
       if (!report.stopped) deleteCheckpoint(outDir);
       writeRunMeta(outDir, meta);

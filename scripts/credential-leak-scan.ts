@@ -8,13 +8,24 @@
  * matched by its NAME. Never prints a value, and never writes or modifies a
  * file (CLAUDE.md invariant 70).
  *
+ * Session files are reported by PATH: every file under a playwright/.auth/
+ * folder, in a run folder or inside a zip, is a hit whatever it holds. A
+ * saved session cookie is usually a random token that no value grep can
+ * match. Run 4b0e43's session file matched by value only because saucedemo's
+ * cookie equals the username, and this scan printed "no hits" for that run
+ * because the file was never under output/: the framework was scaffolded and
+ * checked in a temporary directory that the CLI removed, and the refused zip
+ * was never written. So the scan also names every run whose report records a
+ * refused zip (zipRefused): "no hits" never means a zip was checked when none
+ * was written.
+ *
  *   npx tsx scripts/credential-leak-scan.ts [output-dir]
  */
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { secretsInText } from '../src/agent/credential-leak.js';
+import { SESSION_FILE_FIELD, isSessionFilePath, secretsInText } from '../src/agent/credential-leak.js';
 
 const root = path.resolve(process.argv[2] ?? path.join(process.cwd(), 'output'));
 
@@ -34,6 +45,9 @@ for (const [name, value] of Object.entries(process.env)) {
 
 interface Hit { file: string; field: string; count: number; secret: string }
 const hits: Hit[] = [];
+const SESSION_LABEL = 'a saved session under playwright/.auth/, by path';
+/** Runs whose report says the zip was refused (no zip was written to scan). */
+const refusedZips: Array<{ file: string; files: string[] }> = [];
 const TEXT_EXT = /\.(json|jsonl|md|txt|ts|js|csv|html|yml|yaml|example|gitignore)$/i;
 
 function scanText(file: string, text: string): void {
@@ -46,6 +60,7 @@ function scanZip(abs: string, rel: string): void {
   const list = spawnSync('unzip', ['-Z1', abs], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (list.status !== 0) { console.log(`could not list ${rel}: ${list.stderr.trim()}`); return; }
   for (const entry of list.stdout.split('\n').filter((e) => e && !e.endsWith('/'))) {
+    if (isSessionFilePath(entry)) hits.push({ file: `${rel}!${entry}`, field: SESSION_FILE_FIELD, count: 1, secret: SESSION_LABEL });
     const out = spawnSync('unzip', ['-p', abs, entry], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     if (out.status !== 0) continue;
     scanText(`${rel}!${entry}`, out.stdout);
@@ -62,10 +77,17 @@ function walk(dir: string): void {
     if (e.isDirectory()) { if (e.name !== 'node_modules') walk(abs); continue; }
     if (!e.isFile()) continue;
     if (e.name.endsWith('.zip')) { scanZip(abs, rel); continue; }
+    if (isSessionFilePath(rel)) hits.push({ file: rel, field: SESSION_FILE_FIELD, count: 1, secret: SESSION_LABEL });
     if (!TEXT_EXT.test(e.name) && e.name !== '.env.example') continue;
     let text: string;
     try { text = fs.readFileSync(abs, 'utf8'); } catch { continue; }
     scanText(rel, text);
+    if (e.name === 'run-report.json') {
+      try {
+        const z = (JSON.parse(text) as { zipRefused?: { files?: Array<{ file: string }> } }).zipRefused;
+        if (z) refusedZips.push({ file: rel, files: (z.files ?? []).map((f) => f.file) });
+      } catch { /* not a report this scan can read */ }
+    }
   }
 }
 
@@ -78,6 +100,11 @@ walk(root);
 console.log(`credential leak scan of ${path.relative(process.cwd(), root) || root} (read only)`);
 console.log(`secrets searched: ${secrets.map((s) => s.label).join('; ')}`);
 console.log('');
+if (refusedZips.length > 0) {
+  console.log(`${refusedZips.length} run(s) record a refused zip (no zip was written, so there was nothing to scan for them):`);
+  for (const r of refusedZips) console.log(`  ${r.file}: refused over ${r.files.join(', ') || 'files not recorded'}`);
+  console.log('');
+}
 if (hits.length === 0) {
   console.log('no hits');
 } else {

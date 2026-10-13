@@ -584,6 +584,14 @@ export interface RunReport {
    */
   skipped?: Array<{ scenario: string; reason: string }>;
   /**
+   * Set when the pre-zip guard refused the framework zip (invariant 70): a
+   * session file under playwright/.auth/ (by path), or a test-account value
+   * found in a file. `reason` is the refusal line; `files` names each file
+   * and field, never the value. Absent when the zip was written. Run 4b0e43
+   * was refused with no trace of it on the report.
+   */
+  zipRefused?: { reason: string; files: Array<{ file: string; field: string }> };
+  /**
    * The emitted-spec check: the written framework run once with Playwright
    * against the live site, after the framework is written and before the
    * zip. Every test's result lands here. `inconclusive` with a `reason` when

@@ -158,25 +158,59 @@ export function isSrsSource(rel: string): boolean {
   return /\.(md|txt|pdf|docx)$/i.test(rel) && !rel.includes('/');
 }
 
+/**
+ * The field a session-file hit carries: the file is refused by its path,
+ * never by what it holds (a session cookie is usually a random token no
+ * value grep can match).
+ */
+export const SESSION_FILE_FIELD = 'session file, refused by path whatever it holds';
+
+/** True for a path inside a playwright/.auth/ folder, at any depth. */
+export function isSessionFilePath(rel: string): boolean {
+  return /(^|\/)playwright\/\.auth\//.test(rel.split(path.sep).join('/'));
+}
+
+/** Every file under a playwright/.auth/ folder in the tree, relative, forward slashes; node_modules left out. */
+export function sessionFilesIn(dir: string): string[] {
+  return listFiles(dir, (r) => r.split(path.sep).includes('node_modules'))
+    .map((r) => r.split(path.sep).join('/'))
+    .filter(isSessionFilePath);
+}
+
 export class CredentialLeakError extends Error {
   constructor(public readonly hits: SecretHit[]) {
-    super(`zip refused: a test-account value was found in ${hits.map((h) => `${h.file} (${h.field})`).join(', ')}; nothing was zipped`);
+    const sessions = hits.filter((h) => h.field === SESSION_FILE_FIELD);
+    const values = hits.filter((h) => h.field !== SESSION_FILE_FIELD);
+    const parts = [
+      ...(sessions.length ? [`a session file was found at ${sessions.map((h) => h.file).join(', ')} (playwright/.auth/ is never zipped, whatever it holds)`] : []),
+      ...(values.length ? [`a test-account value was found in ${values.map((h) => `${h.file} (${h.field})`).join(', ')}`] : []),
+    ];
+    super(`zip refused: ${parts.join('; ')}; nothing was zipped`);
     this.name = 'CredentialLeakError';
   }
 }
 
 /**
- * The guard before every framework zip: the framework tree and the run
- * directory are grepped for each env credential value. A hit throws
+ * The guard before every framework zip: any file under playwright/.auth/ in
+ * the framework tree refuses it by path (a saved session, whatever it
+ * holds), and the framework tree and the run directory are grepped for each
+ * env credential value. A hit throws
  * CredentialLeakError naming each file and field, never the value. The run
  * directory's own SRS document (the client's input) is not the agent's
  * write and is left out; an older zip in the run directory is replaced by
  * this one, so it is left out too.
  */
 export function assertNoCredentialLeak(opts: { frameworkDir: string; runDir?: string; env?: NodeJS.ProcessEnv }): void {
+  // A session file refuses the zip by its path, with or without an env
+  // account and whatever it holds: a live session must never ship.
+  const sessions: SecretHit[] = sessionFilesIn(opts.frameworkDir).map((rel) => ({ file: `framework/${rel}`, field: SESSION_FILE_FIELD, count: 1 }));
   const secrets = envCredentialValues(opts.env ?? process.env);
-  if (secrets.length === 0) return;
+  if (secrets.length === 0) {
+    if (sessions.length > 0) throw new CredentialLeakError(sessions);
+    return;
+  }
   const hits = [
+    ...sessions,
     ...scanDirForSecrets(opts.frameworkDir, secrets).map((h) => ({ ...h, file: `framework/${h.file}` })),
     ...(opts.runDir ? scanDirForSecrets(opts.runDir, secrets, (rel) => isSrsSource(rel) || rel.endsWith('.zip')) : []),
   ];

@@ -3,7 +3,10 @@
  * API key. Answers "is the site up" and, with --login, "does the test
  * account still sign in" (a happy login that fails costs a whole run).
  *
- *   npx tsx scripts/preflight-site.ts <url> [--login] [--login-url <url>]
+ *   npx tsx scripts/preflight-site.ts <url> [--login] [--login-url <url-or-path>]
+ *
+ * The URL may come in any position; --login-url takes the next argument as
+ * its value (a URL, or a path resolved against <url>) and implies --login.
  *
  * Without --login: HTTP HEAD the URL, print the status and the response
  * time. With --login: the same login preflight every run makes before it
@@ -21,15 +24,43 @@ import 'dotenv/config';
 import { preflightLogin } from '../src/agent/login-preflight.js';
 import { resolveTestCredentials } from '../src/agent/test-credentials.js';
 
-const args = process.argv.slice(2);
-const loginUrlIdx = args.indexOf('--login-url');
-const loginUrl = loginUrlIdx >= 0 ? args[loginUrlIdx + 1] : undefined;
-const url = args.find((a, i) => !a.startsWith('--') && i !== loginUrlIdx + 1);
-const wantLogin = args.includes('--login');
-if (!url || (loginUrlIdx >= 0 && !loginUrl)) {
-  console.error('usage: npx tsx scripts/preflight-site.ts <url> [--login] [--login-url <url>]');
+const USAGE = 'usage: npx tsx scripts/preflight-site.ts <url> [--login] [--login-url <url-or-path>]';
+
+/**
+ * The URL in any position; the value after --login-url is never taken as
+ * the URL. --login-url implies --login. Null when the arguments are not
+ * usable (no URL, --login-url with no value, an unknown flag, a second URL).
+ * The old parser excluded index loginUrlIdx + 1, which is 0 when
+ * --login-url is absent, so "<url> --login" lost its URL.
+ */
+function parsePreflightArgs(argv: string[]): { url: string; loginUrl?: string; wantLogin: boolean } | null {
+  let url: string | undefined;
+  let loginUrl: string | undefined;
+  let wantLogin = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === '--login') { wantLogin = true; continue; }
+    if (a === '--login-url') {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('--')) return null;
+      loginUrl = v;
+      wantLogin = true;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--')) return null;
+    if (url !== undefined) return null;
+    url = a;
+  }
+  return url ? { url, ...(loginUrl ? { loginUrl } : {}), wantLogin } : null;
+}
+
+const parsed = parsePreflightArgs(process.argv.slice(2));
+if (!parsed) {
+  console.error(USAGE);
   process.exit(2);
 }
+const { url, loginUrl, wantLogin } = parsed;
 
 /* ─── 1. HEAD ────────────────────────────────────────────────────────────── */
 let reachable = false;
