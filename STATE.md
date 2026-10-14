@@ -99,7 +99,7 @@ Oct 6.
    recorded as reached by action, the never-navigate refusal, not-revealed
    coverage; $0, proven on a fixture site, no live run).
 5. Console honesty: D8 plus the critique seam reaching the repair block
-   (item 9). Built, PR #__PR__ (invariant 72: one rule-coverage print
+   (item 9). Built, PR #48 (invariant 72: one rule-coverage print
    after the emitted-spec check, the closing Critic paragraph from the
    final verdicts, the repair budget named and rounded, the no-page
    warning only when true, no console message dropped, the real skip
@@ -299,7 +299,7 @@ using the qa-core-heal evaluation report as the template.
   account under a name that claims a wrong password for a known one, and
   Toolshop R11 (duplicate email) cannot be automated; belongs to the
   own-account design. docs/audit/run-44cb3d-diagnosis.md.
-- D8 (run 6): ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not
+- D8 (run 6): ADDRESSED (PR #48, engine/console-honesty, Oct 14, not
   merged): console contradictions (two rule-coverage totals, a stale
   first-pass Critic paragraph, the repair budget printed as a ceiling stop,
   a wrong no-discovered-page warning, the repair decision line cut by the
@@ -332,7 +332,7 @@ using the qa-core-heal evaluation report as the template.
   entry is filed under the planned name with recordedName kept, and a drop
   with no planned match is a loud line; scripts/dropped-traces-check.ts maps
   27 of 27 drops of runs 3, 5 and 6.
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged):
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged):
   runtime passes the critique client seam through, so the repair block can
   be driven with a fixture Critic (found in #32). Now ExploreOptions.critique
   (and explorerClient) reach the first review and the repair review;
@@ -364,15 +364,15 @@ using the qa-core-heal evaluation report as the template.
   item 4).
 - RULE 7 refused the "Products" page title (.title) as catalogue data, a
   heading false positive (phase item 6, D9).
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged): The
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
   console printed 'Feature "login" has 4 rules and no discovered page' on
   saucedemo, then 4 of 4 covered. Now the line prints after planning and
   only when the plan does not carry the feature either.
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged): The
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
   skip reason "test credentials not provided" is wrong when credentials
   were set but no login page was found. Now "no login page found; test
   credentials were set", at plan time and at a marked fill.
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged): The
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
   console line "Run the framework: cd <run dir> && npm install" is
   misleading: the run folder holds only the zip. Now the steps unzip the
   real zip and cd into the extracted folder first.
@@ -384,12 +384,12 @@ using the qa-core-heal evaluation report as the template.
   (says no .git, 7 smokes, an old repo URL).
 - recheck-run.ts spends one wrong-password submit against the account's cap
   per recheck.
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged): Run
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): Run
   5 R9: ruleCoverage reads planned-but-dropped with no detail while the
   scenario is in reconciliation.incomplete (cost ceiling mid-scenario); a
   ceiling cut must never read as a drop (standing rule 2). Now
   planned-not-explored with "cost ceiling hit mid-scenario".
-- ADDRESSED (PR #__PR__, engine/console-honesty, Oct 14, not merged): The
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
   page-fit rejection line carries no rule ids, so a rejected scenario's
   citations cannot be traced from the artifact. Now it ends with
   "(cited R4, R5)" or "(cited no rule)".
