@@ -14,17 +14,27 @@
  * same path, trailing slash ignored, query and hash ignored. Pages reached by
  * click are never checked; only navigate steps are. A plan entry with no
  * pageUrl (single-page run) and a volatile planned page are exempt.
+ *
+ * A page that exists only after an action (invariant 71) is never navigated
+ * to by URL: for every scenario of a feature with a revealed page, a
+ * navigate step to that page is refused ('navigated-to-reached-page') with
+ * no exemption, the volatile and no-pageUrl exemptions included.
  */
 import type { TraceStep } from './trace.js';
 
 export interface PlannedPageEntry {
   pageUrl?: string;
   volatilePage?: boolean;
+  /** The revealed page of the scenario's feature (invariant 71): reached by action, never navigated to. */
+  reachedPageUrl?: string;
 }
 
 export interface PlannedPageViolation {
-  /** 'navigated-elsewhere': a navigate step left the planned page. 'never-navigated': no navigate step reached it. */
-  kind: 'navigated-elsewhere' | 'never-navigated';
+  /**
+   * 'navigated-elsewhere': a navigate step left the planned page. 'never-navigated': no navigate step reached it.
+   * 'navigated-to-reached-page': a navigate step opened the feature's revealed page, which is reached by action only.
+   */
+  kind: 'navigated-elsewhere' | 'never-navigated' | 'navigated-to-reached-page';
   /** The planned page, normalized (origin dropped when it matches the offending page's origin). */
   plannedPath: string;
   /** The first navigate target that is not the planned page; absent when the trace holds no navigate step at all. */
@@ -68,9 +78,24 @@ function describePage(url: string, relativeTo?: string): string {
  * navigates elsewhere; a known gap, stated in the invariant).
  */
 export function plannedPageViolation(steps: TraceStep[], planEntry: PlannedPageEntry | undefined): PlannedPageViolation | null {
+  const navigates = steps.filter((s): s is Extract<TraceStep, { kind: 'navigate' }> => s.kind === 'navigate');
+  // A revealed page is reached by action, never by its URL; no exemption.
+  const reached = planEntry?.reachedPageUrl;
+  if (reached) {
+    const opened = navigates.find((s) => samePage(s.url, reached));
+    if (opened) {
+      const plannedPath = planEntry?.pageUrl ? describePage(planEntry.pageUrl, opened.url) : describePage(reached);
+      const offendingPath = describePage(opened.url, planEntry?.pageUrl);
+      return {
+        kind: 'navigated-to-reached-page',
+        plannedPath,
+        offendingPath,
+        message: `planned on ${plannedPath}, but the trace navigated to ${offendingPath}, a page that is reached by action from ${plannedPath} and never by its URL`,
+      };
+    }
+  }
   if (!planEntry?.pageUrl || planEntry.volatilePage) return null;
   const planned = planEntry.pageUrl;
-  const navigates = steps.filter((s): s is Extract<TraceStep, { kind: 'navigate' }> => s.kind === 'navigate');
   const elsewhere = navigates.find((s) => !samePage(s.url, planned));
   if (elsewhere) {
     const plannedPath = describePage(planned, elsewhere.url);
@@ -105,6 +130,9 @@ export function plannedPageRefusal(scenario: string, v: PlannedPageViolation, at
   return (
     `Planned-page violation (attempt ${attempt}/${cap}): "${scenario}" was ${v.message}. ` +
     `A scenario is recorded on its planned page; it may reach other pages by clicking, never by navigating away. ` +
+    (v.kind === 'navigated-to-reached-page'
+      ? `${v.offendingPath} exists only after an action: open ${page}, then reach ${v.offendingPath} by the clicks the plan names. `
+      : '') +
     `The trace is abandoned. Three ways out, in this order: ` +
     `(1) restart with begin_scenario and record the scenario on ${page}; ` +
     `(2) if ${page} does not show what the scenario expects, assert that expectation on ${page} anyway, ` +

@@ -1,4 +1,6 @@
 import type { CascadeLevel, ResolvedLocator } from './selectors.js';
+import type { ReachAction, ReachedBy } from './discovery.js';
+import type { StateProbe } from './state-probe.js';
 
 /**
  * A single verified step in the exploration trace. The transcriber turns
@@ -340,10 +342,13 @@ export interface RunReport {
    */
   discovery?: {
     method: string;
-    pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean }>;
+    /** The pages planned. A page found by an action has source 'action' and reachedBy (invariant 71). */
+    pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry' | 'action'; feature?: string; volatile?: boolean; linkedFrom?: string; reachedBy?: ReachedBy }>;
     /** Every page the winning rung found before the relevance filter (also written to discovery.json). A page that shares a path template with a planned page carries sameTemplateAs. */
-    candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry'; feature?: string; volatile?: boolean; sameTemplateAs?: string }>;
+    candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry' | 'action'; feature?: string; volatile?: boolean; sameTemplateAs?: string; linkedFrom?: string }>;
     warnings: string[];
+    /** One record per state-dependent feature the probe ran on (invariant 71), as in discovery.json. */
+    stateProbes?: StateProbe[];
   };
   scenarios: Scenario[];
   cascadeStats: Record<CascadeLevel, number>;
@@ -395,7 +400,7 @@ export interface RunReport {
   startedAt: string;
   finishedAt: string;
   /** Scenarios proposed by the Planner before the Explorer ran. */
-  plan?: Array<{ name: string; category: string; rationale: string; feature?: string; ruleIds?: string[]; pageUrl?: string }>;
+  plan?: Array<{ name: string; category: string; rationale: string; feature?: string; ruleIds?: string[]; pageUrl?: string; reachedBy?: { pageUrl: string; origin: string; actions: ReachAction[] } }>;
   /** Per-scenario verdicts from the Critic. */
   review?: {
     verdicts: Array<{

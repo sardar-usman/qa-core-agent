@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Page } from 'playwright';
 import type { RequirementsMap } from './requirements.js';
+import type { PageControl, StateProbe } from './state-probe.js';
 import { isVolatilePath } from './volatile-id.js';
 
 /**
@@ -41,9 +42,31 @@ import { isVolatilePath } from './volatile-id.js';
  * failed rungs.
  */
 
+/**
+ * One step of the action that reveals a state-dependent page (invariant 71).
+ * `control` is the locator as emitLocatorCall writes it, without the page
+ * receiver: getByTestId("nav-cart"). `via: 'item-link'` is the click on an
+ * item by its visible name that leaves the stable origin for a volatile item
+ * page (invariant 42). Only 'click' is recorded today; 'login' is designed
+ * (docs/design/state-dependent-pages.md section 7), not built.
+ */
+export interface ReachAction {
+  kind: 'click' | 'login';
+  control?: string;
+  via?: 'item-link';
+}
+
+/** How a page found by an action is reached: start on `origin`, perform `actions`. */
+export interface ReachedBy {
+  origin: string;
+  feature: string;
+  actions: ReachAction[];
+}
+
 export interface DiscoveredPage {
   url: string;
-  source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry';
+  /** 'action': a page found by an action (state probe), never by a link in a fresh session. */
+  source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry' | 'action';
   /** Feature this page belongs to, when the source knows it (SRS rung). */
   feature?: string;
   /**
@@ -67,6 +90,10 @@ export interface DiscoveredPage {
    * and shown on the Discovery panel, never planned.
    */
   sameTemplateAs?: string;
+  /** Crawl candidates only: the page whose anchor led to this candidate. A volatile trigger page's origin is the stable page that linked to it. */
+  linkedFrom?: string;
+  /** source 'action' only: the origin page and the actions that reveal this page. It is reached by those actions, never navigated to. */
+  reachedBy?: ReachedBy;
 }
 
 // The generated-id shapes live in volatile-id.ts, shared with the gate's RULE 6.
@@ -88,7 +115,7 @@ function tagVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
  * browser-crawl rung. Returns null when the page could not be loaded.
  * Injectable so the smoke drives the rung with no browser.
  */
-export type RenderedLinkCollector = (url: string) => Promise<string[] | { hrefs: string[]; anchorPolls: number[] } | null>;
+export type RenderedLinkCollector = (url: string) => Promise<string[] | { hrefs: string[]; anchorPolls: number[]; controls?: PageControl[] } | null>;
 
 export interface DiscoveryResult {
   pages: DiscoveredPage[];
@@ -102,6 +129,20 @@ export interface DiscoveryResult {
   /** The rung that yielded the pages: srs | user | sitemap | crawl | entry. */
   method: string;
   warnings: string[];
+  /** One record per state-dependent feature the probe ran on (invariant 71). Written to discovery.json and the report. */
+  stateProbes?: StateProbe[];
+  /**
+   * In memory only, never written: the robots.txt rules the remote rungs
+   * read, so the state probe honors the same rules without a second fetch.
+   * Absent when an SRS or user rung won before robots.txt was read.
+   */
+  robots?: RobotsInfo;
+  /**
+   * In memory only, never written: the buttons and links the browser crawl
+   * read on each page it loaded, by URL. The state probe looks for a trigger
+   * here first, so a page the crawl already loaded costs no second load.
+   */
+  pageControls?: Record<string, PageControl[]>;
 }
 
 /** User agent the sitemap fetches and the crawl identify with. */
@@ -354,23 +395,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
   }
 
   // robots.txt — fetched once, honored by BOTH the sitemap and crawl rungs.
-  let robots: RobotsInfo = { fetched: false, disallow: [], sitemaps: [], disallowAll: false };
-  try {
-    const res = await fetchFn(`${entry.origin}/robots.txt`);
-    if (res.ok) {
-      robots = { fetched: true, ...parseRobotsTxt(await res.text()) };
-      if (robots.disallow.length > 0) {
-        warnings.push(`robots.txt: ${robots.disallow.length} Disallow rule(s) apply to our agent; disallowed paths are excluded.`);
-      }
-      if (robots.sitemaps.length > 0) {
-        warnings.push(`robots.txt: Sitemap directive found (${robots.sitemaps.length}).`);
-      }
-    } else {
-      warnings.push(`robots.txt: HTTP ${res.status}; treating as allow-all.`);
-    }
-  } catch (err) {
-    warnings.push(`robots.txt: fetch failed (${(err as Error).message}); treating as allow-all.`);
-  }
+  const robots = await fetchRobots(entry, fetchFn, warnings);
 
   if (robots.disallowAll) {
     warnings.push('robots.txt disallows all paths for our agent; sitemap and crawl rungs skipped out of politeness.');
@@ -378,13 +403,13 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     // Rung 3 — sitemap.
     const sitemapPages = await sitemapRung(entry, robots, fetchFn, warnings);
     if (sitemapPages.length > 0) {
-      return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings };
+      return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings, robots };
     }
 
     // Rung 4 — polite crawl (plain fetch).
     const crawlPages = await crawlRung(entry, robots, fetchFn, opts.crawlDelayMs ?? CRAWL_DELAY_MS, warnings);
     if (crawlPages.length > 0) {
-      return { pages: tagVolatile(crawlPages), method: 'crawl', warnings };
+      return { pages: tagVolatile(crawlPages), method: 'crawl', warnings, robots };
     }
 
     // Rung 4b — browser-assisted crawl. Only when the fetch crawl yielded
@@ -403,6 +428,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     }
     if (collect) {
       try {
+        const controls = new Map<string, PageControl[]>();
         const rendered = await walkCrawl({
           entry,
           robots,
@@ -411,9 +437,10 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
           warnings,
           label: 'browser crawl',
           source: 'browser-crawl',
+          controlsOut: controls,
         });
         if (rendered.length > 0) {
-          return { pages: tagVolatile(rendered), method: 'browser-crawl', warnings };
+          return { pages: tagVolatile(rendered), method: 'browser-crawl', warnings, robots, pageControls: Object.fromEntries(controls) };
         }
       } finally {
         await closeCollector?.();
@@ -429,7 +456,35 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     pages: [{ url: entry.toString(), source: 'entry' }],
     method: 'entry',
     warnings,
+    robots,
   };
+}
+
+/**
+ * Fetch and parse robots.txt for the entry's origin. A fetch failure or a
+ * non-OK status reads as allow-all, with the reason in `warnings`. Exported
+ * so the state probe honors robots on a run whose SRS or user rung won
+ * before robots.txt was read.
+ */
+export async function fetchRobots(entry: URL, fetchFn: FetchLike = defaultFetch, warnings: string[] = []): Promise<RobotsInfo> {
+  let robots: RobotsInfo = { fetched: false, disallow: [], sitemaps: [], disallowAll: false };
+  try {
+    const res = await fetchFn(`${entry.origin}/robots.txt`);
+    if (res.ok) {
+      robots = { fetched: true, ...parseRobotsTxt(await res.text()) };
+      if (robots.disallow.length > 0) {
+        warnings.push(`robots.txt: ${robots.disallow.length} Disallow rule(s) apply to our agent; disallowed paths are excluded.`);
+      }
+      if (robots.sitemaps.length > 0) {
+        warnings.push(`robots.txt: Sitemap directive found (${robots.sitemaps.length}).`);
+      }
+    } else {
+      warnings.push(`robots.txt: HTTP ${res.status}; treating as allow-all.`);
+    }
+  } catch (err) {
+    warnings.push(`robots.txt: fetch failed (${(err as Error).message}); treating as allow-all.`);
+  }
+  return robots;
 }
 
 /** Parse an absolute URL with no base, or null. Used for cross-origin SRS/user URLs. */
@@ -534,8 +589,10 @@ async function walkCrawl(opts: {
   /** Warning prefix: 'crawl' or 'browser crawl'. */
   label: string;
   source: DiscoveredPage['source'];
+  /** When given, the controls a collector returned are kept here by page URL (browser crawl only). */
+  controlsOut?: Map<string, PageControl[]>;
 }): Promise<DiscoveredPage[]> {
-  const { entry, robots, getLinks, delayMs, warnings, label, source } = opts;
+  const { entry, robots, getLinks, delayMs, warnings, label, source, controlsOut } = opts;
   if (!robotsAllows(robots, entry.pathname)) {
     warnings.push(`${label}: robots.txt disallows the entry path ${entry.pathname}; ${label} skipped.`);
     return [];
@@ -543,7 +600,11 @@ async function walkCrawl(opts: {
   const visited = new Set<string>([entry.pathname]);
   const collected: URL[] = [];
   const pollsByUrl = new Map<string, number[]>();
-  const queue: Array<{ u: URL; depth: number }> = [{ u: entry, depth: 0 }];
+  // Which page's anchor led to each candidate (the entry has none). The state
+  // probe needs it: a volatile trigger page's origin is the stable page that
+  // linked to it (invariant 71).
+  const parentByUrl = new Map<string, string>();
+  const queue: Array<{ u: URL; depth: number; parent?: string }> = [{ u: entry, depth: 0 }];
   let loads = 0;
   let failures = 0;
   // The page cap counts stable paths only; volatile generated-id pages are
@@ -552,7 +613,7 @@ async function walkCrawl(opts: {
   let volatileCount = 0;
 
   while (queue.length > 0 && stableCount < CRAWL_PAGE_CAP) {
-    const { u, depth } = queue.shift()!;
+    const { u, depth, parent } = queue.shift()!;
     const volatile = isVolatilePath(u.pathname);
     if (volatile && volatileCount >= CRAWL_VOLATILE_CAP) continue;
     if (loads > 0 && delayMs > 0) {
@@ -561,11 +622,12 @@ async function walkCrawl(opts: {
     loads++;
     let hrefs: string[] | null;
     let anchorPolls: number[] | undefined;
+    let controls: PageControl[] | undefined;
     try {
       const got = await getLinks(u.toString());
       if (got === null) hrefs = null;
       else if (Array.isArray(got)) hrefs = got;
-      else { hrefs = got.hrefs; anchorPolls = got.anchorPolls; }
+      else { hrefs = got.hrefs; anchorPolls = got.anchorPolls; controls = got.controls; }
     } catch {
       hrefs = null;
     }
@@ -576,6 +638,8 @@ async function walkCrawl(opts: {
     collected.push(u);
     if (volatile) volatileCount++; else stableCount++;
     if (anchorPolls) pollsByUrl.set(u.toString(), anchorPolls);
+    if (parent) parentByUrl.set(u.toString(), parent);
+    if (controls && controlsOut) controlsOut.set(u.toString(), controls);
     if (depth >= CRAWL_MAX_DEPTH) continue;
     for (const href of hrefs) {
       const link = toPageUrl(href, u);
@@ -583,7 +647,7 @@ async function walkCrawl(opts: {
       if (visited.has(link.pathname)) continue;
       if (!robotsAllows(robots, link.pathname)) continue;
       visited.add(link.pathname);
-      queue.push({ u: link, depth: depth + 1 });
+      queue.push({ u: link, depth: depth + 1, parent: u.toString() });
       if (visited.size > CRAWL_PAGE_CAP * 4) break; // frontier guard
     }
   }
@@ -598,7 +662,8 @@ async function walkCrawl(opts: {
   // Stable pages never exceed the cap by construction; volatile ones ride along.
   return collected.map((u): DiscoveredPage => {
     const polls = pollsByUrl.get(u.toString());
-    return { url: u.toString(), source, ...(polls ? { anchorPolls: polls } : {}) };
+    const from = parentByUrl.get(u.toString());
+    return { url: u.toString(), source, ...(polls ? { anchorPolls: polls } : {}), ...(from ? { linkedFrom: from } : {}) };
   });
 }
 
@@ -643,6 +708,7 @@ async function defaultRenderedCollector(
     const { chromium } = await import('playwright');
     const { installEvalShim } = await import('./eval-shim.js');
     const { settleForSnapshot } = await import('./planner.js');
+    const { readControls } = await import('./state-probe.js');
     const browser = await chromium.launch({ headless: true });
     const ctx = await browser.newContext({ userAgent: DISCOVERY_UA });
     await installEvalShim(ctx);
@@ -661,7 +727,10 @@ async function defaultRenderedCollector(
             .map((a) => a.getAttribute('href') || '')
             .filter((h) => h.length > 0),
         );
-        return { hrefs, anchorPolls: anchors.polls };
+        // The page's buttons and links, kept in memory so the state probe can
+        // look for a trigger without loading the page again (invariant 71).
+        const controls = await readControls(page).catch(() => undefined);
+        return { hrefs, anchorPolls: anchors.polls, ...(controls ? { controls } : {}) };
       } catch {
         return null;
       }
@@ -718,9 +787,18 @@ export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHO
  * warnings) to discovery.json in the run directory, so the candidate set a
  * run saw is a file, not a lost console line.
  */
-export function writeDiscoveryJson(outDir: string, info: { method: string; pages: DiscoveredPage[]; candidates?: DiscoveredPage[]; warnings: string[] }): string {
+export function writeDiscoveryJson(outDir: string, info: { method: string; pages: DiscoveredPage[]; candidates?: DiscoveredPage[]; warnings: string[]; stateProbes?: StateProbe[] }): string {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, 'discovery.json');
-  fs.writeFileSync(file, JSON.stringify({ method: info.method, candidates: info.candidates ?? info.pages, pages: info.pages, warnings: info.warnings }, null, 2));
+  // A page found by an action is a page, never a crawled candidate: the
+  // candidates list stays the crawl's own (invariant 71).
+  const record = {
+    method: info.method,
+    candidates: info.candidates ?? info.pages.filter((p) => p.source !== 'action'),
+    pages: info.pages,
+    warnings: info.warnings,
+    ...(info.stateProbes && info.stateProbes.length > 0 ? { stateProbes: info.stateProbes } : {}),
+  };
+  fs.writeFileSync(file, JSON.stringify(record, null, 2));
   return file;
 }

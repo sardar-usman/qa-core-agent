@@ -26,6 +26,9 @@
  *     page, so a price past the text sample and a search box past the
  *     inputs cap still count
  *
+ *   - a quantity scenario is kept on a page reached by action (the probe's
+ *     post-action cart snapshot) and still rejected on "/" (invariant 71)
+ *
  * In-code fixtures plus one local page in headless Chromium for the flags.
  * No network. No LLM.
  */
@@ -364,6 +367,32 @@ const map: RequirementsMap = {
   check('I3. without a map nothing is reported', unreachableFeatures(undefined, pages).length === 0);
 }
 
+/* ─── J. a page reached by action: page-fit judges the post-action snapshot ── */
+// Runs 5 and 6 rejected R8's scenario on "/" (no quantity field there). The
+// state probe plans the cart rules from the cart page as it looks after an
+// add (invariant 71), where the quantity field is real.
+{
+  const r8 = sc('changed a product quantity on the cart page and the line total updated', 'happy', 'cart', 'https://s.example/');
+  const home: PageFitSnapshot = {
+    headings: [{ tag: 'h1', label: 'Toolshop' }, { tag: 'h2', label: 'Products' }],
+    inputs: [{ tag: 'input', label: 'Search', type: 'search' }],
+    buttons: nav,
+    textSample: 'Home Categories Contact Sign in Combination Pliers $14.15 Hammer $12.01',
+    tableHeaders: [],
+    frames: [],
+  };
+  const cartAfterAdd: PageFitSnapshot = {
+    headings: [{ tag: 'h1', label: 'Cart' }],
+    inputs: [{ tag: 'input', label: 'Quantity', type: 'number' }],
+    buttons: [...nav, { tag: 'button', label: 'Remove', type: 'button' }],
+    textSample: 'Cart Combination Pliers 1 $14.15 Remove Total $14.15 Proceed to checkout',
+    tableHeaders: ['Item', 'Quantity', 'Price', 'Total'],
+    frames: [],
+  };
+  check('J1. the quantity scenario is still rejected on "/" (runs 5 and 6)', pageFitReason(r8, home)?.control === 'quantity', JSON.stringify(pageFitReason(r8, home)));
+  check('J2. the same scenario is kept on the revealed cart snapshot', pageFitReason(r8, cartAfterAdd) === null, JSON.stringify(pageFitReason(r8, cartAfterAdd)));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: page-fit drops a scenario that names a control the snapshot does not show, keeps a scenario that names the page\'s own form, cross-page duplicates collapse to one, the funnel balances after the drops, derivation says page-fit, and an unreachable SRS feature prints its line.');
+console.log('OK: page-fit drops a scenario that names a control the snapshot does not show, keeps a scenario that names the page\'s own form, cross-page duplicates collapse to one, the funnel balances after the drops, derivation says page-fit, an unreachable SRS feature prints its line, and a page reached by action is judged on its post-action snapshot.');

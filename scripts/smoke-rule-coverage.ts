@@ -4,11 +4,13 @@
  *   - planned-but-dropped → a planned scenario cited the rule, none survived
  *   - not-planned        → no planned scenario cited the rule
  * plus the rendered "X of Y rules covered" summary and the named uncovered
- * list (the "considered, not automated" report).
+ * list (the "considered, not automated" report), not-reachable, and
+ * not-revealed (invariant 71: a feature whose state probe revealed no page;
+ * only an uncited rule reads it, never a cited one).
  *
  * Pure in-code fixtures. No network. No LLM. No browser.
  */
-import { attachRuleIds, computeRuleCoverage, renderRuleCoverage } from '../src/agent/rule-coverage.js';
+import { attachRuleIds, computeRuleCoverage, renderRuleCoverage, notRevealedFeatures } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
 let pass = 0;
@@ -139,6 +141,40 @@ check('G5. the rendered line reads not-reachable with the detail',
 check('G6. without the unreachable list the same rule is plain not-planned',
   computeRuleCoverage({ map, planned: [], scenarios: [] }).uncovered.find((u) => u.ruleId === 'R4')?.reason === 'not-planned');
 
+/* ─── H. not-revealed: the feature's state probe revealed no page ──────────── */
+// Invariant 71: the probe only adds. A cited rule of a probed feature is
+// classified exactly as without the probe; only an uncited one reads
+// not-revealed, with the probe's detail naming every page tried.
+const probeDetail = 'no page revealed: tried /, /category/hand-tools, /product/01M3XXXXXXXXXXXXXXXXXXXXXX';
+const probes = [
+  { feature: 'cart', outcome: 'no-new-link', detail: probeDetail },
+  { feature: 'login', outcome: 'revealed', detail: 'revealed /account from /' },
+];
+check('H0. notRevealedFeatures keeps only the probes that revealed nothing', JSON.stringify(notRevealedFeatures(probes)) === JSON.stringify({ cart: probeDetail }) && JSON.stringify(notRevealedFeatures(undefined)) === '{}');
+const cartMap: RequirementsMap = {
+  ...map,
+  features: [...map.features.filter((f) => f.name !== 'cart'), { name: 'cart', description: 'cart', rules: [
+    { id: 'R4', text: 'Adding an item increments the cart badge.', type: 'behavior' },
+    { id: 'R5', text: 'Changing a quantity on the cart page updates the line total.', type: 'behavior' },
+  ] }],
+};
+const nr = computeRuleCoverage({
+  map: cartMap,
+  planned: [{ name: 'added an item and the badge went up', ruleIds: ['R4'] }],
+  scenarios: [],
+  notRevealed: notRevealedFeatures(probes),
+  unreachableFeatures: ['cart'],
+});
+const h5 = nr.uncovered.find((u) => u.ruleId === 'R5');
+check('H1. an uncited rule of a feature the probe did not reveal reads not-revealed (over not-reachable)', h5?.reason === 'not-revealed', JSON.stringify(h5));
+check('H2. it carries the probe detail, every page tried', h5?.detail === probeDetail, JSON.stringify(h5));
+check('H3. a cited rule of the same feature is never not-revealed (planned, so planned-but-dropped here)', nr.uncovered.find((u) => u.ruleId === 'R4')?.reason === 'planned-but-dropped', JSON.stringify(nr.uncovered));
+check('H4. a covered rule of the same feature stays covered',
+  computeRuleCoverage({ map: cartMap, planned: [{ name: 'a', ruleIds: ['R4'] }], scenarios: [{ name: 'a', ruleIds: ['R4'] }], notRevealed: notRevealedFeatures(probes) }).covered.some((c) => c.ruleId === 'R4'));
+check('H5. an uncited rule of another feature is untouched (R3 not-planned)', nr.uncovered.find((u) => u.ruleId === 'R3')?.reason === 'not-planned');
+check('H6. the rendered line reads not-revealed with the detail',
+  renderRuleCoverage(nr).some((l) => l.includes(`R5 (not-revealed: ${probeDetail})`)), JSON.stringify(renderRuleCoverage(nr)));
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: rule coverage classifies covered, planned-but-dropped, not-planned and not-reachable correctly and renders the considered-not-automated report.');
+console.log('OK: rule coverage classifies covered, planned-but-dropped, not-planned, not-reachable and not-revealed correctly and renders the considered-not-automated report.');

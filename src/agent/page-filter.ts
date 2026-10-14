@@ -164,6 +164,25 @@ export function tokensFor(feature: string): string[] {
   return byWord.length > 0 ? [...new Set(byWord)] : [key];
 }
 
+/** The lowercased path segments of a URL, or null when it does not parse. */
+function pathSegments(url: string): string[] | null {
+  try {
+    return new URL(url).pathname.toLowerCase().split('/').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/** True when a path segment equals one of the tokens or starts with one followed by - or _. */
+export function segmentMatchesTokens(segment: string, tokens: string[]): boolean {
+  return tokens.some((tok) => segment === tok || segment.startsWith(`${tok}-`) || segment.startsWith(`${tok}_`));
+}
+
+/** A feature's path tokens: the name's own plus whatever its rule content names. */
+function featurePathTokens(feature: string, featureTokens?: Record<string, string[]>): string[] {
+  return [...new Set([...tokensFor(feature), ...(featureTokens?.[feature] ?? [])])];
+}
+
 /**
  * Candidates whose path plainly matches a feature name, each tagged with the
  * feature. Exported so the smoke locks it.
@@ -175,19 +194,27 @@ export function plainFeatureMatches(pages: DiscoveredPage[], features?: string[]
   // (featureTokenMap in requirements.ts): an SRS feature called "account"
   // whose rules speak of login and registration matches /auth/login and
   // /auth/register, which its name alone never would.
-  const tokensOf = (f: string): string[] => [...new Set([...tokensFor(f), ...(featureTokens?.[f] ?? [])])];
   const out: DiscoveredPage[] = [];
   for (const p of pages) {
-    let segments: string[];
-    try {
-      segments = new URL(p.url).pathname.toLowerCase().split('/').filter(Boolean);
-    } catch {
-      continue;
-    }
-    const feature = names.find((f) => tokensOf(f).some((tok) => segments.some((seg) => seg === tok || seg.startsWith(`${tok}-`) || seg.startsWith(`${tok}_`))));
+    const segments = pathSegments(p.url);
+    if (!segments) continue;
+    const feature = names.find((f) => featurePathTokens(f, featureTokens).some((tok) => segments.some((seg) => segmentMatchesTokens(seg, [tok]))));
     if (feature && !out.some((o) => o.url === p.url)) out.push({ ...p, feature: p.feature ?? feature });
   }
   return out;
+}
+
+/**
+ * The candidates that carry a feature by PAGE EVIDENCE: a path segment that
+ * matches the feature's tokens. A tag the relevance pick wrote is model text,
+ * not page evidence (standing rule 1), so it is never read here: the state
+ * probe's detection (invariant 71) calls this over every crawl candidate
+ * before the filter. Unlike plainFeatureMatches, a page may carry several
+ * features (/checkout carries cart and checkout). Exported for the smoke.
+ */
+export function pagesCarryingFeature(pages: DiscoveredPage[], feature: string, featureTokens?: Record<string, string[]>): DiscoveredPage[] {
+  const tokens = featurePathTokens(feature, featureTokens);
+  return pages.filter((p) => (pathSegments(p.url) ?? []).some((seg) => segmentMatchesTokens(seg, tokens)));
 }
 
 const HAIKU_MODEL = 'claude-haiku-4-5';
