@@ -363,6 +363,13 @@ using the qa-core-heal evaluation report as the template.
   (says no .git, 7 smokes, an old repo URL).
 - recheck-run.ts spends one wrong-password submit against the account's cap
   per recheck.
+- Run 5 R9: ruleCoverage reads planned-but-dropped with no detail while the
+  scenario is in reconciliation.incomplete (cost ceiling mid-scenario); a
+  ceiling cut must never read as a drop (standing rule 2).
+- The page-fit rejection line carries no rule ids, so a rejected scenario's
+  citations cannot be traced from the artifact.
+- Exemption for signed-out gated-URL negatives (from PR #46): not planned
+  today; revisit after the confirmation run if a client needs it.
 
 ## Then: go to market
 
