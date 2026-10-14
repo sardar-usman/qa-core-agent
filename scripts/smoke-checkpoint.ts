@@ -27,6 +27,7 @@ import {
 } from '../src/agent/checkpoint.js';
 import { splitCarriedVerdicts, type ScenarioVerdict } from '../src/agent/critic.js';
 import { runAgentLoop } from '../src/agent/runtime.js';
+import { messageLine } from '../src/cli/render.js';
 import { runExploreRequest } from '../src/server/run-explore.js';
 import { defaultExploreRequest } from '../src/agent/explore-request.js';
 import { readRunMeta } from '../src/agent/output-layout.js';
@@ -242,8 +243,10 @@ check('G1. the stop message carries reason, state note, and the resume command',
   check('H5. no checkpoint on disk means no hint', resumeHintForRun({ stopped: ceilingStop, emptyCause: null, checkpointExists: false, cpPath: p1 }) === null);
   check('H6. planner-none (nothing to resume) means no hint', resumeHintForRun({ emptyCause: 'planner-none', checkpointExists: true, cpPath: p1 }) === null);
   const cli = fs.readFileSync('src/cli/explore.ts', 'utf8');
-  check('H7. the CLI suppresses mid-run hint copies (the 240-char cap ate them live)',
-    cli.includes(`startsWith('Run stopped:')`));
+  // The suppression moved with the renderer into src/cli/render.ts
+  // (invariant 72): checked on the renderer's behavior, not the CLI's text.
+  check('H7. the CLI renderer suppresses mid-run hint copies (the 240-char cap ate them live)',
+    messageLine(`Run stopped: cost ceiling hit. State saved. Resume with: npm run explore -- --resume ${p1}`) === null && cli.includes('createEventRenderer('));
   check('H8. the CLI prints the hint on BOTH end paths (success tail + empty guard)',
     (cli.match(/resumeHintForRun\(/g) ?? []).length >= 2);
 }

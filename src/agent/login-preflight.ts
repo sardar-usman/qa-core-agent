@@ -215,8 +215,13 @@ export interface LoginPreflightGateResult {
   accountSkipReason?: string;
 }
 
-/** The skip reason of a scenario that needs the account when the generic pair found no login page. */
-export const NO_LOGIN_PAGE_REASON = 'no login page found';
+/**
+ * The skip reason of a scenario that needs the account when the generic pair
+ * found no login page. It names both facts: credentials WERE set, and no login
+ * page was found, so it never reads as "test credentials not provided"
+ * (invariant 72).
+ */
+export const NO_LOGIN_PAGE_REASON = 'no login page found; test credentials were set';
 
 /** The one line printed when the generic pair found no login page and the run continues. */
 export function noLoginPageLine(tried: string[]): string {

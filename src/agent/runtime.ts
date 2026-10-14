@@ -6,13 +6,13 @@ import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolCo
 import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
 import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, lockoutScenarioNames, knownAccountIdentifiers, unreachableFeatures, unreachableFeatureLine, reachActionsText, RULE_RETRY_CAP, type PlannedScenario } from './planner.js';
-import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
+import { plan, pageFitRejectionLine, lockoutScenarioNames, knownAccountIdentifiers, unreachableFeatures, unreachableFeatureLine, reachActionsText, RULE_RETRY_CAP, type PlannedScenario } from './planner.js';
+import { alignVerdictNames, critique, decideRepairPass, finalCriticSummary, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, replayReportBlock, type ReplayEvent } from './replay.js';
 import { stability, stabilityReportBlock, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
-import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
+import { attachRuleIds, computeDerivation, computeRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { totalCost } from './cost-total.js';
 import { discoverPages, fetchRobots, writeDiscoveryJson } from './discovery.js';
@@ -257,6 +257,14 @@ export interface ExploreOptions {
   accountSkipReason?: string;
   /** Test seam: replaces the browser login preflight. */
   preflight?: typeof preflightLogin;
+  /**
+   * The Critic seam: replaces `critique` for the first review AND the repair
+   * review, so the whole repair block runs with a fixture Critic
+   * (smoke-repair-block). Absent, the real Critic runs, unchanged.
+   */
+  critique?: typeof critique;
+  /** Test seam: the Explorer's model client, for exploration and the repair pass. Absent, a real client. */
+  explorerClient?: Anthropic;
   onEvent?: (event: AgentEvent) => void;
 }
 
@@ -270,6 +278,8 @@ export interface ExplorerCredentialContext {
   knownAccounts: Set<string>;
   lockoutScenarioKeys: Set<string>;
   testCredentials: { user: string; pass: string } | null;
+  /** The skip reason a marked fill uses when the run has no account although credentials were set (invariant 72). */
+  accountSkipReason?: string;
   wrongPassword?: WrongPasswordLedger;
 }
 
@@ -554,6 +564,7 @@ async function repairPass(args: {
       ctx.knownAccounts = new Set(args.credentials.knownAccounts);
       ctx.lockoutScenarioKeys = new Set(args.credentials.lockoutScenarioKeys);
       ctx.testCredentials = args.credentials.testCredentials;
+      if (args.credentials.accountSkipReason) ctx.accountSkipReason = args.credentials.accountSkipReason;
       if (args.credentials.wrongPassword) ctx.wrongPassword = args.credentials.wrongPassword;
     }
     ctx.wrongPasswordStage = 'repair';
@@ -567,6 +578,7 @@ async function repairPass(args: {
       url: args.url,
       plan,
       repairNote,
+      budget: 'repair',
       ...(args.reachedPages ? { reachedPages: args.reachedPages } : {}),
       ...(args.requirements ? { requirements: args.requirements } : {}),
       onEvent: args.onEvent,
@@ -800,7 +812,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   const model = opts.model ?? process.env.QA_CORE_EXPLORER_MODEL ?? process.env.QA_CORE_MODEL_EXPLORE ?? 'claude-opus-4-7';
   const price = priceFor(model);
 
-  const client = new Anthropic({ apiKey });
+  const client = opts.explorerClient ?? new Anthropic({ apiKey });
+  // The Critic: the seam when given (first pass and repair review), else the real one.
+  const critic = opts.critique ?? critique;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
 
@@ -995,12 +1009,6 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     cpState.phase = 'discovery';
     saveCheckpoint();
 
-    // An SRS feature with rules but no page tagged for it can only report
-    // not-planned; say so now, at plan time, and never invent a URL for it.
-    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes)) {
-      opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
-    }
-
     // Per-page planning: up to PER_PAGE_SCENARIO_CAP scenarios per page,
     // GLOBAL_PLAN_CAP total. Cost is itemized per page. A page whose plan
     // fails is skipped with a message; the other pages still plan. A page
@@ -1044,6 +1052,13 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       );
     }
     planResult = { scenarios: combined, usd: plannerUsd, fillableFields: fillableMax };
+    // An SRS feature with rules that no page carries and the plan does not
+    // carry either (no scenario tagged with it, none citing its rules) can
+    // only report not-planned; say so after planning, never invent a URL for
+    // it, and never say it of a feature the plan carries (invariant 72).
+    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes, combined)) {
+      opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
+    }
     // Phase boundary: plan done.
     cpState.plan = combined;
     cpState.fillableFields = fillableMax;
@@ -1125,7 +1140,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     saveCheckpoint();
     opts.onEvent?.({ type: 'plan_done', scenarios: p.scenarios, usd: p.costUsd });
     for (const r of p.pageFitRejected) {
-      opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${opts.url}: ${r.reason}` });
+      opts.onEvent?.({ type: 'message', text: pageFitRejectionLine(r.scenario, opts.url, r.reason) });
     }
     for (const r of p.contradictionRejected) {
       opts.onEvent?.({ type: 'message', text: `Rejected contradiction scenario: "${r.scenario.name}" on ${opts.url}: ${r.reason}` });
@@ -1253,11 +1268,13 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     ctx.knownAccounts = new Set([...knownAccountIdentifiers(opts.requirements), ...(testCredentials ? [testCredentials.user.toLowerCase()] : [])]);
     ctx.lockoutScenarioKeys = new Set(lockoutScenarioNames(toExplore, opts.requirements).map(scenarioNameKey));
     ctx.testCredentials = testCredentials ? { user: testCredentials.user, pass: testCredentials.pass } : null;
+    if (!testCredentials && accountSkipReason !== CREDENTIALS_NOT_PROVIDED) ctx.accountSkipReason = accountSkipReason;
     if (wrongPassword) ctx.wrongPassword = wrongPassword;
     explorerCredentialContext = {
       knownAccounts: ctx.knownAccounts,
       lockoutScenarioKeys: ctx.lockoutScenarioKeys,
       testCredentials: ctx.testCredentials,
+      ...(ctx.accountSkipReason ? { accountSkipReason: ctx.accountSkipReason } : {}),
       ...(wrongPassword ? { wrongPassword } : {}),
     };
     const explorerLoop = toExplore.length === 0
@@ -1442,7 +1459,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         review = { verdicts: carriedVerdicts, summary: 'All verdicts carried from the checkpoint; no new scenarios to review.' };
         opts.onEvent?.({ type: 'critic_done', verdicts: carriedVerdicts, usd: 0 });
       } else {
-        const c = await critique({ scenarios: toReview, url: opts.url, apiKey });
+        const c = await critic({ scenarios: toReview, url: opts.url, apiKey });
         // Verdicts keyed by the recorded scenario name they match, so drops,
         // coverage and the run page all use one name per scenario.
         review = { verdicts: [...carriedVerdicts, ...alignVerdictNames(toReview.map((s) => s.name), c.verdicts)], summary: c.summary };
@@ -1532,6 +1549,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       // the live Review panel and events.jsonl name why it was never repaired.
       for (const s of decision.unfunded) opts.onEvent?.({ type: 'repair_scenario', name: s.name, outcome: 'not re-recorded', reason: `not repaired: ${decision.fundsLabel}` });
       let secondVerdicts: Awaited<ReturnType<typeof critique>>['verdicts'] | null = null;
+      let secondSummary: string | null = null;
       let repairedScenarios: Scenario[] = [];
       let repairUsd = 0;
       // Why a funded rework was not re-recorded, by name: the repair pass's
@@ -1581,9 +1599,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             // not the scenario afresh (invariant 32).
             const firstVerdicts = review?.verdicts ?? [];
             const repairFixes = new Map(decision.rework.map((s) => [s.name, verdictFor(firstVerdicts, s.name)?.required_fixes ?? []] as const));
-            const c2 = await critique({ scenarios: repair.scenarios, url: opts.url, apiKey, repairFixes });
+            const c2 = await critic({ scenarios: repair.scenarios, url: opts.url, apiKey, repairFixes });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
             secondVerdicts = alignVerdictNames(repair.scenarios.map((s) => s.name), c2.verdicts);
+            secondSummary = c2.summary;
             for (const w of c2.warnings) opts.onEvent?.({ type: 'message', text: `WARNING: ${w}` });
             if (c2.unreviewed.length > 0) {
               opts.onEvent?.({ type: 'message', text: `WARNING: the Critic returned no verdict for ${c2.unreviewed.length} repaired scenario(s); held as rework: ${c2.unreviewed.map((n) => `"${n}"`).join(', ')}` });
@@ -1619,7 +1638,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         ...(decision.unfunded.length > 0 ? { unfunded: { names: decision.unfunded.map((s) => s.name), reason: decision.fundsLabel } } : {}),
         reasons: repairReasons,
       });
-      review = { verdicts: merged.final, summary: review.summary, repair: merged.history };
+      // The closing paragraph reads the final verdicts: a re-judged
+      // scenario's second-pass outcome replaces the first-pass complaint,
+      // which stays only on its history entry (invariant 72).
+      review = { verdicts: merged.final, summary: finalCriticSummary({ firstSummary: review.summary, secondSummary, final: merged.final, history: merged.history }), repair: merged.history };
       kept = [...kept, ...merged.replay];
       for (const h of merged.history) {
         const fixesNote = h.fixes ? `, ${h.fixes.filter((f) => f.applied).length} of ${h.fixes.length} required fixes applied` : '';
@@ -1894,13 +1916,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // Rules cited only by scenarios the ceiling prevented from starting
         // classify planned-not-explored, never planned-but-dropped.
         unexplored: ceilingSalvage?.unexplored,
+        // A citing scenario the ceiling cut mid-scenario is not explored
+        // either, never a drop (invariant 72).
+        incomplete: report.reconciliation.incomplete,
         // The drop cause per scenario, so an uncovered rule says why its
         // citing scenario fell out ("rework, not repaired: reserve funds 2 of 14").
         dropReasons: new Map(report.reconciliation.dropped.map((d) => [d.name, d.reason])),
         // A feature no discovered page carries reports its rules as
         // not-reachable, never plain not-planned. Only a discovery run knows
         // its page set; a single-page or from-plan run has no such feature.
-        ...(discoveryInfo ? { unreachableFeatures: unreachableFeatures(opts.requirements, discoveryInfo.pages, discoveryInfo.stateProbes).map((f) => f.name) } : {}),
+        ...(discoveryInfo ? { unreachableFeatures: unreachableFeatures(opts.requirements, discoveryInfo.pages, discoveryInfo.stateProbes, planResult.scenarios).map((f) => f.name) } : {}),
         // A feature whose state probe revealed no page: its rules still
         // uncited after planning read not-revealed with the probe's detail.
         ...(discoveryInfo?.stateProbes ? { notRevealed: notRevealedFeatures(discoveryInfo.stateProbes) } : {}),
@@ -1916,9 +1941,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         contradictionRejected,
       }),
     };
-    for (const line of renderRuleCoverage(report.ruleCoverage)) {
-      opts.onEvent?.({ type: 'message', text: line });
-    }
+    // Not printed here: the emitted-spec check can still drop a scenario and
+    // change these numbers. Each surface prints rule coverage once, from the
+    // final report, after that stage (invariant 72).
   }
 
   fs.mkdirSync(opts.outDir, { recursive: true });
@@ -2063,6 +2088,30 @@ export function reachedPagesOf(discovery: RunReport['discovery'] | undefined): R
   return out;
 }
 
+/**
+ * The line a loop prints when its budget stops it (invariant 72). The run's
+ * explorer share keeps its wording ("Cost ceiling reached ..."); the repair
+ * pass names its own budget, 2 decimals on both sides ("Repair budget reached
+ * ($1.55 of $1.51)"), never "Cost ceiling reached" and never an unrounded
+ * float (run 44cb3d printed "$1.5053279999999996", the repair budget).
+ * Exported for smoke-console-honesty.
+ */
+export function budgetStopLine(
+  budget: 'run' | 'repair',
+  kind: 'stop' | 'closeout' | 'grace-exhausted',
+  v: { spentUsd: number; limitUsd: number; graceUsd: number; scenario?: string },
+): string {
+  if (budget === 'repair') {
+    const amounts = `$${v.spentUsd.toFixed(2)} of $${v.limitUsd.toFixed(2)}`;
+    if (kind === 'stop') return `Repair budget reached (${amounts}); stopping the repair pass and keeping what it re-recorded.`;
+    if (kind === 'closeout') return `Repair budget reached (${amounts}); "${v.scenario}" already holds a passed assertion, so closing calls only are allowed under the $${v.graceUsd.toFixed(2)} grace.`;
+    return `Repair budget closeout grace exhausted (${amounts} plus the $${v.graceUsd.toFixed(2)} grace); "${v.scenario}" did not close and is discarded.`;
+  }
+  if (kind === 'stop') return `Cost ceiling reached ($${v.spentUsd.toFixed(3)} > $${v.limitUsd}); stopping the Explorer and salvaging completed scenarios.`;
+  if (kind === 'closeout') return `Cost ceiling reached ($${v.spentUsd.toFixed(3)} > $${v.limitUsd}); "${v.scenario}" already holds a passed assertion, so closing calls only are allowed under the $${v.graceUsd.toFixed(2)} grace.`;
+  return `Cost ceiling closeout grace exhausted ($${v.spentUsd.toFixed(3)} > $${v.limitUsd} + $${v.graceUsd.toFixed(2)}); "${v.scenario}" did not close and is discarded.`;
+}
+
 export async function runAgentLoop(args: {
   client: Anthropic;
   model: string;
@@ -2095,6 +2144,12 @@ export async function runAgentLoop(args: {
   reachedPages?: Record<string, string>;
   /** The requirements map: a scenario's feature for the never-navigate refusal comes from its cited rule ids. */
   requirements?: RequirementsMap;
+  /**
+   * Which budget maxUsd is: the run's explorer share ('run', the default) or
+   * the repair pass's own budget ('repair'). The stop line names the budget
+   * it hit (invariant 72): a repair stop never reads as a run ceiling stop.
+   */
+  budget?: 'run' | 'repair';
 }): Promise<{
   cost: RunReport['cost'];
   endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped';
@@ -2215,21 +2270,13 @@ export async function runAgentLoop(args: {
         && cost.usd <= maxUsd + graceUsd;
       if (!closable) {
         endedReason = 'cost_ceiling';
-        onEvent?.({
-          type: 'message',
-          text: closeout
-            ? `Cost ceiling closeout grace exhausted ($${cost.usd.toFixed(3)} > $${maxUsd} + $${graceUsd.toFixed(2)}); "${closeout.scenario}" did not close and is discarded.`
-            : `Cost ceiling reached ($${cost.usd.toFixed(3)} > $${maxUsd}); stopping the Explorer and salvaging completed scenarios.`,
-        });
+        onEvent?.({ type: 'message', text: budgetStopLine(args.budget ?? 'run', closeout ? 'grace-exhausted' : 'stop', { spentUsd: cost.usd, limitUsd: maxUsd, graceUsd, ...(closeout ? { scenario: closeout.scenario } : {}) }) });
         break;
       }
       if (!closeout) {
         closeout = { scenario: ctx.current!.name, startUsd: cost.usd };
         ctx._costCloseout = true;
-        onEvent?.({
-          type: 'message',
-          text: `Cost ceiling reached ($${cost.usd.toFixed(3)} > $${maxUsd}); "${closeout.scenario}" already holds a passed assertion, so closing calls only are allowed under the $${graceUsd.toFixed(2)} grace.`,
-        });
+        onEvent?.({ type: 'message', text: budgetStopLine(args.budget ?? 'run', 'closeout', { spentUsd: cost.usd, limitUsd: maxUsd, graceUsd, scenario: closeout.scenario }) });
       }
     }
 

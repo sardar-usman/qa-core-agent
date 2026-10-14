@@ -422,6 +422,8 @@ export interface RunReport {
      */
     repair?: Array<{
       scenario: string; first: 'rework'; second?: 'pass' | 'rework' | 'reject'; outcome: 'kept' | 'dropped'; notRepaired?: string;
+      /** The first pass's reasons of a re-judged scenario: the only place they stay (invariant 72). */
+      firstReasons?: string[];
       /** The first verdict's required fixes as the repair review judged them. */
       fixes?: Array<{ fix: string; applied: boolean; reason: string }>;
       /** The repair review's new observations: recorded, never a drop. */

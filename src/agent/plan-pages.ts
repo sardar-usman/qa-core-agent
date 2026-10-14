@@ -1,5 +1,5 @@
 import type { DiscoveredPage, ReachAction } from './discovery.js';
-import { dedupeAcrossPages, uniqueScenarioNames, type PageSnapshot, type PlannedScenario, type PlanResult, type RuleRetry } from './planner.js';
+import { dedupeAcrossPages, pageFitRejectionLine, uniqueScenarioNames, type PageSnapshot, type PlannedScenario, type PlanResult, type RuleRetry } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
 import type { RevealedFeature } from './state-probe.js';
 
@@ -221,7 +221,7 @@ export async function planAcrossPages(opts: {
     // Page fit: each drop is named with its page, and the scenario never
     // reaches the plan, so the funnel stays balanced.
     for (const r of p.pageFitRejected) {
-      onMessage(`Rejected page-fit scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}`);
+      onMessage(pageFitRejectionLine(r.scenario, pg.url, r.reason));
       pageFitRejected.push(placeOf(r.scenario));
     }
     for (const r of p.contradictionRejected) {

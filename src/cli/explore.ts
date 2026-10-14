@@ -6,10 +6,10 @@ import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
 import { runFrameworkLines, writeFrameworkZip, zipExitCode, zipResultLines, type FrameworkZipOutcome } from '../agent/framework-zip.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
-import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
-import { diagnoseEmptyRun, refusedNote, renderReconciliation } from '../agent/reconcile.js';
-import { costLine, totalCost } from '../agent/cost-total.js';
+import { diagnoseEmptyRun } from '../agent/reconcile.js';
+import { totalCost } from '../agent/cost-total.js';
+import { createEventRenderer, ruleCoverageLines, runSummaryLines } from './render.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import type { PlannedScenario } from '../agent/planner.js';
@@ -272,6 +272,12 @@ async function main(): Promise<void> {
   const specName = args.name ?? slugUrl(url);
 
   const totalStages = 3 + (args.replay ? 1 : 0) + (args.stability ? 1 : 0);
+  const renderEvent = createEventRenderer({
+    totalStages,
+    replay: args.replay,
+    log: (line) => console.log(line),
+    inline: (text) => process.stdout.write(text),
+  });
   const result = await explore({
     ...buildExploreOptions(args, {
       url, outDir,
@@ -285,88 +291,9 @@ async function main(): Promise<void> {
     onEvent: (e) => {
       // The stored timeline for the Run Detail page, next to the report.
       appendRunEvent(outDir, e);
-      switch (e.type) {
-        case 'plan_started':
-          console.log(`\n[1/${totalStages}] Planner …`); break;
-        case 'plan_done':
-          console.log(`      ${e.scenarios.length} scenarios planned · $${e.usd.toFixed(4)}`);
-          for (const s of e.scenarios) {
-            console.log(`        · [${s.category}] ${s.name}`);
-          }
-          console.log(`\n[2/${totalStages}] Explorer …`);
-          break;
-        case 'thinking_started':
-          process.stdout.write('      · thinking…\r'); break;
-        case 'tool_call':
-          console.log(`      → ${e.name}(${trimJson(e.input)})`); break;
-        case 'tool_result':
-          if (!e.ok) console.log(`        ✗ ${e.error}`); break;
-        case 'message':
-          // Resume hints are printed exactly once, as the LAST line of output
-          // (see resumeHintForRun at the end of main). The mid-run copies the
-          // runtime emits for the gateway are suppressed here; without this,
-          // the 240-char cap below also silently ate them, which is how two
-          // live ceiling runs ended with no hint at all.
-          if (e.text.startsWith('Run stopped:')) break;
-          // A state probe line names every page and control it tried and is
-          // printed whole, never cut by the cap (invariant 71).
-          if (e.text.length < 240 || e.text.startsWith('State probe "')) console.log(`      ${e.text.trim()}`); break;
-        case 'usage':
-          process.stdout.write(`      $${e.usd.toFixed(4)} · ${e.tokens} tok\r`); break;
-        case 'critic_started':
-          console.log(`\n[3/${totalStages}] Critic …`); break;
-        case 'critic_done':
-          console.log(`      ${e.verdicts.length} verdicts · $${e.usd.toFixed(4)}`);
-          for (const v of e.verdicts) {
-            const mark = v.verdict === 'pass' ? '✓' : v.verdict === 'rework' ? '!' : '✗';
-            console.log(`        ${mark} ${v.scenario}: ${v.reasons.join('; ')}`);
-          }
-          break;
-        case 'replay_started':
-          console.log(`\n[4/${totalStages}] Reality check · replaying ${e.total} scenario(s) headlessly …`); break;
-        case 'replay_scenario_passed':
-          console.log(`      ✓ ${e.name}  (${e.durationMs}ms)`); break;
-        case 'replay_scenario_failed':
-          console.log(`      ✗ ${e.name}  (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
-        case 'replay_scenario_refused':
-          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
-        case 'replay_done':
-          console.log(`      ${e.passed} passed · ${e.failed} dropped${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ${(e.durationMs / 1000).toFixed(1)}s`); break;
-        case 'stability_started': {
-          const stage = args.replay ? 5 : 4;
-          console.log(`\n[${stage}/${totalStages}] Stability · ${e.iterations}× re-run on ${e.total} survivor(s) …`);
-          break;
-        }
-        case 'stability_iteration_passed':
-          console.log(`      ✓ ${e.name}  iter ${e.iteration}  (${e.durationMs}ms)`); break;
-        case 'stability_iteration_failed':
-          console.log(`      ✗ ${e.name}  iter ${e.iteration} (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
-        case 'stability_scenario_refused':
-          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
-        case 'stability_done': {
-          const recovered = e.recovered ?? 0;
-          const recoveredChip = recovered > 0 ? ` · ${recovered} recovered by Stabilizer` : '';
-          const stabilizerCost = e.stabilizerCostUsd ?? 0;
-          const stabilizerCostChip = stabilizerCost > 0 ? ` · stabilizer $${stabilizerCost.toFixed(4)}` : '';
-          console.log(
-            `      ${e.stable} stable${recoveredChip} · ${e.flaked} flaked · flake_rate=${(e.flakeRate * 100).toFixed(1)}%${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ` +
-            `${(e.durationMs / 1000).toFixed(1)}s${stabilizerCostChip}`,
-          );
-          break;
-        }
-        case 'gate_injection':
-          console.log(`      [gate] ${e.detail} in "${e.scenario}"`); break;
-        case 'gate_broken':
-          console.log(`      [gate] BROKEN "${e.scenario}" after ${e.attempts} attempt(s): ${e.reason}`); break;
-        case 'heal':
-          console.log(`      ↺ healed: ${e.from} re-resolved to ${e.to} (${e.intent})`); break;
-        case 'review_paused':
-          console.log(`\n■ Paused for review.`); break;
-        case 'done':
-          // This is the Explorer's count. The final emitted (generated) count
-          // and the planned = generated + dropped reconciliation print below.
-          console.log(`\n✓ ${e.scenarios} scenario(s) explored`); break;
-      }
+      // The console: the renderer prints every message whole or cut at the
+      // cap with a marker, never drops one (invariant 72).
+      renderEvent(e);
     },
   });
 
@@ -412,6 +339,8 @@ async function main(): Promise<void> {
       console.error(`  Kept ${path.relative(process.cwd(), path.join(outDir, 'run-report.json'))}: full verdicts and trace, the spend is not lost.`);
     }
     console.error(`  Cost so far: $${totalUsd.toFixed(4)}`);
+    // The one rule coverage print of an empty run, from the final report.
+    for (const line of ruleCoverageLines(result)) console.error(line);
     // The one resume hint, always the LAST line of an abnormal end that
     // retains a checkpoint (critic-gated-all, replay-dropped-all, and any
     // explicit stop the report carries).
@@ -514,39 +443,10 @@ async function main(): Promise<void> {
     writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
     finalizeRunDir(outDir);
   }
-  // The one cost total (invariant 50): costLine names every term it sums.
-  console.log(`${costLine(result)} · cache_read=${result.cost.cacheReadTokens}`);
-  console.log(`Cascade: ${JSON.stringify(result.cascadeStats)}`);
-  if (result.review?.summary) {
-    console.log(`\nCritic: ${result.review.summary}`);
-  }
-  if (result.replay && !result.replay.skipped) {
-    const total = result.replay.passed + result.replay.failed;
-    const pct = total > 0 ? Math.round((result.replay.passed / total) * 100) : 0;
-    console.log(`Reality check: ${result.replay.passed}/${total} passed twice (${pct}%)${refusedNote(result.replay.refused)} · ${(result.replay.durationMs / 1000).toFixed(1)}s`);
-  } else if (result.replay?.skipped) {
-    console.log('Reality check: skipped (--no-replay)');
-  }
-  if (result.stability && !result.stability.skipped) {
-    const total = result.stability.passed + result.stability.flaked;
-    const pct = (result.stability.flakeRate * 100).toFixed(1);
-    // Headline uses strict stable (excludes recovered) when reconciliation is
-    // present, so a relaxed-rule survivor is never counted as a clean pass.
-    const strictStable = result.reconciliation ? result.reconciliation.stable : result.stability.passed;
-    const recovered = result.reconciliation?.recovered ?? result.stability.recovered ?? 0;
-    const recoveredNote = recovered > 0 ? ` (+${recovered} recovered)` : '';
-    console.log(`Stability:     ${strictStable}/${total} stable across ${result.stability.iterations}×${recoveredNote} · flake_rate=${pct}%${refusedNote(result.stability.refused)} · ${(result.stability.durationMs / 1000).toFixed(1)}s`);
-  } else if (result.stability?.skipped) {
-    console.log('Stability:     skipped (--no-stability)');
-  }
-  if (result.reconciliation) {
-    console.log('');
-    for (const line of renderReconciliation(result.reconciliation)) console.log(line);
-  }
-  if (result.ruleCoverage) {
-    console.log('');
-    for (const line of renderRuleCoverage(result.ruleCoverage)) console.log(line);
-  }
+  // The end-of-run summary from the FINAL report, after the emitted-spec
+  // check: the closing Critic paragraph from the final verdicts and the one
+  // rule coverage print (invariant 72).
+  for (const line of runSummaryLines(result)) console.log(line);
   // v3: the new framework workflow is "cd into it and use it as a project".
   // For backward compat with --no-pom, still show the single-file command.
   if (args.pom) {
@@ -579,15 +479,6 @@ function hostnameOf(url: string): string {
 
 function isPaused(r: { paused?: boolean }): r is ReviewPaused {
   return r.paused === true;
-}
-
-function trimJson(v: unknown): string {
-  const s = JSON.stringify(v);
-  return s.length > 120 ? s.slice(0, 117) + '…' : s;
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
 main().catch((err) => {

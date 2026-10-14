@@ -37,7 +37,8 @@
  *      page's verify stage show refused apart.
  *   I. a missing login page: the generic pair continues without the account,
  *      prints one line naming every URL tried, and skips the scenarios that
- *      need it "no login page found"; a host-scoped pair, or --login-url to a
+ *      need it "no login page found; test credentials were set" (invariant
+ *      72); a host-scoped pair, or --login-url to a
  *      missing page, stops; a login page that rejects the generic pair stops.
  *   J. scripts/preflight-site.ts spawned as a child process: the URL is found
  *      in any position and the value after --login-url is never taken as the
@@ -672,9 +673,9 @@ try {
     check('I1. the generic pair with no login page continues: explore() runs without the test account', g.seen?.loginPreflightDone === true && g.seen.accountSkipReason === NO_LOGIN_PAGE_REASON && g.report !== null && g.report.stopped === undefined, JSON.stringify({ seen: g.seen, notes: g.notes }));
     check('I2. one line names every URL tried and says the run continues without the test account',
       goLine !== undefined && goLine.trim().startsWith('login page not found (tried ') && goLine.trim().endsWith('); continuing without the test account') && allTried(bare.url, [goLine]) && g.notes.filter((n) => n.includes('login page not found')).length === 1 && !g.notes.some((n) => n.startsWith('Run stopped')) && !g.notes.some((n) => n.includes('--login-url')), JSON.stringify(g.notes));
-    check('I3. every scenario that needs the account is skipped "no login page found", with the plan line, and the funnel balances',
-      g.lines.includes('2 planned scenarios need the test account; no login page found')
-      && (g.report?.skipped ?? []).length === 2 && g.report!.skipped!.every((x) => x.reason === 'no login page found')
+    check('I3. every scenario that needs the account is skipped "no login page found; test credentials were set", with the plan line, and the funnel balances',
+      g.lines.includes('2 planned scenarios need the test account; no login page found; test credentials were set')
+      && (g.report?.skipped ?? []).length === 2 && g.report!.skipped!.every((x) => x.reason === 'no login page found; test credentials were set')
       && g.report!.reconciliation?.planned === 2 && g.report!.reconciliation.skipped.length === 2 && g.report!.reconciliation.balanced === true, JSON.stringify({ lines: g.lines, skipped: g.report?.skipped }));
     check('I4. nothing else changes: no wrong-password counter, no account value in any note or line', g.report?.wrongPasswordAttempts === undefined && ![...g.notes, ...g.lines].join('\n').includes(USER) && ![...g.notes, ...g.lines].join('\n').includes(PASS));
     check('I5. the line itself', noLoginPageLine(['a', 'b']) === 'login page not found (tried a, b); continuing without the test account');
@@ -694,7 +695,7 @@ try {
         process.chdir(origCwd);
         if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
       }
-      check('I6. a direct explore() call continues too and skips "no login page found"', direct.stopped === undefined && msgs.some((m) => m.startsWith('login page not found (tried ')) && (direct.skipped ?? []).every((x) => x.reason === 'no login page found') && (direct.skipped ?? []).length === 2, JSON.stringify({ msgs, skipped: direct.skipped }));
+      check('I6. a direct explore() call continues too and skips "no login page found; test credentials were set"', direct.stopped === undefined && msgs.some((m) => m.startsWith('login page not found (tried ')) && (direct.skipped ?? []).every((x) => x.reason === 'no login page found; test credentials were set') && (direct.skipped ?? []).length === 2, JSON.stringify({ msgs, skipped: direct.skipped }));
     }
 
     // I7: --login-url to a missing page stops, even with the generic pair.

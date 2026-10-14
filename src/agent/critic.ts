@@ -881,6 +881,14 @@ export function decideRepairPass<S extends { name: string }>(opts: {
 export interface RepairHistoryEntry {
   scenario: string;
   first: 'rework';
+  /**
+   * The first pass's reasons, kept here when the repair review re-judged the
+   * scenario: its final verdict then carries the second pass's reasons, and
+   * this entry is the only place the first-pass complaint stays (the closing
+   * Critic paragraph reads the final verdicts, invariant 72). Absent when the
+   * scenario was not re-judged: its final verdict still carries them.
+   */
+  firstReasons?: string[];
   /** The verdict after the repair pass. Absent when the repair never re-recorded it. */
   second?: Verdict;
   outcome: 'kept' | 'dropped';
@@ -1015,7 +1023,7 @@ export function mergeRepairVerdicts(
       // Kept unjudged, with the note on the history entry; never dropped on
       // a verdict nobody can check against the fixes.
       final.push({ ...second, verdict: 'pass' });
-      history.push({ scenario: v.scenario, first: 'rework', second: second.verdict, outcome: 'kept', notes: [UNJUDGED_REPAIR_NOTE, ...(second.observations ?? [])] });
+      history.push({ scenario: v.scenario, first: 'rework', firstReasons: v.reasons, second: second.verdict, outcome: 'kept', notes: [UNJUDGED_REPAIR_NOTE, ...(second.observations ?? [])] });
       continue;
     }
     if (second.fixes && second.fixes.length > 0 && v.required_fixes.length > 0) {
@@ -1024,10 +1032,10 @@ export function mergeRepairVerdicts(
       if (judged.allApplied) {
         const notes = [...observations, ...(second.verdict !== 'pass' ? second.reasons.filter((r) => !observations.includes(r)) : [])];
         final.push({ ...second, verdict: 'pass', fixes: judged.fixes });
-        history.push({ scenario: v.scenario, first: 'rework', second: second.verdict, outcome: 'kept', fixes: judged.fixes, ...(notes.length ? { notes } : {}) });
+        history.push({ scenario: v.scenario, first: 'rework', firstReasons: v.reasons, second: second.verdict, outcome: 'kept', fixes: judged.fixes, ...(notes.length ? { notes } : {}) });
       } else {
         final.push({ ...second, verdict: 'rework', reasons: judged.missing.map((m) => `required fix not applied: ${m}`), fixes: judged.fixes });
-        history.push({ scenario: v.scenario, first: 'rework', second: 'rework', outcome: 'dropped', fixes: judged.fixes, ...(observations.length ? { notes: observations } : {}) });
+        history.push({ scenario: v.scenario, first: 'rework', firstReasons: v.reasons, second: 'rework', outcome: 'dropped', fixes: judged.fixes, ...(observations.length ? { notes: observations } : {}) });
       }
       continue;
     }
@@ -1035,6 +1043,7 @@ export function mergeRepairVerdicts(
     history.push({
       scenario: v.scenario,
       first: 'rework',
+      firstReasons: v.reasons,
       second: second.verdict,
       outcome: second.verdict === 'pass' ? 'kept' : 'dropped',
     });
@@ -1062,6 +1071,52 @@ export function repairOutcome<S extends { name: string }>(opts: {
   const merged = mergeRepairVerdicts(opts.first, opts.second, opts.unfunded, opts.reasons);
   const replay = opts.repaired.filter((s) => verdictFor(merged.final, s.name)?.verdict === 'pass');
   return { final: merged.final, history: merged.history, replay };
+}
+
+/**
+ * The closing "Critic:" paragraph, from the FINAL verdicts (invariant 72).
+ * When the repair review re-judged no scenario, it is the first review's own
+ * summary, unchanged. When it re-judged one or more, the first summary is
+ * stale (run 44cb3d's closing paragraph still complained about the literal
+ * cart badge, the hardcoded emails and the dead /rentals navigate after the
+ * repair fixed all three and the second pass accepted them), so the paragraph
+ * is rebuilt from what the run ended with: the final counts, each re-judged
+ * scenario with its second-pass outcome and reasons, every other scenario
+ * whose final verdict is not pass with its reasons, and the repair review's
+ * own summary. The first-pass reasons of a re-judged scenario appear only on
+ * its history entry (`firstReasons`), never here. Exported for the smokes.
+ */
+export function finalCriticSummary(opts: {
+  firstSummary: string;
+  /** The repair review's own summary, when it ran. */
+  secondSummary?: string | null;
+  final: ScenarioVerdict[];
+  history: RepairHistoryEntry[];
+}): string {
+  const rejudged = opts.history.filter((h) => h.second !== undefined);
+  if (rejudged.length === 0) return opts.firstSummary;
+  const count = (v: Verdict): number => opts.final.filter((f) => f.verdict === v).length;
+  const parts: string[] = [`Final verdicts after the repair pass: ${count('pass')} pass, ${count('rework')} rework, ${count('reject')} reject.`];
+  const lines = rejudged.map((h) => {
+    const final = verdictFor(opts.final, h.scenario);
+    const applied = h.fixes ? `, ${h.fixes.filter((f) => f.applied).length} of ${h.fixes.length} required fixes applied` : '';
+    const head = `"${h.scenario}" rework -> ${final?.verdict ?? h.second} (${h.outcome}${applied})`;
+    // A kept scenario's second-pass complaints are notes, never reasons for its pass.
+    const why = h.outcome === 'kept' ? (h.notes ?? []) : (final?.reasons ?? []);
+    return why.length > 0 ? `${head}: ${why.join('; ')}` : head;
+  });
+  parts.push(`Re-judged by the repair review: ${lines.join('. ')}.`);
+  const rejudgedKeys = new Set(rejudged.map((h) => h.scenario));
+  const others = opts.final.filter((f) => f.verdict !== 'pass' && !rejudgedKeys.has(f.scenario));
+  if (others.length > 0) {
+    parts.push(`Not re-judged: ${others.map((f) => {
+      const h = opts.history.find((x) => x.scenario === f.scenario);
+      const state = h?.notRepaired ? `rework, not repaired (${h.notRepaired})` : f.verdict;
+      return `"${f.scenario}" ${state}${f.reasons.length ? `: ${f.reasons.join('; ')}` : ''}`;
+    }).join('. ')}.`);
+  }
+  if (opts.secondSummary && opts.secondSummary.trim()) parts.push(`Repair review: ${opts.secondSummary.trim()}`);
+  return parts.join(' ');
 }
 
 function parseSummary(text: string): string {
