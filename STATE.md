@@ -93,7 +93,7 @@ Oct 6.
    that run ($0, scripts/recheck-run.ts): emitted check 6 of 6, zip 23
    entries, no session or report folder.
 4. Action-first discovery rung for state-dependent pages (item 3).
-   Brief: docs/design/state-dependent-pages.md (PR #46). Built, PR #<n>,
+   Brief: docs/design/state-dependent-pages.md (PR #46). Built, PR #47,
    click action only; login action designed in the brief, not built
    (invariant 71: the state probe, the revealed page recorded as reached
    by action, the never-navigate refusal, not-revealed coverage; $0,
