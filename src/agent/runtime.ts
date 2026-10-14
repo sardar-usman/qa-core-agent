@@ -472,6 +472,9 @@ export function repairPlanFor(
       ...(planned?.pageUrl ? { pageUrl: planned.pageUrl } : {}),
       ...(planned?.volatilePage ? { volatilePage: true } : {}),
       ...(planned?.reachedBy ? { reachedBy: planned.reachedBy } : {}),
+      // The cited rules travel too: the never-navigate refusal resolves a
+      // scenario's feature from them, never from its tag (invariant 71).
+      ...((planned?.ruleIds ?? s.ruleIds) ? { ruleIds: [...(planned?.ruleIds ?? s.ruleIds)!] } : {}),
     };
   });
   const recordedNameFor = (name: string): string => {
@@ -499,6 +502,8 @@ async function repairPass(args: {
   plan?: PlannedScenario[];
   /** Per feature, its revealed page (invariant 71): the repair re-records under the same never-navigate rule. */
   reachedPages?: Record<string, string>;
+  /** The requirements map, so the refusal resolves a scenario's feature from its cited rule ids. */
+  requirements?: RequirementsMap;
   onEvent?: ExploreOptions['onEvent'];
   /** The Explorer's credential context (known real accounts, lockout-exempt scenarios, the test account and its wrong-password counter), applied to the repair context too. */
   credentials?: ExplorerCredentialContext;
@@ -563,6 +568,7 @@ async function repairPass(args: {
       plan,
       repairNote,
       ...(args.reachedPages ? { reachedPages: args.reachedPages } : {}),
+      ...(args.requirements ? { requirements: args.requirements } : {}),
       onEvent: args.onEvent,
     });
     const notes: string[] = [];
@@ -1261,6 +1267,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           ctx, url: opts.url,
           plan: toExplore,
           reachedPages: reachedPagesOf(discoveryInfo),
+          ...(opts.requirements ? { requirements: opts.requirements } : {}),
           onEvent: opts.onEvent,
           // Per-scenario checkpoint: crash-safe by construction, trivial cost.
           onScenarioComplete: (loopUsd) => {
@@ -1541,6 +1548,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             verdicts: review.verdicts,
             plan: planResult.scenarios,
             reachedPages: reachedPagesOf(discoveryInfo),
+            ...(opts.requirements ? { requirements: opts.requirements } : {}),
             onEvent: opts.onEvent,
             ...(explorerCredentialContext ? { credentials: explorerCredentialContext } : {}),
           });
@@ -2001,10 +2009,36 @@ function pathOfUrl(url: string): string {
 }
 
 /** Each scenario's revealed page: its own reachedBy, else its feature's revealed page. */
-function reachedPageResolver(plan: PlannedScenario[], reachedPages?: Record<string, string>): (p: PlannedScenario) => string | undefined {
-  const byFeature = new Map<string, string>(Object.entries(reachedPages ?? {}));
-  for (const p of plan) if (p.feature && p.reachedBy && !byFeature.has(p.feature)) byFeature.set(p.feature, p.reachedBy.pageUrl);
-  return (p) => p.reachedBy?.pageUrl ?? (p.feature ? byFeature.get(p.feature) : undefined);
+/** A feature name as compared here: lower-case, trimmed, runs of spaces, hyphens and underscores folded to one hyphen. */
+function featureKey(name: string): string {
+  return name.toLowerCase().trim().replace(/[\s_-]+/g, '-');
+}
+
+/**
+ * Each scenario's revealed page (invariant 71): its own reachedBy first;
+ * else the feature its CITED RULE IDS belong to in the requirements map (ids
+ * upper-cased and trimmed), never the model's tag (standing rule 1); only a
+ * scenario that cites no rule falls back to its feature tag, normalized
+ * (featureKey) before it is compared with the probe's feature name.
+ */
+function reachedPageResolver(plan: PlannedScenario[], reachedPages?: Record<string, string>, map?: RequirementsMap): (p: PlannedScenario) => string | undefined {
+  const ruleOwner = new Map<string, string>();
+  for (const f of map?.features ?? []) for (const r of f.rules) ruleOwner.set(r.id.trim().toUpperCase(), f.name);
+  const ownersOf = (p: PlannedScenario): string[] => (p.ruleIds ?? []).map((id) => ruleOwner.get(id.trim().toUpperCase())).filter((f): f is string => !!f);
+  const byFeature = new Map<string, string>(Object.entries(reachedPages ?? {}).map(([f, u]) => [featureKey(f), u]));
+  // A plan entry reached by action lends its page to the feature its rules belong to.
+  for (const p of plan) if (p.reachedBy) for (const f of ownersOf(p)) if (!byFeature.has(featureKey(f))) byFeature.set(featureKey(f), p.reachedBy.pageUrl);
+  return (p) => {
+    if (p.reachedBy) return p.reachedBy.pageUrl;
+    if ((p.ruleIds ?? []).length > 0) {
+      for (const f of ownersOf(p)) {
+        const hit = byFeature.get(featureKey(f));
+        if (hit) return hit;
+      }
+      return undefined;
+    }
+    return p.feature ? byFeature.get(featureKey(p.feature)) : undefined;
+  };
 }
 
 /**
@@ -2014,8 +2048,8 @@ function reachedPageResolver(plan: PlannedScenario[], reachedPages?: Record<stri
  * reachedPageUrl. Exported so smoke-state-probe checks the runtime's own
  * entries.
  */
-export function plannedPagesFor(plan: PlannedScenario[], reachedPages?: Record<string, string>): Map<string, PlannedPageEntry> {
-  const reachedPageOf = reachedPageResolver(plan, reachedPages);
+export function plannedPagesFor(plan: PlannedScenario[], reachedPages?: Record<string, string>, map?: RequirementsMap): Map<string, PlannedPageEntry> {
+  const reachedPageOf = reachedPageResolver(plan, reachedPages, map);
   return new Map(plan.map((p) => {
     const reached = reachedPageOf(p);
     return [p.name, { ...(p.pageUrl ? { pageUrl: p.pageUrl } : {}), ...(p.volatilePage ? { volatilePage: true } : {}), ...(reached ? { reachedPageUrl: reached } : {}) }];
@@ -2059,6 +2093,8 @@ export async function runAgentLoop(args: {
    * reachedPageUrl, and end_scenario refuses a navigate to it.
    */
   reachedPages?: Record<string, string>;
+  /** The requirements map: a scenario's feature for the never-navigate refusal comes from its cited rule ids. */
+  requirements?: RequirementsMap;
 }): Promise<{
   cost: RunReport['cost'];
   endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped';
@@ -2078,8 +2114,8 @@ export async function runAgentLoop(args: {
   // too, so its plan carries the page as well (see repairPass).
   // A feature with a revealed page (invariant 71): every one of its
   // scenarios carries that page, so end_scenario refuses a navigate to it.
-  const reachedPageOf = reachedPageResolver(args.plan, args.reachedPages);
-  ctx.plannedPages = plannedPagesFor(args.plan, args.reachedPages);
+  const reachedPageOf = reachedPageResolver(args.plan, args.reachedPages, args.requirements);
+  ctx.plannedPages = plannedPagesFor(args.plan, args.reachedPages, args.requirements);
 
   const cost: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, calls: [] };
 

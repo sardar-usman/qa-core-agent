@@ -82,6 +82,8 @@ export interface PageControl {
   testid?: string;
   /** Absolute href, anchors only. */
   href?: string;
+  /** True when the control carries the disabled attribute or aria-disabled="true" (an out-of-stock "Add to cart"). Never clicked. */
+  disabled?: boolean;
 }
 
 /** A control whose words contain a trigger phrase, with the deny verdict. */
@@ -107,6 +109,8 @@ export interface StateProbe {
   detail: string;
   /** Every rule of the feature and its side: planned on the origin, or on the revealed page (splitRulesByPage). */
   rulesSplit: Array<{ ruleId: string; side: 'origin' | 'revealed' }>;
+  /** Set when a cap stopped the probe with candidates left: the cap and every candidate path it did not try. */
+  capped?: string;
 }
 
 /** A page handle in a fresh browser context. */
@@ -127,7 +131,7 @@ const CONTROL_SELECTOR = 'button, a, [role="button"], input[type="submit"], inpu
  */
 export async function readControls(page: Pick<Page, 'evaluate'>): Promise<PageControl[]> {
   return page.evaluate((sel) => {
-    const out: Array<{ index: number; tag: string; role: 'button' | 'link'; label: string; testid?: string; href?: string }> = [];
+    const out: Array<{ index: number; tag: string; role: 'button' | 'link'; label: string; testid?: string; href?: string; disabled?: boolean }> = [];
     const els = Array.from(document.querySelectorAll(sel));
     for (let i = 0; i < els.length; i++) {
       const el = els[i] as HTMLElement;
@@ -136,7 +140,8 @@ export async function readControls(page: Pick<Page, 'evaluate'>): Promise<PageCo
       const label = (el.getAttribute('aria-label') || (el.innerText || '').trim() || (el as HTMLInputElement).value || el.getAttribute('title') || '').replace(/\s+/g, ' ').slice(0, 80);
       const testid = el.getAttribute('data-testid') || el.getAttribute('data-test') || '';
       const href = tag === 'a' ? (el as HTMLAnchorElement).href : '';
-      out.push({ index: i, tag, role: tag === 'a' ? 'link' : 'button', label, ...(testid ? { testid } : {}), ...(href ? { href } : {}) });
+      const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+      out.push({ index: i, tag, role: tag === 'a' ? 'link' : 'button', label, ...(testid ? { testid } : {}), ...(href ? { href } : {}), ...(disabled ? { disabled: true } : {}) });
     }
     return out;
   }, CONTROL_SELECTOR);
@@ -168,10 +173,21 @@ export function deniedBy(words: string): string | null {
 
 /**
  * The controls whose normalized label or test id contains one of the
- * phrases, each with the phrase that matched and the deny verdict. Pure, so
- * it reads a crawl's kept controls as well as a fresh page's.
+ * phrases, each with the phrase that matched and the deny verdict. A
+ * disabled control is skipped: it can never be clicked (disabledTriggers
+ * names it). Pure, so it reads a crawl's kept controls as well as a fresh
+ * page's.
  */
 export function findTriggers(controls: PageControl[], phrases: string[]): TriggerControl[] {
+  return matchTriggers(controls.filter((c) => !c.disabled), phrases);
+}
+
+/** The disabled controls that would otherwise be triggers (an out-of-stock "Add to cart"), so the probe can say so. */
+export function disabledTriggers(controls: PageControl[], phrases: string[]): TriggerControl[] {
+  return matchTriggers(controls.filter((c) => c.disabled), phrases);
+}
+
+function matchTriggers(controls: PageControl[], phrases: string[]): TriggerControl[] {
   const out: TriggerControl[] = [];
   for (const c of controls) {
     const words = normalizeWords(`${c.label} ${c.testid ?? ''}`);
@@ -403,11 +419,26 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
     return open();
   };
 
-  const finish = (error?: string): ProbeResult => {
+  // Every page that ended in an error, with the step and the message. A
+  // failure is recorded on its own candidate and never ends the probe.
+  const errored: Array<{ url: string; result: string }> = [];
+  // Clicks that completed without qualifying (no new link, a denied link, no stable origin).
+  let cleanMisses = 0;
+  const pageCapUntried: string[] = [];
+  let clickCapUntried: string[] = [];
+
+  const finish = (globalError?: string): ProbeResult => {
     qualified.sort((a, b) => Number(a.triggerVolatile) - Number(b.triggerVolatile) || b.tokensMatched - a.tokensMatched || a.depth - b.depth || a.index - b.index);
     const best = qualified[0];
     const triedPaths = tried.map((t) => pathOf(t.url)).filter((p, i, a) => a.indexOf(p) === i);
-    if (best && !error) {
+    const capNotes = [
+      ...(pageCapUntried.length > 0 ? [`page cap ${STATE_PROBE_PAGE_CAP} reached; not tried: ${pageCapUntried.join(', ')}`] : []),
+      ...(clickCapUntried.length > 0 ? [`click cap ${STATE_PROBE_CLICK_CAP} reached; not tried: ${clickCapUntried.join(', ')}`] : []),
+    ];
+    const capped = capNotes.length > 0 ? capNotes.join('; ') : undefined;
+    const capSuffix = capped ? `; ${capped}` : '';
+    // A page that qualified is never discarded by a later failure.
+    if (best) {
       const page: DiscoveredPage = { url: best.revealed, source: 'action', feature, reachedBy: { origin: best.origin, feature, actions: best.actions } };
       return {
         probe: {
@@ -416,25 +447,40 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
           origins: qualified.map((q) => q.origin).filter((o, i, a) => a.indexOf(o) === i),
           tried,
           revealed: best.revealed,
-          detail: `revealed ${pathOf(best.revealed)} from ${pathOf(best.origin)}`,
+          detail: `revealed ${pathOf(best.revealed)} from ${pathOf(best.origin)}${capSuffix}`,
+          ...(capped ? { capped } : {}),
         },
         page,
         snapshot: best.snapshot,
         phrase: best.phrase,
       };
     }
-    const outcome: StateProbe['outcome'] = error ? 'error' : robotsBlocked ? 'robots' : clicks > 0 ? 'no-new-link' : 'no-trigger';
+    // Nothing qualified. robots first, then a click that completed and found
+    // no link, then errors: 'error' only when every page the probe acted on
+    // (loaded, clicked) failed with one, never when a clean result exists.
+    const outcome: StateProbe['outcome'] = globalError
+      ? 'error'
+      : robotsBlocked ? 'robots' : cleanMisses > 0 ? 'no-new-link' : errored.length > 0 ? 'error' : 'no-trigger';
     const triedText = triedPaths.length > 0 ? `tried ${triedPaths.join(', ')}` : 'no candidate page to try';
     const robotsHit = tried.find((t) => /robots\.txt disallows/.test(t.result));
-    const detail = error
-      ? `no page revealed: probe error (${error}); ${triedText}`
-      : `no page revealed: ${triedText}${outcome === 'robots' && robotsHit ? `; ${robotsHit.result}` : ''}`;
-    return { probe: { feature, outcome, origins: [], tried, detail } };
+    const detail = globalError
+      ? `no page revealed: probe error (${globalError}); ${triedText}${capSuffix}`
+      : outcome === 'error'
+        ? `no page revealed: probe error on ${errored.map((e) => `${pathOf(e.url)} (${e.result})`).join(', ')}; ${triedText}${capSuffix}`
+        : `no page revealed: ${triedText}${outcome === 'robots' && robotsHit ? `; ${robotsHit.result}` : ''}${capSuffix}`;
+    return { probe: { feature, outcome, origins: [], tried, detail, ...(capped ? { capped } : {}) } };
   };
 
+  /** One line of a Playwright error: its first line, without the trailing full stop. */
+  const brief = (err: unknown): string => ((err as Error)?.message ?? String(err)).split('\n')[0]!.trim().replace(/\.$/, '');
+
   try {
-    for (const { c, volatile, depth, i } of ordered) {
-      if (clicks >= STATE_PROBE_CLICK_CAP) break;
+    for (const [k, { c, volatile, depth, i }] of ordered.entries()) {
+      if (clicks >= STATE_PROBE_CLICK_CAP) {
+        // The click cap stopped the probe: every candidate left is named.
+        clickCapUntried = ordered.slice(k).map((o) => pathOf(o.c.url));
+        break;
+      }
       let path = '/';
       try { path = new URL(c.url).pathname; } catch { continue; }
       if (!robotsAllows(robots, path)) {
@@ -446,34 +492,43 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
       if (c.controls) {
         const known = findTriggers(c.controls, phrases);
         if (!known.some((t) => !t.denied)) {
-          tried.push({ url: c.url, result: deniedResult(known) ?? 'no trigger' });
+          tried.push({ url: c.url, result: disabledResult(disabledTriggers(c.controls, phrases)) ?? deniedResult(known) ?? 'no trigger' });
           continue;
         }
       }
-      if (loads >= STATE_PROBE_PAGE_CAP) break;
+      if (loads >= STATE_PROBE_PAGE_CAP) {
+        // The page cap: this page needed a load. Pages the crawl read are still judged.
+        pageCapUntried.push(path);
+        continue;
+      }
       if (loads > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       loads++;
-      const handle = await openFresh();
+      // Each candidate's work is its own: a failure names the step on THIS
+      // page and the probe moves on to the next candidate.
+      let fail = (msg: string): string => `opening a browser page failed (${msg})`;
+      let handle: ProbePageHandle | undefined;
+      let clicked: string | undefined;
       try {
+        handle = await openFresh();
         const { page } = handle;
-        try {
-          await page.goto(c.url, { waitUntil: 'load', timeout: 15_000 });
-        } catch (err) {
-          tried.push({ url: c.url, result: `load failed (${(err as Error).message.split('\n')[0]})` });
-          continue;
-        }
+        fail = (msg) => `load failed (${msg})`;
+        await page.goto(c.url, { waitUntil: 'load', timeout: 15_000 });
+        fail = (msg) => `reading the page failed (${msg})`;
         await settleForSnapshot(page, opts.settleCapMs);
         await waitForAnchors(page, opts.anchorWaitMs);
-        const triggers = findTriggers(await readControls(page), phrases);
+        const controls = await readControls(page);
+        const triggers = findTriggers(controls, phrases);
         const usable = triggers.filter((t) => !t.denied);
         if (usable.length === 0) {
-          tried.push({ url: c.url, result: deniedResult(triggers) ?? 'no trigger' });
+          tried.push({ url: c.url, result: disabledResult(disabledTriggers(controls, phrases)) ?? deniedResult(triggers) ?? 'no trigger' });
           continue;
         }
         const trigger = usable[0]!;
+        clicked = trigger.control;
         const before = new Set((await readControls(page)).filter((a) => a.role === 'link' && a.href).map((a) => pageKey(a.href!)));
         before.add(pageKey(page.url()));
         clicks++;
+        fail = (msg) => `clicked ${trigger.control} failed (${msg})`;
         await page.locator(CONTROL_SELECTOR).nth(trigger.index).click({ timeout: 5000 });
         // Read the anchors again until a new one names the feature, or the wait ends.
         const deadline = Date.now() + revealWaitMs;
@@ -486,6 +541,7 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         }
         if (links.length === 0) {
           tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, no new ${feature} link within ${revealWaitMs} ms` });
+          cleanMisses++;
           continue;
         }
         // The deny list is checked before every click, the link's too.
@@ -493,26 +549,31 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         if (allowed.length === 0) {
           const d = links[0]!.a;
           tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, the new link ${controlLocator(d)} names "${deniedBy(normalizeWords(`${d.label} ${d.testid ?? ''}`))}" and was never clicked` });
+          cleanMisses++;
           continue;
         }
         const link = allowed[0]!;
         const revealedPath = new URL(link.a.href!).pathname;
         const linkControl = controlLocator(link.a);
+        // Only a qualifying page's entry says "revealed"; these say what appeared.
         if (!robotsAllows(robots, revealedPath)) {
-          tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, revealed ${revealedPath}, but robots.txt disallows ${revealedPath}` });
+          tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, a new link to ${revealedPath} appeared, but robots.txt disallows ${revealedPath}` });
           robotsBlocked = true;
           continue;
         }
         const originUrl = volatile ? stableAncestor(c, byUrl) : c.url;
         if (!originUrl) {
-          tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, revealed ${revealedPath}, but no stable page links to this volatile page` });
+          tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, a new link to ${revealedPath} appeared, but no stable page links to this volatile page` });
+          cleanMisses++;
           continue;
         }
         // Follow the revealed link in the same context, so the snapshot is
         // the page with the action's state in it (one item in the cart).
+        fail = (msg) => `clicked ${trigger.control}, a new link to ${revealedPath} appeared, then clicking ${linkControl} failed (${msg})`;
         await page.locator(CONTROL_SELECTOR).nth(link.a.index).click({ timeout: 5000 });
         await page.waitForURL((u) => pageKey(u.toString()) === pageKey(link.a.href!), { timeout: 10_000 }).catch(() => {});
         await page.waitForLoadState('load').catch(() => {});
+        fail = (msg) => `clicked ${trigger.control} and ${linkControl}, but the snapshot of ${revealedPath} failed (${msg})`;
         await settleForSnapshot(page, opts.settleCapMs);
         const snapshot = await snapshotPage(page);
         const revealed = pageKey(link.a.href!);
@@ -523,16 +584,26 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         ];
         tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, revealed ${revealedPath}` });
         qualified.push({ triggerUrl: c.url, triggerVolatile: volatile, origin: originUrl, revealed, actions, tokensMatched: link.n, depth, index: i, snapshot, phrase: trigger.phrase });
+      } catch (err) {
+        const result = fail(brief(err));
+        tried.push({ url: c.url, ...(clicked ? { control: clicked } : {}), result });
+        errored.push({ url: c.url, result });
       } finally {
-        await handle.close().catch(() => {});
+        await handle?.close().catch(() => {});
       }
     }
     return finish();
   } catch (err) {
-    return finish((err as Error).message.split('\n')[0] ?? 'unknown error');
+    return finish(brief(err) || 'unknown error');
   } finally {
     await browserClose?.().catch(() => {});
   }
+}
+
+/** The tried result for a page whose only triggers are disabled, or null when none is. */
+function disabledResult(triggers: TriggerControl[]): string | null {
+  const d = triggers[0];
+  return d ? `trigger disabled (${d.control})` : null;
 }
 
 /** The tried result for a page whose only triggers are denied, or null when none is. */
@@ -572,7 +643,7 @@ export function describeActions(actions: ReachAction[]): string {
 export function stateProbeLine(probe: StateProbe, reachedBy?: { actions: ReachAction[] }): string {
   const head = `State probe "${probe.feature}":`;
   if (probe.outcome === 'revealed' && probe.revealed && probe.origins[0]) {
-    return `${head} revealed ${pathOf(probe.revealed)} from ${pathOf(probe.origins[0])}${reachedBy ? ` (${describeActions(reachedBy.actions)})` : ''}`;
+    return `${head} revealed ${pathOf(probe.revealed)} from ${pathOf(probe.origins[0])}${reachedBy ? ` (${describeActions(reachedBy.actions)})` : ''}${probe.capped ? `; ${probe.capped}` : ''}`;
   }
   const n = probe.rulesSplit.length;
   const tail = `any of its ${n} rule${n === 1 ? '' : 's'} still uncited after planning will report not-revealed`;
@@ -580,7 +651,7 @@ export function stateProbeLine(probe: StateProbe, reachedBy?: { actions: ReachAc
   const tried = probe.tried.length > 0
     ? `tried ${probe.tried.map((t) => `${pathOf(t.url)} (${t.result})`).join(', ')}`
     : 'no candidate page to try';
-  return `${head} no page revealed; ${tried}; ${tail}`;
+  return `${head} no page revealed; ${tried}${probe.capped ? `; ${probe.capped}` : ''}; ${tail}`;
 }
 
 /** The rule split line: every rule id and its side. */

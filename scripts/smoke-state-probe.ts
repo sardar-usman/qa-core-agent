@@ -30,6 +30,16 @@
  *   H. end_scenario on the runtime's own planned-page entries: R6's trace is
  *      accepted, a navigate to /checkout is refused for every scenario of
  *      the feature, and the click path is accepted
+ *   I. one candidate's failure never ends the probe: a disabled "Add to
+ *      cart" (out of stock) before or after the good product is named
+ *      "trigger disabled" and the probe still reveals /checkout; a later
+ *      failure never discards a page that qualified; a trigger click that
+ *      throws on the only trigger page ends with outcome error naming the
+ *      page and its error; no "no page revealed" detail ever sits beside a
+ *      tried entry that says "revealed"
+ *   J. a cap that stops the probe names every candidate it did not try
+ *   K. a scenario's feature for the refusal comes from its cited rule ids,
+ *      never from an exact match on the model's tag ("Shopping-Cart")
  *
  * A local fixture site served in-process (node:http), headless Chromium, a
  * fixture Planner client. No network beyond 127.0.0.1. No model call.
@@ -40,10 +50,13 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Page } from 'playwright';
+import { chromium, type Page } from 'playwright';
+import { installEvalShim } from '../src/agent/eval-shim.js';
 import { discoverPages, writeDiscoveryJson, type DiscoveredPage } from '../src/agent/discovery.js';
 import {
   runStateProbes,
+  probeStateFeature,
+  disabledTriggers,
   detectStateFeatures,
   splitRulesByPage,
   findTriggers,
@@ -72,9 +85,11 @@ delete process.env.ANTHROPIC_API_KEY;
 
 /* ─── the fixture site ──────────────────────────────────────────────────── */
 
-type Variant = 'reveal' | 'no-trigger' | 'no-link' | 'robots' | 'deals' | 'spa';
+type Variant = 'reveal' | 'no-trigger' | 'no-link' | 'robots' | 'deals' | 'spa' | 'disabled-before' | 'disabled-after' | 'click-throws';
 const site = { variant: 'reveal' as Variant, hits: [] as string[] };
 const PRODUCT = '/product/01HXXXXXXXXXXXXXXXXXXXXXXX';
+// An out-of-stock product: its "Add to cart" is disabled and must never be clicked.
+const PRODUCT_OOS = '/product/01HYYYYYYYYYYYYYYYYYYYYYYY';
 
 // The cart link is built by script with split strings, so the fetch crawl's
 // href regex never sees it in the page source (only a rendered DOM after an
@@ -119,13 +134,23 @@ document.addEventListener('click', function (e) {
 function route(p: string): { status: number; type: string; body: string } {
   const html = (body: string) => ({ status: 200, type: 'text/html; charset=utf-8', body });
   if (p === '/robots.txt') return { status: 200, type: 'text/plain', body: site.variant === 'robots' ? 'User-agent: *\nDisallow: /checkout\n' : 'User-agent: *\nDisallow:\n' };
-  if (p === '/') return html(pageHtml('Toolshop', `<h1>Toolshop</h1><h2>Products</h2><a href="${PRODUCT}">Combination Pliers</a><p>$14.15</p>`));
+  if (p === '/') {
+    const good = `<a href="${PRODUCT}">Combination Pliers</a><p>$14.15</p>`;
+    const oos = `<a href="${PRODUCT_OOS}">Bolt Cutters</a><p>Out of stock</p>`;
+    const list = site.variant === 'disabled-before' ? oos + good : site.variant === 'disabled-after' ? good + oos : good;
+    return html(pageHtml('Toolshop', `<h1>Toolshop</h1><h2>Products</h2>${list}`));
+  }
+  if (p === PRODUCT_OOS) return html(pageHtml('Bolt Cutters', `<h1>Bolt Cutters</h1><p>Out of stock</p><button type="button" data-test="add-to-cart" disabled>Add to cart</button>`, addScript));
+  // Six stable pages with no trigger, for the page cap.
+  if (/^\/plain\/[1-6]$/.test(p)) return html(pageHtml(`Plain ${p.slice(-1)}`, `<h1>Plain page ${p.slice(-1)}</h1>`));
   if (p === '/contact') return html(pageHtml('Contact', `<h1>Contact</h1><form><label for="msg">Message</label><textarea id="msg" name="message"></textarea><button type="button">Send</button></form>`));
   if (p === '/deals') return html(pageHtml('Deals', `<h1>Deals</h1><button type="button" data-test="add-to-cart">Add to cart</button>`, addScript));
   if (p === PRODUCT) {
     const add = site.variant === 'no-trigger' ? '<button type="button">Notify me</button>' : '<button type="button" data-test="add-to-cart">Add to cart</button>';
     const noReveal = site.variant === 'no-link' ? '<script>window.__addReveals = false;</script>' : '';
-    return html(pageHtml('Combination Pliers', `<h1>Combination Pliers</h1><p>$14.15</p>${add}<button type="button" data-test="add-to-cart-and-order">Add to cart and place order</button><button type="button" data-test="place-order">Place order</button>`, `${noReveal}${addScript}`));
+    // The only trigger click throws: an overlay intercepts every pointer event, so the click times out.
+    const overlay = site.variant === 'click-throws' ? '<div style="position:fixed;inset:0;z-index:10;background:transparent"></div>' : '';
+    return html(pageHtml('Combination Pliers', `<h1>Combination Pliers</h1><p>$14.15</p>${add}<button type="button" data-test="add-to-cart-and-order">Add to cart and place order</button><button type="button" data-test="place-order">Place order</button>${overlay}`, `${noReveal}${addScript}`));
   }
   if (p === '/checkout') {
     return html(pageHtml('Cart', `<h1>Cart</h1><table id="rows"></table><p id="empty"></p>`, `<script>
@@ -211,6 +236,9 @@ const pathOf = (u: string): string => new URL(u).pathname;
   ], ['add to cart']);
   check('A3. findTriggers matches by normalized words, marks a trigger that names "place order" as denied, ignores a non-trigger',
     trig.length === 2 && !trig[0]!.denied && trig[0]!.control === 'getByTestId("add-to-cart")' && trig[1]!.denied === 'place order', JSON.stringify(trig));
+  const oosControls = [{ index: 0, tag: 'button', role: 'button' as const, label: 'Add to cart', testid: 'add-to-cart', disabled: true }];
+  check('A4. findTriggers skips a disabled trigger; disabledTriggers names it',
+    findTriggers(oosControls, ['add to cart']).length === 0 && disabledTriggers(oosControls, ['add to cart'])[0]?.control === 'getByTestId("add-to-cart")');
 }
 
 /* ─── B. revealed: /checkout from "/" through the item hop ────────────── */
@@ -274,6 +302,7 @@ for (const [variant, outcome, linePart] of [
   check(`C3 ${variant}. an uncited rule reads not-revealed with the pages tried`,
     r8?.reason === 'not-revealed' && (r8.detail ?? '').startsWith('no page revealed: tried /, /contact, /product/') && (variant !== 'robots' || (r8.detail ?? '').includes('robots.txt disallows /checkout')), JSON.stringify(r8));
   check(`C4 ${variant}. the place-order control was never clicked`, !site.hits.includes('/__hit/place-order'));
+  check(`C5 ${variant}. no tried entry says "revealed" beside a "no page revealed" detail`, !probe?.tried.some((t) => /\brevealed\b/.test(t.result)), JSON.stringify(probe?.tried));
 }
 
 /* ─── D. two qualifying origins: the stable one wins, both listed ─────── */
@@ -294,6 +323,81 @@ for (const [variant, outcome, linePart] of [
   check('E1. the SPA shell sends discovery to the browser crawl, which keeps each page\'s controls', disc.method === 'browser-crawl' && !!disc.pageControls && Object.keys(disc.pageControls).length >= 3, JSON.stringify({ method: disc.method, controls: Object.keys(disc.pageControls ?? {}) }));
   check('E2. the probe still reveals /checkout', probes.probes[0]?.outcome === 'revealed' && probes.probes[0].revealed === `${base}/checkout`, JSON.stringify(probes.probes[0]));
   check('E3. "/" and /contact were judged from the crawl\'s load: the probe loaded only the product page', !probeHits.includes('/') && !probeHits.includes('/contact') && probeHits.includes(PRODUCT), JSON.stringify(probeHits));
+}
+
+
+/* ─── I. one candidate's failure never ends the probe ─────────────────── */
+console.log('\n--- disabled-trigger and click-failure variants ---');
+for (const variant of ['disabled-before', 'disabled-after'] as const) {
+  site.variant = variant;
+  const { probes } = await discoverAndProbe();
+  const probe = probes.probes[0];
+  console.log(`${variant}: outcome ${probe?.outcome}`);
+  console.log(probes.lines[0]);
+  console.log(`tried: ${probe?.tried.map((t) => `${pathOf(t.url)} (${t.result})`).join(', ')}`);
+  const oos = probe?.tried.find((t) => t.url.endsWith(PRODUCT_OOS));
+  check(`I1 ${variant}. the probe still reveals /checkout`, probe?.outcome === 'revealed' && probe.revealed === `${base}/checkout`, JSON.stringify(probe));
+  check(`I2 ${variant}. the out-of-stock page is named in tried as "trigger disabled" with the control`, oos?.result === 'trigger disabled (getByTestId("add-to-cart"))', JSON.stringify(probe?.tried));
+  check(`I3 ${variant}. the disabled control was never clicked: the out-of-stock page qualified as nothing`, !probe?.origins.some((o) => o.includes(PRODUCT_OOS)) && !(probe?.tried.some((t) => t.url.endsWith(PRODUCT_OOS) && t.result.startsWith('clicked')) ?? true), JSON.stringify(probe?.tried));
+}
+{
+  site.variant = 'click-throws';
+  const { probes } = await discoverAndProbe();
+  const probe = probes.probes[0];
+  console.log(`click-throws: outcome ${probe?.outcome}`);
+  console.log(probes.lines[0]);
+  const err = `clicked getByTestId("add-to-cart") failed (locator.click: Timeout 5000ms exceeded)`;
+  const entry = probe?.tried.find((t) => t.url.endsWith(PRODUCT));
+  check('I4. the only trigger click throws: outcome error', probe?.outcome === 'error' && probes.revealed.length === 0, JSON.stringify(probe));
+  check('I5. the failing page is named in tried with the step and the error', entry?.result === err && entry.control === 'getByTestId("add-to-cart")', JSON.stringify(entry));
+  check('I6. the detail names that page and its error, then every page tried',
+    probe?.detail === `no page revealed: probe error on ${PRODUCT} (${err}); tried /, /contact, ${PRODUCT}`, probe?.detail);
+  check('I7. the probe line carries it whole', probes.lines[0] === `State probe "cart": ${probe?.detail}; any of its 4 rules still uncited after planning will report not-revealed`, probes.lines[0]);
+}
+{
+  // A page that qualified is never discarded by a later failure: /deals
+  // reveals the cart, then the next candidate's load fails.
+  site.variant = 'reveal';
+  const browser = await chromium.launch({ headless: true });
+  let opened = 0;
+  try {
+    const r = await probeStateFeature({
+      feature: 'cart',
+      tokens: ['cart', 'basket', 'checkout'],
+      phrases: ['add to cart'],
+      candidates: [{ url: `${base}/deals` }, { url: `${base}/zz-after` }],
+      delayMs: 0, anchorWaitMs: 300, revealWaitMs: 1500, settleCapMs: 2000,
+      openPage: async () => {
+        opened++;
+        if (opened === 2) {
+          const broken = { goto: async () => { throw new Error('page.goto: net::ERR_CONNECTION_RESET at http://127.0.0.1/zz-after\nCall log: ...'); } } as unknown as Page;
+          return { page: broken, close: async () => {} };
+        }
+        const ctx = await browser.newContext();
+        await installEvalShim(ctx);
+        return { page: await ctx.newPage(), close: () => ctx.close() };
+      },
+    });
+    check('I8. a later failure never discards a page that qualified: outcome revealed from /deals',
+      r.probe.outcome === 'revealed' && r.probe.origins[0] === `${base}/deals` && r.probe.tried[1]?.result === 'load failed (page.goto: net::ERR_CONNECTION_RESET at http://127.0.0.1/zz-after)', JSON.stringify(r.probe));
+  } finally {
+    await browser.close();
+  }
+}
+
+/* ─── J. a cap that stops the probe is loud ───────────────────────────── */
+{
+  site.variant = 'reveal';
+  // Six trigger-less stable pages the crawl did not read: every one needs a load.
+  const plain = [1, 2, 3, 4, 5, 6].map((n): DiscoveredPage => ({ url: `${base}/plain/${n}`, source: 'crawl' }));
+  const r = await runStateProbes({ map, candidates: plain, featureTokens: featureTokenMap(map), delayMs: 0, anchorWaitMs: 200, settleCapMs: 1000 });
+  const probe = r.probes[0];
+  console.log('\n--- the page cap line ---');
+  console.log(r.lines[0]);
+  check(`J1. the page cap (${STATE_PROBE_PAGE_CAP}) stopped the loads and names the 2 untried paths`, probe?.capped === `page cap ${STATE_PROBE_PAGE_CAP} reached; not tried: /plain/5, /plain/6` && probe.tried.length === 4, JSON.stringify(probe));
+  check('J2. the probe line and the detail carry the cap whole',
+    (r.lines[0] ?? '').includes('; page cap 4 reached; not tried: /plain/5, /plain/6; any of its 4 rules') && (probe?.detail ?? '').endsWith('; page cap 4 reached; not tried: /plain/5, /plain/6'), r.lines[0]);
+  check('J3. without a cap stop there is no cap note (the reveal variant)', revealRun.probes.probes[0]?.capped === undefined && !revealRun.probes.lines[0]!.includes('cap'));
 }
 
 /* ─── F. the rule split ───────────────────────────────────────────────── */
@@ -373,7 +477,7 @@ const cites = (p: PlannedScenario[], id: string): PlannedScenario | undefined =>
   const stubPage = { on: () => {}, off: () => {} } as unknown as Page;
   const ctx = createContext(stubPage, 80);
   ctx.plannedNames = g.plan.map((p) => p.name);
-  ctx.plannedPages = plannedPagesFor(g.plan, reachedPagesOf({ method: 'crawl', pages: [], warnings: [], stateProbes: revealRun.probes.probes }));
+  ctx.plannedPages = plannedPagesFor(g.plan, reachedPagesOf({ method: 'crawl', pages: [], warnings: [], stateProbes: revealRun.probes.probes }), map);
   check('H0. every cart scenario carries reachedPageUrl /checkout, the contact one none',
     g.plan.every((p) => (ctx.plannedPages.get(p.name)?.reachedPageUrl === `${base}/checkout`) === (p.feature === 'cart')), JSON.stringify([...ctx.plannedPages]));
   const target: SelectorRecord = { level: 'role', arg: { role: 'heading', name: 'Cart' }, intent: 'cart heading' };
@@ -431,6 +535,33 @@ const cites = (p: PlannedScenario[], id: string): PlannedScenario | undefined =>
   console.log('--- proof (b): the probe line and the rule split line, fail variant ---');
   for (const l of run.probes.lines) console.log(l);
   console.log('---\n');
+}
+
+
+/* ─── K. the refusal's feature comes from cited rule ids, never the tag ─── */
+{
+  const checkout = `${base}/checkout`;
+  const reached = reachedPagesOf({ method: 'crawl', pages: [], warnings: [], stateProbes: revealRun.probes.probes });
+  const shoppingCart: PlannedScenario = { name: 'added the pliers and the header count went up', category: 'happy', feature: 'Shopping-Cart', ruleIds: [' r6'], rationale: 'r', pageUrl: `${base}/` };
+  const contactOnly: PlannedScenario = { name: 'rejected the contact form with an empty message', category: 'negative', feature: 'cart', ruleIds: ['R1'], rationale: 'r', pageUrl: `${base}/contact` };
+  const tagOnly: PlannedScenario = { name: 'cart link shows after an add', category: 'happy', feature: ' Cart ', rationale: 'r', pageUrl: `${base}/` };
+  const entries = plannedPagesFor([shoppingCart, contactOnly, tagOnly], reached, map);
+  console.log('\n--- the "Shopping-Cart" check ---');
+  console.log(JSON.stringify({ shoppingCart: entries.get(shoppingCart.name), contactOnly: entries.get(contactOnly.name), tagOnly: entries.get(tagOnly.name) }));
+  check('K1. tagged "Shopping-Cart" citing R6, no reachedBy: reachedPageUrl /checkout (from the rule, not the tag)', entries.get(shoppingCart.name)?.reachedPageUrl === checkout, JSON.stringify(entries.get(shoppingCart.name)));
+  check('K2. tagged "cart" but citing only the contact rule R1: no reachedPageUrl', entries.get(contactOnly.name)?.reachedPageUrl === undefined, JSON.stringify(entries.get(contactOnly.name)));
+  check('K3. citing no rule, the tag " Cart " is normalized before it is compared: reachedPageUrl /checkout', entries.get(tagOnly.name)?.reachedPageUrl === checkout);
+  const stubPage = { on: () => {}, off: () => {} } as unknown as Page;
+  const ctx = createContext(stubPage, 80);
+  ctx.plannedNames = [shoppingCart.name, contactOnly.name, tagOnly.name];
+  ctx.plannedPages = entries;
+  const target: SelectorRecord = { level: 'role', arg: { role: 'heading', name: 'Cart' }, intent: 'cart heading' };
+  const begun = await runTool(ctx, { name: 'begin_scenario', input: { name: shoppingCart.name, category: 'happy', feature: 'Shopping-Cart' } });
+  check('K4. begin_scenario accepted', begun.ok === true, begun.error);
+  ctx.current!.steps.push({ kind: 'navigate', url: `${base}/` } as TraceStep, { kind: 'navigate', url: checkout } as TraceStep, { kind: 'assert', assertion: { type: 'toBeVisible', target } } as unknown as TraceStep);
+  const res = await runTool(ctx, { name: 'end_scenario', input: {} });
+  console.log(`end_scenario: ok=${String(res.ok)} error=${res.error}`);
+  check('K5. its trace with a navigate to /checkout is refused as navigated-to-reached-page', res.ok === false && /navigated to \/checkout, a page that is reached by action from \//.test(res.error ?? ''), res.error);
 }
 
 server.close();
