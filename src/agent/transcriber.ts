@@ -8,7 +8,8 @@ import { inlineParseNumberFn } from './parse-number.js';
 // so the spec and the in-process check agree.
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { captureWaitNeeded, inlineAwaitCaptureReadyFn } from './capture-ready.js';
-import type { Assertion, CaptureSource, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
+import type { Assertion, CaptureSource, CredentialMarker, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
+import { AUTH_ENV_PASS, AUTH_ENV_USER } from './auth-emit.js';
 
 /**
  * Turn a verified trace into a runnable Playwright spec.
@@ -111,6 +112,8 @@ function emitStep(step: TraceStep, relations: Map<string, string> = new Map()): 
     case 'click':
       return [`await ${loc(step.target)}.click();`];
     case 'fill':
+      // The test account reads the env, never a literal (invariant 70).
+      if (step.credential) return [`await ${loc(step.target)}.fill(${credentialEnvExpr(step.credential)});`];
       return [`await ${loc(step.target)}.fill(${step.generate ? uniqueCallExpr(step.generate) : q(step.value)});`];
     case 'press':
       return [`await ${loc(step.target)}.press(${q(step.key)});`];
@@ -243,7 +246,7 @@ function emitAssertion(a: Assertion): string[] {
     }
     case 'toHaveValue': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toHaveValue(${q(a.value)}${opts});`];
+      return [`await expect(${loc(a.target)}).toHaveValue(${a.credential ? credentialEnvExpr(a.credential) : q(a.value)}${opts});`];
     }
   }
 }
@@ -305,6 +308,11 @@ function q(s: string): string {
 }
 
 /** A recorded regex source as a RegExp literal, escaping only a bare forward slash. */
+/** The env reference a credential marker emits: the generic pair, whatever pair the agent ran with. */
+export function credentialEnvExpr(marker: CredentialMarker): string {
+  return `process.env.${marker === 'user' ? AUTH_ENV_USER : AUTH_ENV_PASS} ?? ''`;
+}
+
 export function regexLiteral(source: string): string {
   return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/`;
 }

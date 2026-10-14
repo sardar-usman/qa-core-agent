@@ -143,7 +143,7 @@ export interface PageFitRejection {
  * and the per-page block (credentialSteeringFor), which names the rules that
  * are the exception.
  */
-export const CREDENTIAL_STEERING = `Wrong-credential negatives use credentials that do not exist on the site (an invented username or email such as no-such-user-7f3k or nobody+7f3k@example.invalid, with any password), never a real account with a wrong password. Sites lock an account after a few failed attempts, and every recorded scenario is re-run at least four more times (one replay plus three stability runs) before it ships, so a real account would be locked mid-verification and the test would fail for a reason that is no regression. The one exception is a scenario whose point IS the lockout: when a stated rule names a locked or locked-out account, that scenario keeps the real account the rule names and cites the rule.`;
+export const CREDENTIAL_STEERING = `Sign-ins use the run's dedicated test account, which the Explorer fills from the environment; never plan a scenario around a typed or demo password. A wrong-password negative uses the test account's identifier with a literal wrong password: plan at most one, named for the wrong password. An unknown account is its own negative, named "account does not exist", typed with an invented identifier (no-such-user-7f3k or nobody+7f3k@example.invalid). Sites lock an account after a few failed attempts, and every recorded scenario is re-run at least four more times (one replay plus three stability runs) before it ships, so every wrong-password submit against the test account counts toward a per-run cap and a scenario past it is skipped. A forgot-password or reset scenario types a generated email, never the test account's (a reset would send mail to it). The one exception is a scenario whose point IS the lockout: when a stated rule names a locked or locked-out account, that scenario keeps the real account the rule names and cites the rule.`;
 
 /**
  * The per-page credentials block: the steering above plus which stated rules
@@ -153,8 +153,8 @@ export const CREDENTIAL_STEERING = `Wrong-credential negatives use credentials t
 export function credentialSteeringFor(map?: RequirementsMap): string {
   const lockRules = (map?.features ?? []).flatMap((f) => f.rules.filter((r) => /\block(ed|s|out|ing)?\b/i.test(r.text)).map((r) => r.id));
   const exception = lockRules.length > 0
-    ? `Lockout rules on this page: ${lockRules.join(', ')}. The scenario for each of these keeps the real account the rule names; every other wrong-credential negative uses a non-existent account.`
-    : 'No stated rule names a locked account here, so every wrong-credential negative uses a non-existent account.';
+    ? `Lockout rules on this page: ${lockRules.join(', ')}. The scenario for each of these keeps the real account the rule names; every other wrong-credential negative uses the test account's identifier with a wrong password, or an invented identifier for an account that does not exist.`
+    : 'No stated rule names a locked account here, so every wrong-credential negative uses the test account\'s identifier with a wrong password, or an invented identifier for an account that does not exist.';
   return `Credentials in negative scenarios: ${CREDENTIAL_STEERING}\n${exception}`;
 }
 

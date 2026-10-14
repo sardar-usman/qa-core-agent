@@ -4,6 +4,7 @@ import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { FEATURE_PATH_TOKENS, tokensFor } from './page-filter.js';
 import { normalizeFeatureName } from './parse-features.js';
+import { maskForDisk } from './credential-leak.js';
 
 /**
  * Requirements map — SRS ingestion for rule-driven planning.
@@ -334,7 +335,7 @@ export async function requirementsMapForSrs(opts: RequirementsMapForSrsOptions):
   const built = await build({ srsText: text, truncated, apiKey: opts.apiKey, ...(opts.model ? { model: opts.model } : {}) });
   if (built.map.features.length > 0) {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-    fs.writeFileSync(cachePath, JSON.stringify(built.map, null, 2));
+    fs.writeFileSync(cachePath, JSON.stringify(maskForDisk(built.map), null, 2));
   }
   return { map: built.map, costUsd: built.costUsd, reused: false, hash, cachePath, line: `requirements map: built (${hash})` };
 }

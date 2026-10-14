@@ -212,15 +212,14 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     const endU2 = await runTool(tctx, { name: 'end_scenario', input: {} });
     check('end2. end_scenario accepts scenario 2', endU2.ok === true, endU2.error);
 
-    // D5: a happy login keeps the real account; D6: an unknown identifier is untouched.
+    // D5: a happy login never types a password (invariant 70): with no test
+    // account in the run the scenario is skipped; D6: an unknown identifier is untouched.
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(tctx, { name: 'begin_scenario', input: { name: 'logged in with valid credentials', category: 'happy', feature: 'login' } });
     await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: KNOWN } });
     const pwHappy = await runTool(tctx, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'welcome01' } });
-    check('D5. a happy login keeps the real account', pwHappy.ok === true && !(pwHappy.data as { identifierOverridden?: unknown }).identifierOverridden && tctx.current?.steps.some((st) => st.kind === 'fill' && st.value === KNOWN) === true);
-    await runTool(tctx, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
-    const endU3 = await runTool(tctx, { name: 'end_scenario', input: {} });
-    check('end3. end_scenario accepts scenario 3', endU3.ok === true, endU3.error);
+    check('D5. a happy login that types a password is refused; with no test account the scenario is skipped "test credentials not provided"',
+      pwHappy.ok === false && tctx.current === null && tctx.skipped.some((sk) => sk.scenario === 'logged in with valid credentials' && sk.reason === 'test credentials not provided') && await page.inputValue('#password') === '', JSON.stringify({ pwHappy, skipped: tctx.skipped }));
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(tctx, { name: 'begin_scenario', input: { name: 'rejected an unknown e-mail', category: 'negative', feature: 'login' } });
     await runTool(tctx, { name: 'fill', input: { intent: 'email input', testid: 'email', value: 'nobody@example.invalid' } });
@@ -230,21 +229,44 @@ check('E4. inline spec keeps the edge literal', inlineSpec.includes(LITERAL_EDGE
     const endU4 = await runTool(tctx, { name: 'end_scenario', input: {} });
     check('end4. end_scenario accepts scenario 4', endU4.ok === true, endU4.error);
 
-    // D7: with no SRS at all, the account a happy login in this run signed in with is known.
+    // D7 (the brief's D7 shape, saucedemo): with the test account in the env, the
+    // happy login fills it by marker, and the wrong-password negative that types
+    // the account's username keeps it (marked, never rewritten to a token) with
+    // the literal wrong password. Before invariant 70 the username was rewritten.
     const fresh = createContext(page, 60);
+    fresh.testCredentials = { user: 'standard_user', pass: 'secret_sauce' };
+    fresh.knownAccounts = new Set(['standard_user']);
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(fresh, { name: 'begin_scenario', input: { name: 'logged in with valid credentials', category: 'happy', feature: 'login' } });
-    await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });
-    await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'secret_sauce' } });
+    await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', credential: 'user' } });
+    await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', credential: 'pass' } });
     await runTool(fresh, { name: 'assert', input: { type: 'toBeVisible', testid: 'login-submit' } });
     const endU5 = await runTool(fresh, { name: 'end_scenario', input: {} });
-    check('end5. end_scenario accepts scenario 5', endU5.ok === true, endU5.error);
+    check('end5. end_scenario accepts the marked happy login', endU5.ok === true, endU5.error);
     await page.setContent(loginHtml, { waitUntil: 'load' });
     await runTool(fresh, { name: 'begin_scenario', input: { name: 'rejected a wrong password with the mismatch error', category: 'negative', feature: 'login' } });
     await runTool(fresh, { name: 'fill', input: { intent: 'username input', testid: 'email', value: 'standard_user' } });
     const pwLearned = await runTool(fresh, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'wrong_password' } });
     const learnedStep = fresh.current?.steps.find((st) => st.kind === 'fill' && st.target.intent === 'username input');
-    check('D7. an account learned from this run\'s happy login is rewritten in the negative (a username gets a token)', (pwLearned.data as { identifierOverridden?: { from: string } }).identifierOverridden?.from === 'standard_user' && learnedStep?.kind === 'fill' && learnedStep.generate === 'token' && learnedStep.value !== 'standard_user', JSON.stringify({ pwLearned, learnedStep }));
+    const wrongStep = fresh.current?.steps.find((st) => st.kind === 'fill' && st.target.intent === 'password input');
+    check('D7. the D7 shape: the typed account username is marked "user" (never rewritten), the wrong password stays literal, the page holds the account username',
+      pwLearned.ok === true && !(pwLearned.data as { identifierOverridden?: unknown }).identifierOverridden && learnedStep?.kind === 'fill' && learnedStep.credential === 'user' && learnedStep.value === '' && !learnedStep.generate && !learnedStep.override
+      && wrongStep?.kind === 'fill' && wrongStep.value === 'wrong_password' && await page.inputValue('#email') === 'standard_user', JSON.stringify({ pwLearned, learnedStep, wrongStep }));
+    // D8 (R11, run 6): the duplicate-email negative on /auth/register seeds the
+    // test account's email. LOGIN_FLOW_RE matches "auth" in that URL, and run 6's
+    // seed was rewritten to a generated email; a marked fill is never rewritten
+    // and never generated (invariant 70).
+    await page.route('https://shop.test/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: loginHtml }));
+    const r11 = createContext(page, 60);
+    r11.testCredentials = { user: 'client@shop.test', pass: 'Client!Pass-1' };
+    r11.knownAccounts = new Set(['client@shop.test']);
+    await page.goto('https://shop.test/auth/register');
+    await runTool(r11, { name: 'begin_scenario', input: { name: 'rejected registration with an already-used email address', category: 'negative', feature: 'account' } });
+    await runTool(r11, { name: 'fill', input: { intent: 'email input', testid: 'email', credential: 'user' } });
+    const r11pw = await runTool(r11, { name: 'fill', input: { intent: 'password input', testid: 'password', value: 'Str0ng!Pass-77' } });
+    const seed = r11.current?.steps.find((st) => st.kind === 'fill' && st.target.intent === 'email input');
+    check('D8. the R11 seed: on /auth/register the duplicate-email negative keeps the test account email (marker), neither rewritten nor generated',
+      r11pw.ok === true && !(r11pw.data as { identifierOverridden?: unknown }).identifierOverridden && seed?.kind === 'fill' && seed.credential === 'user' && !seed.generate && !seed.override && await page.inputValue('#email') === 'client@shop.test', JSON.stringify({ r11pw, seed }));
   } finally {
     await browser.close();
   }

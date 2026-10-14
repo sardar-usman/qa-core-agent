@@ -89,8 +89,10 @@ check('G1. an unparseable rule bracket falls through without crashing', junk.len
 
 /* ─── H. lockout is state: wrong-credential negatives use a non-existent account ── */
 check('H1. the Planner SYSTEM prompt carries the credential steering verbatim', PLANNER_SYSTEM.includes(CREDENTIAL_STEERING));
-check('H2. the steering says non-existent credentials, never a real account with a wrong password, and why (lockout, re-runs)',
-  /credentials that do not exist/.test(CREDENTIAL_STEERING) && /never a real account with a wrong password/.test(CREDENTIAL_STEERING) && /lock an account after a few failed attempts/.test(CREDENTIAL_STEERING) && /re-run at least four more times/.test(CREDENTIAL_STEERING));
+check('H2. the steering says the test account with a literal wrong password, "account does not exist" as its own negative, a per-run cap, and why (lockout, re-runs)',
+  /test account's identifier with a literal wrong password/.test(CREDENTIAL_STEERING) && /"account does not exist"/.test(CREDENTIAL_STEERING) && /invented identifier/.test(CREDENTIAL_STEERING)
+  && /lock an account after a few failed attempts/.test(CREDENTIAL_STEERING) && /re-run at least four more times/.test(CREDENTIAL_STEERING) && /per-run cap/.test(CREDENTIAL_STEERING));
+check('H2b. the steering sends a reset flow to a generated email, never the test account', /reset scenario types a generated email, never the test account's/.test(CREDENTIAL_STEERING));
 check('H3. the steering names the exception: a rule that names a locked account keeps the real account', /whose point IS the lockout/.test(CREDENTIAL_STEERING) && /keeps the real account/.test(CREDENTIAL_STEERING));
 const lockMap: RequirementsMap = { features: [{ name: 'login', description: 'sign in', rules: [
   { id: 'R2', text: 'A wrong password shows the error and the user stays on the login page.', type: 'behavior' },

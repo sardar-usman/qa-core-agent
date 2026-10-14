@@ -302,7 +302,7 @@ interface ScenarioVerdict {
 
 1. Launch a fresh Chromium headless browser
 2. For each scenario the Explorer produced:
-   - Create a new browser context (reuses the auth storage state if `playwright/.auth/user.json` exists)
+   - Create a new, clean browser context (no saved storage state is loaded; a credential-marked fill types the test account from the env)
    - Install the `__name` eval shim
    - Re-run every step (`navigate`, `click`, `fill`, `press`, `wait`, `assert`) honoring the `ambiguous` flag in each `SelectorRecord`
    - Record the verdict: `passed: true` or `passed: false` with the failing step index, step kind, and first line of the error
@@ -850,15 +850,15 @@ The older spellings `QA_CORE_MODEL_PLANNER`, `QA_CORE_MODEL_EXPLORE`, and `QA_CO
 | `QA_CORE_MAX_STEPS` | `40` | Hard ceiling on Explorer tool calls |
 | `QA_CORE_COST_CEILING` | `2.00` | Cost ceiling per run in USD (older `QA_CORE_MAX_USD` still works; this name wins). Hitting it stops the Explorer cleanly: completed scenarios are kept and the pipeline (Critic, replay, stability, transcription, coverage) continues on them; the console and reconciliation report how many scenarios completed and how many planned ones were never explored. Multi-page runs cover more pages, so give them a higher ceiling (e.g. `5.00`). |
 
-### Auth setup (optional)
+### The test account (optional)
 
 | Variable | Purpose |
 |---|---|
-| `QA_CORE_AUTH_URL` | Login page URL. Triggers the storage-state setup in [`tests/auth.setup.ts`](../tests/auth.setup.ts). |
-| `QA_CORE_AUTH_USER` | Username / email |
-| `QA_CORE_AUTH_PASS` | Password |
+| `QA_CORE_TEST_USER_<HOST>` / `QA_CORE_TEST_PASS_<HOST>` | The dedicated test account for one site. HOST is the run's host uppercased, every non-alphanumeric character as `_` (`PRACTICESOFTWARETESTING_COM`). Tried first; a pair with only one half set is reported and never completed from the generic pair. |
+| `QA_CORE_TEST_USER` / `QA_CORE_TEST_PASS` | The generic pair, used when no host pair is set. |
+| `QA_CORE_WRONG_PASSWORD_CAP` | Wrong-password submits against the account per run, across every stage (default 10; a stated lockout after N attempts lowers it to N - 1). |
 
-When all three are set, `npm run auth:setup` captures a logged-in browser context to `playwright/.auth/user.json`. Subsequent test runs reuse that state.
+The model never types the account: it passes `credential: "user"` or `"pass"` on the fill tool and every stage reads the value from the env. Before the requirements map and the Planner, a login preflight checks the account signs in (`--login-url` names the page when the common paths miss it); a failure stops the run with nothing spent. The console names the variables, never the values, and no value is written to any file under `output/`. `QA_CORE_AUTH_*` and the repo's own `tests/auth.setup.ts` are retired. See CLAUDE.md invariant 70.
 
 ### Gateway
 
@@ -1496,7 +1496,7 @@ npm run typecheck  # to see all errors
 ```
 qa-core-agent/
 ├── README.md                            # quickstart + headline architecture
-├── package.json                          # 9 npm scripts: explore, generate, heal, gateway, mcp, eval, test, typecheck, auth:setup
+├── package.json                          # npm scripts: explore, generate, heal, gateway, mcp, eval, test, typecheck, smoke, ...
 ├── tsconfig.json                         # strict TS, ES2022, bundler resolution
 ├── playwright.config.ts                  # 5 projects, retries on CI, traces on first retry
 ├── .env.example                          # required + optional env vars
@@ -1530,9 +1530,6 @@ qa-core-agent/
 │   │
 │   └── mcp/
 │       └── server.ts                     # MCP server (stdio transport)
-│
-├── tests/
-│   └── auth.setup.ts                     # storage-state fixture
 │
 ├── scripts/
 │   ├── eval.ts                           # eval harness

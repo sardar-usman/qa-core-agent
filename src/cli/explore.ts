@@ -4,11 +4,11 @@ import path from 'node:path';
 import { explore, type ReviewPaused } from '../agent/runtime.js';
 import { transcribe } from '../agent/transcriber.js';
 import { scaffold, frameworkDirName, normalizeAndValidateUrl } from '../agent/scaffold.js';
-import { zipFrameworkToBuffer } from '../agent/zip-framework.js';
+import { runFrameworkLines, writeFrameworkZip, zipExitCode, zipResultLines, type FrameworkZipOutcome } from '../agent/framework-zip.js';
 import { countRules, requirementsMapForSrs, type RequirementsMap } from '../agent/requirements.js';
 import { renderRuleCoverage } from '../agent/rule-coverage.js';
 import { readCsv } from '../agent/csv.js';
-import { diagnoseEmptyRun, renderReconciliation } from '../agent/reconcile.js';
+import { diagnoseEmptyRun, refusedNote, renderReconciliation } from '../agent/reconcile.js';
 import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
@@ -20,6 +20,9 @@ import {
 import os from 'node:os';
 import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
 import { appendRunEvent } from '../server/events.js';
+import { maskForDisk } from '../agent/credential-leak.js';
+import { postRunLockoutCheck, preflightStopReport, runLoginPreflightGate, writePreflightStopReport } from '../agent/login-preflight.js';
+import { retiredAuthEnvLine } from '../agent/test-credentials.js';
 
 /**
  * CLI:  npm run explore -- <url> [--lang ts|js] [--name <basename>] [--out <dir>]
@@ -44,7 +47,7 @@ function parseArgs(argv: string[]): ExploreRequest {
     console.error('                          [--features login,cart] [--srs requirements.md] [--discover]');
     console.error('                          [--urls /login,/cart] [--no-pom] [--no-replay]');
     console.error('                          [--no-stability] [--stability N] [--no-stabilize]');
-    console.error('                          [--stabilize-attempts N]');
+    console.error('                          [--stabilize-attempts N] [--login-url <url or path>]');
     console.error('  npm run explore -- --resume <checkpoint.json>   (continue an interrupted run)');
     console.error('  npm run explore -- --from-plan <plan.csv> [--lang ts|js] [--name foo] [--no-pom]');
     console.error('                                            [--no-replay] [--no-stability] [--stability N]');
@@ -52,6 +55,7 @@ function parseArgs(argv: string[]): ExploreRequest {
     console.error('');
     console.error('  --no-stabilize          Skip Stage 5b. Flaky scenarios always drop.');
     console.error('  --stabilize-attempts N  Max Stabilizer fix attempts per flaky scenario (default 3).');
+    console.error('  --login-url URL         The login page the test-account preflight tries first.');
     console.error('  --ceiling USD           Per-run QA_CORE_COST_CEILING (also --repair-reserve, --max-steps,');
     console.error('                          --planner-model, --explorer-model, --critic-model, --env NAME=VALUE).');
     process.exit(1);
@@ -106,6 +110,7 @@ function runFlags(req: ExploreRequest): Record<string, unknown> {
     lang: req.lang, pom: req.pom, features: req.features, srs: req.srs ?? null, discover: req.discover, urls: req.urls,
     resume: req.resume ?? null, stabilize: req.stabilize, stabilizeAttempts: req.stabilizeAttempts, replay: req.replay,
     stability: req.stability, stabilityIterations: req.stabilityIterations, emittedCheck: req.emittedCheck, env: req.env,
+    loginUrl: req.loginUrl ?? null,
   };
 }
 
@@ -206,6 +211,23 @@ async function main(): Promise<void> {
   // every end, so a run that stops early still records who started it.
   writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
 
+  // The test account (invariant 70): which variables hold it (names only),
+  // and does it sign in? Runs BEFORE the requirements map and the Planner, so
+  // a failure costs nothing. A failed preflight leaves a minimal stopped
+  // run-report and run-meta (the dashboard lists the run) and nothing else.
+  const retired = retiredAuthEnvLine(process.env);
+  if (retired) console.log(`  ${retired}`);
+  const gate = await runLoginPreflightGate({ url, ...(args.loginUrl ? { loginUrl: args.loginUrl } : {}), log: (line) => console.log(`  ${line}`) });
+  if (gate.stopLine) {
+    if (!resumeCp) {
+      writePreflightStopReport(outDir, preflightStopReport({ url, language: args.lang, line: gate.stopLine, startedAt: new Date().toISOString() }));
+      writeRunMeta(outDir, { source: 'cli', flags: runFlags(args) });
+    }
+    console.error('');
+    console.error(gate.stopLine);
+    process.exit(1);
+  }
+
   // SRS ingestion — all of it happens BEFORE the browser launches, so a bad
   // document or an empty map fails fast and free. A resumed run restores the
   // map from the checkpoint instead of rebuilding it (no Haiku call).
@@ -236,7 +258,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     fs.mkdirSync(outDir, { recursive: true });
-    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(requirements, null, 2));
+    fs.writeFileSync(path.join(outDir, 'requirements-map.json'), JSON.stringify(maskForDisk(requirements), null, 2));
     console.log(
       `  SRS: ${requirements.features.length} feature(s), ${countRules(requirements)} rule(s) · $${built.costUsd.toFixed(4)}` +
       `${requirements.truncated ? ' · truncated at cap' : ''}`,
@@ -257,6 +279,8 @@ async function main(): Promise<void> {
       ...(requirementsUsd !== undefined ? { requirementsUsd } : {}),
       ...(resumeCp ? { resume: resumeCp } : {}),
       ...(fromPlan ? { fromPlan } : {}),
+      loginPreflightDone: true,
+      ...(gate.accountSkipReason ? { accountSkipReason: gate.accountSkipReason } : {}),
     }),
     onEvent: (e) => {
       // The stored timeline for the Run Detail page, next to the report.
@@ -302,8 +326,10 @@ async function main(): Promise<void> {
           console.log(`      ✓ ${e.name}  (${e.durationMs}ms)`); break;
         case 'replay_scenario_failed':
           console.log(`      ✗ ${e.name}  (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
+        case 'replay_scenario_refused':
+          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
         case 'replay_done':
-          console.log(`      ${e.passed} passed · ${e.failed} dropped · ${(e.durationMs / 1000).toFixed(1)}s`); break;
+          console.log(`      ${e.passed} passed · ${e.failed} dropped${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ${(e.durationMs / 1000).toFixed(1)}s`); break;
         case 'stability_started': {
           const stage = args.replay ? 5 : 4;
           console.log(`\n[${stage}/${totalStages}] Stability · ${e.iterations}× re-run on ${e.total} survivor(s) …`);
@@ -313,13 +339,15 @@ async function main(): Promise<void> {
           console.log(`      ✓ ${e.name}  iter ${e.iteration}  (${e.durationMs}ms)`); break;
         case 'stability_iteration_failed':
           console.log(`      ✗ ${e.name}  iter ${e.iteration} (step ${e.failedStep + 1} ${e.stepKind}: ${truncate(e.error, 120)})`); break;
+        case 'stability_scenario_refused':
+          console.log(`      - ${e.name}  (not run: ${e.reason})`); break;
         case 'stability_done': {
           const recovered = e.recovered ?? 0;
           const recoveredChip = recovered > 0 ? ` · ${recovered} recovered by Stabilizer` : '';
           const stabilizerCost = e.stabilizerCostUsd ?? 0;
           const stabilizerCostChip = stabilizerCost > 0 ? ` · stabilizer $${stabilizerCost.toFixed(4)}` : '';
           console.log(
-            `      ${e.stable} stable${recoveredChip} · ${e.flaked} flaked · flake_rate=${(e.flakeRate * 100).toFixed(1)}% · ` +
+            `      ${e.stable} stable${recoveredChip} · ${e.flaked} flaked · flake_rate=${(e.flakeRate * 100).toFixed(1)}%${(e.refused ?? 0) > 0 ? ` · ${e.refused} refused by the wrong-password cap` : ''} · ` +
             `${(e.durationMs / 1000).toFixed(1)}s${stabilizerCostChip}`,
           );
           break;
@@ -358,6 +386,9 @@ async function main(): Promise<void> {
   // placeholder framework — that's how we ended up writing "0 scenarios, 11
   // files" to disk on a bad URL. Bail with a clear message.
   if (!result.scenarios || result.scenarios.length === 0) {
+    // Wrong-password submits may have been spent before the funnel emptied.
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
+    if (result.lockoutWarning) writeReportFiles(outDir, result);
     const totalUsd = totalCost(result);
     console.error('');
     console.error('✗ No framework was written — 0 scenarios survived the pipeline.');
@@ -395,6 +426,7 @@ async function main(): Promise<void> {
   let primaryPath: string;
   let scenarios: number;
   let frameworkZipPath: string | undefined;
+  let zipOutcome: FrameworkZipOutcome | undefined;
   if (args.pom) {
     // v3: scaffold emits the full project (package.json, configs, README, etc.)
     // and calls pom.ts internally for pages/tests/a11y. Then we zip it.
@@ -420,6 +452,8 @@ async function main(): Promise<void> {
       rescaffold: (r) => { scaffoldResult = scaffold({ report: r, ...scaffoldOpts }); },
       log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); },
     });
+    // After the last stage that submits: does the account still sign in?
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
     writeReportFiles(outDir, result);
     if (!result.stopped) markCheckpointPhase(outDir, 'emitted');
     const cpFile = path.join(outDir, 'checkpoint.json');
@@ -427,38 +461,35 @@ async function main(): Promise<void> {
     scenarios = scaffoldResult.pomResult.scenarios;
     const features = scaffoldResult.pomResult.features;
     const specCount = scaffoldResult.pomResult.specFiles.length;
-    console.log(`\nWrote complete framework zip to ${path.relative(process.cwd(), outDir)}/`);
-    console.log(`  pages/        ${scaffoldResult.pomResult.pageFiles.length} page object class(es) (one per feature + BasePage)`);
-    if (features.length > 0) {
-      console.log(`  tests/        ${specCount} spec file(s) across feature folder(s): ${features.map((f) => `tests/${f}/`).join(', ')}`);
-    } else {
-      console.log(`  tests/        ${specCount} spec file(s)`);
-    }
-    console.log(`                ${scenarios} scenarios total`);
-    console.log(`  tests/a11y/   ${path.basename(scaffoldResult.pomResult.a11yFile)}`);
-    console.log(`  scaffold:     package.json, playwright.config.ts, tsconfig.json, README.md, .gitignore, .env.example`);
-    console.log(`  fixtures:     credentials.ts`);
-    console.log(`  helpers:      assertions.ts`);
-    // Zip the framework alongside the directory for easy distribution.
-    // After the zip is in place, slim the directory to just run-report.json
-    // so the on-disk footprint is the zip (the deliverable) plus a tiny
-    // tombstone that keeps the dashboard's run-history scan working.
+    // The listing the zip holds; printed only once the zip is on disk.
+    const listing = [
+      `  pages/        ${scaffoldResult.pomResult.pageFiles.length} page object class(es) (one per feature + BasePage)`,
+      features.length > 0
+        ? `  tests/        ${specCount} spec file(s) across feature folder(s): ${features.map((f) => `tests/${f}/`).join(', ')}`
+        : `  tests/        ${specCount} spec file(s)`,
+      `                ${scenarios} scenarios total`,
+      `  tests/a11y/   ${path.basename(scaffoldResult.pomResult.a11yFile)}`,
+      `  scaffold:     package.json, playwright.config.ts, tsconfig.json, README.md, .gitignore, .env.example`,
+      `  fixtures:     credentials.ts`,
+      `  helpers:      assertions.ts`,
+    ];
+    // The zip lives INSIDE the run directory, next to run-report.json, written
+    // atomically. No test-account value and no session file ships (invariant
+    // 70): the guard refuses the zip, the refusal is recorded on the report,
+    // and nothing claims a zip that is not on disk.
     try {
-      // The zip lives INSIDE the run directory, next to run-report.json, so a
-      // run's files stay together; it is written atomically (temp name, rename).
-      const zipBuf = zipFrameworkToBuffer(frameworkDir, zipRootName);
-      const zipPath = path.join(outDir, `${zipRootName}.zip`);
-      const tmpZip = path.join(outDir, `.${zipRootName}.zip.${process.pid}.tmp`);
-      fs.writeFileSync(tmpZip, zipBuf);
-      fs.renameSync(tmpZip, zipPath);
-      frameworkZipPath = zipPath;
-      console.log(`  zip:          ${path.relative(process.cwd(), zipPath)} (${(zipBuf.length / 1024).toFixed(1)} KB)`);
-      console.log(`  (framework files live in the zip; the run directory keeps its own files and the zip)`);
-    } catch (err) {
-      console.log(`  zip:          skipped, ${(err as Error).message}`);
+      zipOutcome = writeFrameworkZip({ frameworkDir, destDir: outDir, zipRootName, runDir: outDir, report: result });
     } finally {
       try { fs.rmSync(emitTmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }
+    if (zipOutcome.refused) {
+      writeReportFiles(outDir, result);
+      appendRunEvent(outDir, { type: 'message', text: zipOutcome.refused.reason });
+    }
+    if (zipOutcome.written) frameworkZipPath = zipOutcome.written.zipPath;
+    const zipLines = zipResultLines(zipOutcome, { outDirRel: path.relative(process.cwd(), outDir), zipRel: frameworkZipPath ? path.relative(process.cwd(), frameworkZipPath) : undefined, listing });
+    for (const line of zipLines) (zipOutcome.written ? console.log : console.error)(line);
+    process.exitCode = zipExitCode(zipOutcome);
     // Checkpoint lifecycle: deleted only on a fully complete run; a stopped run keeps it for --resume.
     if (result.stopped && fs.existsSync(cpFile)) console.log(`  checkpoint:   kept at ${path.relative(process.cwd(), cpFile)} (run stopped early: ${result.stopped.reason})`);
     else deleteCheckpoint(outDir);
@@ -466,6 +497,8 @@ async function main(): Promise<void> {
     const fin = finalizeRunDir(outDir);
     if (fin.latest) console.log(`  latest:       ${path.relative(process.cwd(), path.join(path.dirname(outDir), 'latest'))} -> ${path.basename(outDir)}`);
   } else {
+    await postRunLockoutCheck({ report: result, ...(gate.loginUrl ? { loginUrl: gate.loginUrl } : {}), log: (line) => { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); } });
+    if (result.lockoutWarning) writeReportFiles(outDir, result);
     const r = transcribe({ report: result, outDir, name: specName });
     primaryPath = r.specPath;
     scenarios = r.scenarios;
@@ -488,7 +521,7 @@ async function main(): Promise<void> {
   if (result.replay && !result.replay.skipped) {
     const total = result.replay.passed + result.replay.failed;
     const pct = total > 0 ? Math.round((result.replay.passed / total) * 100) : 0;
-    console.log(`Reality check: ${result.replay.passed}/${total} passed twice (${pct}%) · ${(result.replay.durationMs / 1000).toFixed(1)}s`);
+    console.log(`Reality check: ${result.replay.passed}/${total} passed twice (${pct}%)${refusedNote(result.replay.refused)} · ${(result.replay.durationMs / 1000).toFixed(1)}s`);
   } else if (result.replay?.skipped) {
     console.log('Reality check: skipped (--no-replay)');
   }
@@ -500,7 +533,7 @@ async function main(): Promise<void> {
     const strictStable = result.reconciliation ? result.reconciliation.stable : result.stability.passed;
     const recovered = result.reconciliation?.recovered ?? result.stability.recovered ?? 0;
     const recoveredNote = recovered > 0 ? ` (+${recovered} recovered)` : '';
-    console.log(`Stability:     ${strictStable}/${total} stable across ${result.stability.iterations}×${recoveredNote} · flake_rate=${pct}% · ${(result.stability.durationMs / 1000).toFixed(1)}s`);
+    console.log(`Stability:     ${strictStable}/${total} stable across ${result.stability.iterations}×${recoveredNote} · flake_rate=${pct}%${refusedNote(result.stability.refused)} · ${(result.stability.durationMs / 1000).toFixed(1)}s`);
   } else if (result.stability?.skipped) {
     console.log('Stability:     skipped (--no-stability)');
   }
@@ -515,13 +548,8 @@ async function main(): Promise<void> {
   // v3: the new framework workflow is "cd into it and use it as a project".
   // For backward compat with --no-pom, still show the single-file command.
   if (args.pom) {
-    console.log('\nRun the framework:');
-    console.log('  cd ' + path.relative(process.cwd(), outDir));
-    console.log('  npm install');
-    console.log('  npx playwright test');
-    if (frameworkZipPath) {
-      console.log(`\nOr share the zip: ${path.relative(process.cwd(), frameworkZipPath)}`);
-    }
+    // Only when the zip is on disk: a refused or failed zip has nothing to run.
+    for (const line of runFrameworkLines(zipOutcome ?? {}, { outDirRel: path.relative(process.cwd(), outDir), zipRel: frameworkZipPath ? path.relative(process.cwd(), frameworkZipPath) : undefined })) console.log(line);
   } else {
     console.log('\nRun: npx playwright test ' + path.relative(process.cwd(), primaryPath));
   }

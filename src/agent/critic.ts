@@ -96,6 +96,7 @@ Flagging rules — apply to every scenario:
 4. Missing outcome assertion: a scenario where the key action (submit, navigate, toggle) has no assertion on its outcome is "rework" or "reject".
 
 A fill rendered as <generated:email>, <generated:token> or <generated:password> is a value the framework generates fresh on every run by design (a unique registration email, a unique username, a strong password); it is never a hardcoded literal and never a rule 6 violation.
+A fill rendered as <credential:user> or <credential:pass> types the run's dedicated test account, read from the environment on every run (its identifier and its password); it is never a hardcoded literal and never a rule 6 violation. A wrong-password negative fills <credential:user> with a literal wrong password by design.
 
 5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-read from a second element ("re-read at ...") for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
@@ -341,7 +342,7 @@ export function describeStep(step: TraceStep): string {
     // A generated fill renders as its generator, never the literal it
     // produced this run: run 591732's Critic read a fresh unique email as a
     // hardcoded generated id and reworked the scenario for it.
-    case 'fill':     return `fill(${where(step.target)}, ${step.generate ? `<generated:${step.generate}>` : renderValueForCritic(step.value)})`;
+    case 'fill':     return `fill(${where(step.target)}, ${step.credential ? `<credential:${step.credential}>` : step.generate ? `<generated:${step.generate}>` : renderValueForCritic(step.value)})`;
     case 'press':    return `press(${step.key} on ${where(step.target)})`;
     case 'select_option': return `select_option(${where(step.target)}, ${step.by}=${renderValueForCritic(step.option)})`;
     case 'set_checked':   return `set_checked(${where(step.target)}, ${step.checked ? 'check' : 'uncheck'})`;
@@ -391,7 +392,7 @@ export function describeStep(step: TraceStep): string {
         }
         case 'toHaveValue': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert ${where(a.target)} value="${a.value}"${t}`;
+          return a.credential ? `assert ${where(a.target)} value=<credential:${a.credential}>${t}` : `assert ${where(a.target)} value="${a.value}"${t}`;
         }
       }
     }

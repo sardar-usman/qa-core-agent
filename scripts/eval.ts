@@ -140,7 +140,7 @@ function runPlaywright(specPath: string, baseUrl: string): { total: number; pass
   const reportPath = path.join(out, 'pw-results.json');
   try {
     execSync(
-      // Pin --project=chromium so the auth setup project does not also run.
+      // Pin --project=chromium so the other browser projects do not also run.
       `npx playwright test "${specPath}" --reporter=json --project=chromium`,
       {
         cwd: process.cwd(),

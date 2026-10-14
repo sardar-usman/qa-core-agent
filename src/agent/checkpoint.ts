@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { maskForDisk } from './credential-leak.js';
 import type { PlannedScenario } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
 import type { RunReport, Scenario } from './trace.js';
@@ -89,6 +90,12 @@ export interface Checkpoint {
   phase: CheckpointPhase;
   /** completedScenarios.length, as an index into plan (for the resume banner). */
   nextScenarioIndex: number;
+  /**
+   * Wrong-password submits already spent against the test account
+   * (invariant 70), so a resume keeps counting toward the same cap.
+   * Absent on a run without credentials and on older checkpoints.
+   */
+  wrongPasswordCount?: number;
   startedAt: string;
   updatedAt: string;
 }
@@ -108,7 +115,8 @@ export function writeCheckpoint(outDir: string, cp: Checkpoint): string {
   fs.mkdirSync(outDir, { recursive: true });
   const target = checkpointPath(outDir);
   const tmp = path.join(outDir, `.${CHECKPOINT_FILENAME}.tmp`);
-  fs.writeFileSync(tmp, JSON.stringify(cp, null, 2));
+  // No test-account value reaches disk (invariant 70): every string is masked.
+  fs.writeFileSync(tmp, JSON.stringify(maskForDisk(cp), null, 2));
   fs.renameSync(tmp, target);
   return target;
 }

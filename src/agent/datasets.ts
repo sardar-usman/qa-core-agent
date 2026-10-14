@@ -1,7 +1,8 @@
 import type { RunReport, Scenario, TraceStep } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { canonicalIntent } from './pom.js';
-import { findHappyLoginScenario, recordedCredentials, AUTH_ENV_USER, AUTH_ENV_PASS } from './auth-emit.js';
+import { findHappyLoginScenario, recordedCredentials } from './auth-emit.js';
+import { CREDENTIAL_REDACTION, envCredentialValues, maskDeep } from './credential-leak.js';
 
 /**
  * Dataset extraction — turns a run's recorded fill values into per-feature
@@ -47,6 +48,8 @@ const CREDENTIAL_INTENT_RE = /passw(or)?d|passcode/i;
 
 /** True when this fill must never appear in a dataset. */
 export function isCredentialFill(step: Extract<TraceStep, { kind: 'fill' }>, feature: string | undefined): boolean {
+  // The test account (invariant 70): its value lives in the env only.
+  if (step.credential) return true;
   if (CREDENTIAL_INTENT_RE.test(step.target.intent)) return true;
   // Every fill inside a login flow fed a credential exchange; none of it is
   // reusable test data.
@@ -55,8 +58,8 @@ export function isCredentialFill(step: Extract<TraceStep, { kind: 'fill' }>, fea
 
 type FillStep = Extract<TraceStep, { kind: 'fill' }>;
 
-/** The placeholder a redacted credential fill value carries. */
-export const CREDENTIAL_REDACTION = '[redacted:credential]';
+/** The placeholder a redacted credential value carries (one constant, credential-leak.ts). */
+export { CREDENTIAL_REDACTION };
 
 /**
  * The credential values a run must never write where a diagnosis or a client
@@ -64,8 +67,9 @@ export const CREDENTIAL_REDACTION = '[redacted:credential]';
  *   - the happy login among the shipped scenarios (as before),
  *   - the happy login among the dropped traces (a dropped happy login would
  *     otherwise leak its password into droppedTraces),
- *   - the values of the env credential variables the run used
- *     (QA_CORE_TEST_USER / QA_CORE_TEST_PASS when set and non-empty),
+ *   - the values of every test-account variable in the env
+ *     (QA_CORE_TEST_USER / QA_CORE_TEST_PASS and every host-scoped pair,
+ *     QA_CORE_TEST_USER_<HOST> / QA_CORE_TEST_PASS_<HOST>, when set),
  *   - the set remembered on this report object when its dropped traces were
  *     attached (rememberCredentialSecrets), so a later stage that drops more
  *     scenarios still masks a password the earlier redaction already hid.
@@ -85,10 +89,7 @@ export function credentialSecrets(report: RunReport, env: NodeJS.ProcessEnv = pr
     ...(t.repairSteps ? [{ name: t.name, category: t.category ?? 'happy', feature: t.feature, steps: t.repairSteps }] : []),
   ]) as Scenario[];
   addLogin(findHappyLoginScenario({ ...report, scenarios: droppedAsScenarios }));
-  for (const name of [AUTH_ENV_USER, AUTH_ENV_PASS]) {
-    const v = env[name];
-    if (typeof v === 'string' && v !== '') out.add(v);
-  }
+  for (const v of envCredentialValues(env)) out.add(v);
   out.delete(CREDENTIAL_REDACTION);
   return out;
 }
@@ -108,10 +109,15 @@ export function redactSteps(steps: TraceStep[], secret: Set<string>): TraceStep[
   return steps.map((st) => (st.kind === 'fill' && secret.has(st.value) ? { ...st, value: CREDENTIAL_REDACTION } : st));
 }
 
-/** Dropped traces with their steps and repair steps redacted. */
+/**
+ * Dropped traces with their steps and repair steps redacted, and every other
+ * string in them (a reason, an assertion's text) masked where it holds a
+ * secret (invariant 70).
+ */
 export function redactDroppedTraces(traces: NonNullable<RunReport['droppedTraces']>, secret: Set<string>): NonNullable<RunReport['droppedTraces']> {
   if (secret.size === 0) return traces;
-  return traces.map((t) => ({ ...t, steps: redactSteps(t.steps, secret), ...(t.repairSteps ? { repairSteps: redactSteps(t.repairSteps, secret) } : {}) }));
+  const redacted = traces.map((t) => ({ ...t, steps: redactSteps(t.steps, secret), ...(t.repairSteps ? { repairSteps: redactSteps(t.repairSteps, secret) } : {}) }));
+  return maskDeep(redacted, [...secret].sort((a, b) => b.length - a.length));
 }
 
 /**
@@ -131,11 +137,14 @@ export function redactDroppedTraces(traces: NonNullable<RunReport['droppedTraces
 export function redactCredentialValues(report: RunReport): RunReport {
   const secret = credentialSecrets(report);
   if (secret.size === 0) return report;
-  return {
+  const redacted: RunReport = {
     ...report,
     scenarios: report.scenarios.map((s) => ({ ...s, steps: redactSteps(s.steps, secret) })),
     ...(report.droppedTraces ? { droppedTraces: redactDroppedTraces(report.droppedTraces, secret) } : {}),
   };
+  // Every other string too: a skip reason, a Critic reason, a finding's page
+  // text (run 5's zip held the demo password twice in a skip reason).
+  return maskDeep(redacted, [...secret].sort((a, b) => b.length - a.length));
 }
 
 /** The dataset-relevant fills of a scenario, keyed by canonical intent. */
@@ -175,6 +184,9 @@ export function deriveDatasets(report: RunReport, map?: RequirementsMap): Featur
   const byFeature = new Map<string, Scenario[]>();
   for (const s of report.scenarios) {
     if (!s.feature || s.feature === 'login') continue;
+    // A scenario that types the test account reads it from the env; a data
+    // case would carry no value for that field (invariant 70).
+    if (s.steps.some((st) => st.kind === 'fill' && st.credential)) continue;
     const list = byFeature.get(s.feature) ?? [];
     list.push(s);
     byFeature.set(s.feature, list);

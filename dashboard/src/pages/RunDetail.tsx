@@ -301,8 +301,8 @@ function ScenarioRow({ s }: { s: RunDetailScenario }) {
         {s.reasons.length ? <div className="mt-1 max-w-xs text-small text-fg-2">{s.reasons.join(' · ')}</div> : null}
       </TableCell>
       <TableCell><span className={s.repair === 'repaired' ? 'text-pass' : s.repair === 'failed' ? 'text-reject' : 'text-fg-2'} data-testid="repair" data-repair={s.repair}>{repairLabel}</span>{s.repair !== 'none' && s.repair_second ? <div className="text-small text-fg-2">rework to {s.repair_second}</div> : null}</TableCell>
-      <TableCell>{s.replay ? <span className={s.replay === 'pass' ? 'text-pass' : 'text-reject'} data-testid="replay" data-replay={s.replay}>{s.replay}</span> : <span className="text-fg-2">n/a</span>}{s.replay_error ? <div className="max-w-xs truncate text-small text-fg-2" title={s.replay_error}>{s.replay_error}</div> : null}</TableCell>
-      <TableCell>{s.stability ? <span className="mono" data-testid="stability">{s.stability.passes}/{s.stability.iterations}{s.stability.pattern ? <span className="ml-1 text-fg-2">{s.stability.pattern}</span> : null}{s.stability.recovered ? <span className="ml-1 text-pass">recovered</span> : null}</span> : <span className="text-fg-2">n/a</span>}</TableCell>
+      <TableCell>{s.replay ? <span className={s.replay === 'pass' ? 'text-pass' : s.replay === 'refused' ? 'text-fg-2' : 'text-reject'} data-testid="replay" data-replay={s.replay}>{s.replay}</span> : <span className="text-fg-2">n/a</span>}{s.replay_error ? <div className="max-w-xs truncate text-small text-fg-2" title={s.replay_error}>{s.replay_error}</div> : null}</TableCell>
+      <TableCell>{s.stability ? <span className="mono" data-testid="stability">{s.stability.classification === 'refused' ? <span className="text-fg-2">refused</span> : <>{s.stability.passes}/{s.stability.iterations}</>}{s.stability.classification !== 'refused' && s.stability.pattern ? <span className="ml-1 text-fg-2">{s.stability.pattern}</span> : null}{s.stability.recovered ? <span className="ml-1 text-pass">recovered</span> : null}</span> : <span className="text-fg-2">n/a</span>}</TableCell>
       <TableCell><span className={s.shipped ? 'text-pass' : 'text-fg-2'} data-testid="shipped" data-shipped={s.shipped ? 'yes' : 'no'}>{s.shipped ? 'yes' : 'no'}</span></TableCell>
     </TableRow>
   );
@@ -317,6 +317,7 @@ function describeEvent(e: { type: string; [k: string]: unknown }): string {
     case 'critic_done': return `${Array.isArray(e.verdicts) ? e.verdicts.length : '?'} verdicts`;
     case 'replay_scenario_passed': case 'stability_iteration_passed': return String(e.name ?? '');
     case 'replay_scenario_failed': case 'stability_iteration_failed': return `${String(e.name ?? '')}: ${String(e.error ?? '')}`;
+    case 'replay_scenario_refused': case 'stability_scenario_refused': return `${String(e.name ?? '')}: not run, ${String(e.reason ?? '')}`;
     case 'usage': return formatMoney(typeof e.usd === 'number' ? e.usd : null);
     default: {
       const { t: _t, type: _type, ...rest } = e;

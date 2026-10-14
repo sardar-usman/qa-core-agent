@@ -162,7 +162,7 @@ bash setup.sh                 # installs dependencies and Playwright Chromium
 
 Required environment variable: `ANTHROPIC_API_KEY`. Get one at [console.anthropic.com](https://console.anthropic.com/settings/keys).
 
-Optional: `QA_CORE_AUTH_URL`, `QA_CORE_AUTH_USER`, `QA_CORE_AUTH_PASS` if you want a stored auth session reused across tests. See [`tests/auth.setup.ts`](./tests/auth.setup.ts).
+Optional: `QA_CORE_TEST_USER` / `QA_CORE_TEST_PASS`, a dedicated test account you register by hand for the site under test (a host-scoped pair such as `QA_CORE_TEST_USER_PRACTICESOFTWARETESTING_COM` wins over the generic one). Login scenarios fill it from the env at every stage, a preflight checks it signs in before any spend, and its values are never written under `output/`. Without it, the scenarios that need it are skipped with "test credentials not provided". The older `QA_CORE_AUTH_*` names are retired.
 
 ## Commands
 
@@ -531,8 +531,6 @@ docs/
 scripts/
   eval.ts             # npm run eval
   smoke-*.ts          # regression-protection smoke tests (seven of them)
-tests/
-  auth.setup.ts       # storage-state fixture for auth-gated apps
 .qa-core/             # per-host memory cache (gitignored)
 playwright.config.ts
 .github/workflows/qa-core.yml

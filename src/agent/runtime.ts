@@ -8,8 +8,8 @@ import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
-import { replay, type ReplayEvent } from './replay.js';
-import { stability, type StabilityEvent } from './stability.js';
+import { replay, replayReportBlock, type ReplayEvent } from './replay.js';
+import { stability, stabilityReportBlock, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned } from './rule-coverage.js';
@@ -32,6 +32,12 @@ import {
 } from './checkpoint.js';
 import { installEvalShim } from './eval-shim.js';
 import { ASSERTION_DOCTRINE } from './doctrine.js';
+import { maskForDisk } from './credential-leak.js';
+import { preflightLogin, preflightStopReport, runLoginPreflightGate, writePreflightStopReport } from './login-preflight.js';
+import {
+  CREDENTIALS_NOT_PROVIDED, missingCredentialsPlanLine, needsTestAccount, newWrongPasswordLedger, readTestCredentials,
+  retiredAuthEnvLine, wrongPasswordCountLine, type TestCredentials, type WrongPasswordLedger, type WrongPasswordStage,
+} from './test-credentials.js';
 import { gateBrokenReason } from './gate.js';
 import type { CascadeLevel } from './selectors.js';
 import { writeCsv } from './csv.js';
@@ -130,6 +136,14 @@ CRITICAL — each scenario runs in isolation:
 - Therefore every scenario MUST be SELF-CONTAINED: include the navigate + any login/setup steps it needs.
 - Never write a scenario that assumes the previous scenario left state behind (e.g. "I am already logged in"). If two scenarios share setup, repeat the setup steps in both.
 
+The test account, for every sign-in with a real account:
+- The run has one dedicated test account. Fill it with credential: "user" (its username or email) and credential: "pass" (its password) on the fill tool, with no value. You never see or type its values; they come from the environment on every run.
+- A happy login uses the test account on both fields. A typed password in a sign-in is refused.
+- A wrong-password negative fills credential: "user" and types a literal wrong password. An "account does not exist" negative types an invented identifier (nobody+7f3k@example.invalid) and never uses the account.
+- A duplicate-email registration check fills the email field with credential: "user" as the already registered email.
+- A forgot-password or reset flow never uses the account (it would send mail to it); type a generated email.
+- When a fill reports the scenario skipped (no test account, a reset mail, the wrong-password cap), move on to the next planned scenario.
+
 Do not write code. Use the tools.`;
 
 export interface ExploreOptions {
@@ -223,7 +237,37 @@ export interface ExploreOptions {
   resume?: Checkpoint;
   /** CLI-level flags recorded into the checkpoint so --resume can restore them. */
   checkpointFlags?: { pom?: boolean; srsPath?: string };
+  /** --login-url: the login preflight tries this page first (invariant 70). */
+  loginUrl?: string;
+  /**
+   * True when the surface already ran the login preflight (before the
+   * requirements map, so a failure costs nothing). A direct caller leaves it
+   * unset and explore() runs the preflight itself before the Planner.
+   */
+  loginPreflightDone?: boolean;
+  /**
+   * Set by the surface's preflight when the generic pair found no login page
+   * (invariant 70): the run continues WITHOUT the test account, and every
+   * planned scenario that needs it is skipped with this reason instead of
+   * "test credentials not provided".
+   */
+  accountSkipReason?: string;
+  /** Test seam: replaces the browser login preflight. */
+  preflight?: typeof preflightLogin;
   onEvent?: (event: AgentEvent) => void;
+}
+
+/**
+ * The Explorer's credential context, carried into the repair pass: the real
+ * accounts a wrong-credential negative must not spend, the lockout-exempt
+ * scenarios, the dedicated test account (invariant 70) and the run's
+ * wrong-password counter.
+ */
+export interface ExplorerCredentialContext {
+  knownAccounts: Set<string>;
+  lockoutScenarioKeys: Set<string>;
+  testCredentials: { user: string; pass: string } | null;
+  wrongPassword?: WrongPasswordLedger;
 }
 
 /** Cap on scenarios planned per discovered page. */
@@ -452,8 +496,8 @@ async function repairPass(args: {
    */
   plan?: PlannedScenario[];
   onEvent?: ExploreOptions['onEvent'];
-  /** The Explorer's credential context (known real accounts, lockout-exempt scenarios), applied to the repair context too. */
-  credentials?: { knownAccounts: Set<string>; lockoutScenarioKeys: Set<string> };
+  /** The Explorer's credential context (known real accounts, lockout-exempt scenarios, the test account and its wrong-password counter), applied to the repair context too. */
+  credentials?: ExplorerCredentialContext;
 }): Promise<{
   scenarios: Scenario[];
   cost: RunReport['cost'];
@@ -491,10 +535,8 @@ async function repairPass(args: {
   let context: BrowserContext | undefined;
   try {
     browser = await chromium.launch({ headless: true });
-    const storageStatePath = path.join(process.cwd(), 'playwright', '.auth', 'user.json');
-    context = await browser.newContext(
-      fs.existsSync(storageStatePath) ? { storageState: storageStatePath } : undefined,
-    );
+    // Every context starts clean: no saved storage state (invariant 70).
+    context = await browser.newContext();
     await installEvalShim(context);
     const page = await context.newPage();
     const maxSteps = stepBudgetFor(args.rework.length, 0);
@@ -502,7 +544,10 @@ async function repairPass(args: {
     if (args.credentials) {
       ctx.knownAccounts = new Set(args.credentials.knownAccounts);
       ctx.lockoutScenarioKeys = new Set(args.credentials.lockoutScenarioKeys);
+      ctx.testCredentials = args.credentials.testCredentials;
+      if (args.credentials.wrongPassword) ctx.wrongPassword = args.credentials.wrongPassword;
     }
+    ctx.wrongPasswordStage = 'repair';
     const loop = await runAgentLoop({
       client: args.client,
       model: args.model,
@@ -594,11 +639,15 @@ export type AgentEvent =
   | { type: 'replay_started'; total: number }
   | { type: 'replay_scenario_passed'; name: string; durationMs: number }
   | { type: 'replay_scenario_failed'; name: string; failedStep: number; stepKind: string; error: string }
-  | { type: 'replay_done'; passed: number; failed: number; durationMs: number }
+  // The wrong-password cap refused a scenario at replay or stability
+  // (invariant 70): its own event, never a failed replay or a flaked iteration.
+  | { type: 'replay_scenario_refused'; name: string; reason: string }
+  | { type: 'stability_scenario_refused'; name: string; reason: string }
+  | { type: 'replay_done'; passed: number; failed: number; refused?: number; durationMs: number }
   | { type: 'stability_started'; total: number; iterations: number }
   | { type: 'stability_iteration_passed'; name: string; iteration: number; durationMs: number }
   | { type: 'stability_iteration_failed'; name: string; iteration: number; failedStep: number; stepKind: string; error: string }
-  | { type: 'stability_done'; stable: number; flaked: number; recovered?: number; iterations: number; flakeRate: number; durationMs: number; stabilizerCostUsd?: number }
+  | { type: 'stability_done'; stable: number; flaked: number; recovered?: number; refused?: number; iterations: number; flakeRate: number; durationMs: number; stabilizerCostUsd?: number }
   | { type: 'gate_injection'; scenario: string; step: number; assertionType: string; detail: string }
   | { type: 'gate_broken'; scenario: string; reason: string; attempts: number }
   // Reports an IN-RUN SELECTOR RECOVERY (a locator that failed to resolve was
@@ -676,6 +725,44 @@ export function stepBudgetFor(planCount: number, fillableFields = 0): number {
 }
 
 export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewPaused> {
+  const retiredAuth = retiredAuthEnvLine(process.env);
+  if (retiredAuth) opts.onEvent?.({ type: 'message', text: retiredAuth });
+  // The dedicated test account (invariant 70). A surface ran the login
+  // preflight before the requirements map; a direct caller gets it here,
+  // before the Planner, so a failure still costs nothing.
+  let testCredentials: TestCredentials | null;
+  // Why the scenarios that need the account are skipped when there is none.
+  let accountSkipReason = opts.accountSkipReason ?? CREDENTIALS_NOT_PROVIDED;
+  if (opts.loginPreflightDone) {
+    testCredentials = opts.accountSkipReason ? null : readTestCredentials(process.env, opts.url);
+  } else {
+    const gate = await runLoginPreflightGate({
+      url: opts.url,
+      ...(opts.loginUrl ? { loginUrl: opts.loginUrl } : {}),
+      log: (line) => opts.onEvent?.({ type: 'message', text: line }),
+      ...(opts.preflight ? { preflight: opts.preflight } : {}),
+    });
+    testCredentials = gate.creds;
+    if (gate.accountSkipReason) accountSkipReason = gate.accountSkipReason;
+    if (gate.stopLine) {
+      opts.onEvent?.({ type: 'message', text: gate.stopLine });
+      const stoppedReport = preflightStopReport({ url: opts.url, language: opts.language, line: gate.stopLine, startedAt: new Date().toISOString() });
+      // A resumed run's directory already holds its files; nothing there is overwritten.
+      if (!opts.resume) writePreflightStopReport(opts.outDir, stoppedReport);
+      return stoppedReport;
+    }
+  }
+  // The wrong-password counter: every submit against the test account in
+  // every stage, refused past the cap (a stated lockout lowers it).
+  const wrongPassword: WrongPasswordLedger | undefined = testCredentials ? newWrongPasswordLedger(process.env, opts.requirements) : undefined;
+  if (wrongPassword && opts.resume?.wrongPasswordCount) wrongPassword.count = opts.resume.wrongPasswordCount;
+  if (wrongPassword) {
+    const spentBefore = wrongPassword.count > 0 ? `, ${wrongPassword.count} spent before the resume` : '';
+    opts.onEvent?.({ type: 'message', text: `wrong-password cap: ${wrongPassword.cap} (${wrongPassword.capSource})${spentBefore}` });
+  }
+  const wrongPasswordLine = (stage: WrongPasswordStage): void => {
+    if (wrongPassword) opts.onEvent?.({ type: 'message', text: wrongPasswordCountLine(wrongPassword, stage) });
+  };
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in.');
 
@@ -769,6 +856,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     spentUsd: { ...cpState.spend },
     phase: cpState.phase,
     nextScenarioIndex: cpState.completed.length,
+    ...(wrongPassword ? { wrongPasswordCount: wrongPassword.count } : {}),
     startedAt: runStartedAt,
     updatedAt: new Date().toISOString(),
   });
@@ -1167,24 +1255,35 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // reconciliation funnel (as incomplete entries) and rule coverage.
   let ceilingSalvage: CostCeilingSalvage | undefined;
   // Carried into the repair pass so its re-recorded negatives get the same credential rule.
-  let explorerCredentialContext: { knownAccounts: Set<string>; lockoutScenarioKeys: Set<string> } | undefined;
+  let explorerCredentialContext: ExplorerCredentialContext | undefined;
+  // Planned scenarios skipped before the Explorer because they need the test
+  // account and the run has none (invariant 70): a skip each, in the funnel.
+  let accountSkips: PlannedScenario[] = [];
   // Set on any abnormal end (ceiling, billing, API failure). Carried on the
   // report so the CLI keeps the checkpoint instead of deleting it.
   let stopped: RunReport['stopped'];
 
   try {
     browser = await chromium.launch({ headless: true });
-    const storageStatePath = path.join(process.cwd(), 'playwright', '.auth', 'user.json');
-    context = await browser.newContext(
-      fs.existsSync(storageStatePath) ? { storageState: storageStatePath } : undefined,
-    );
+    // Every context starts clean: no saved storage state (invariant 70; the
+    // playwright/.auth/user.json load is retired).
+    context = await browser.newContext();
     await installEvalShim(context);
     const page: Page = await context.newPage();
 
     // A resumed run explores only what the checkpoint does not account for.
-    const toExplore = opts.resume
+    const plannedNow = opts.resume
       ? remainingPlan(planResult.scenarios, restoredCompleted)
       : planResult.scenarios;
+    // Without the test account, the scenarios that need it (a happy login, a
+    // wrong-password or duplicate-email negative) are skipped before the
+    // Explorer, one skip each, with the plan line saying how many.
+    accountSkips = testCredentials ? [] : plannedNow.filter((s) => needsTestAccount(s) !== null);
+    if (accountSkips.length > 0) {
+      opts.onEvent?.({ type: 'message', text: missingCredentialsPlanLine(accountSkips.length, ...(accountSkipReason !== CREDENTIALS_NOT_PROVIDED ? [accountSkipReason] : [])) });
+      for (const s of accountSkips) opts.onEvent?.({ type: 'message', text: `Skipped "${s.name}": ${accountSkipReason} (${needsTestAccount(s)})` });
+    }
+    const toExplore = plannedNow.filter((s) => !accountSkips.includes(s));
 
     // Resolve the effective budget now that the plan size is known. An override
     // (opts or env) always wins; otherwise scale to the plan AND the form
@@ -1204,9 +1303,18 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const ctx = createContext(page, maxSteps);
     // Wrong-credential negatives: the real accounts the tool must not spend,
     // and the planned scenarios whose rule names a locked account (exempt).
-    ctx.knownAccounts = new Set(knownAccountIdentifiers(opts.requirements));
+    // The test account's identifier is a known account too: gate RULE 7
+    // refuses it as an asserted literal.
+    ctx.knownAccounts = new Set([...knownAccountIdentifiers(opts.requirements), ...(testCredentials ? [testCredentials.user.toLowerCase()] : [])]);
     ctx.lockoutScenarioKeys = new Set(lockoutScenarioNames(toExplore, opts.requirements).map(scenarioNameKey));
-    explorerCredentialContext = { knownAccounts: ctx.knownAccounts, lockoutScenarioKeys: ctx.lockoutScenarioKeys };
+    ctx.testCredentials = testCredentials ? { user: testCredentials.user, pass: testCredentials.pass } : null;
+    if (wrongPassword) ctx.wrongPassword = wrongPassword;
+    explorerCredentialContext = {
+      knownAccounts: ctx.knownAccounts,
+      lockoutScenarioKeys: ctx.lockoutScenarioKeys,
+      testCredentials: ctx.testCredentials,
+      ...(wrongPassword ? { wrongPassword } : {}),
+    };
     const explorerLoop = toExplore.length === 0
       ? { cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, endedReason: 'finished' as const }
       : await runAgentLoop({
@@ -1328,7 +1436,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     incomplete = ctx.incomplete;
     findings = ctx.findings;
     heals = ctx.heals;
-    skipped = ctx.skipped;
+    skipped = [...accountSkips.map((s) => ({ scenario: s.name, reason: accountSkipReason })), ...ctx.skipped];
+    wrongPasswordLine('explorer');
     // Phase boundary: explorer done. On an abnormal stop this is the state a
     // resume continues from; print the hint alongside.
     cpState.completed = scenarios;
@@ -1572,7 +1681,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // New observations of the repair review are notes on the report, never a drop.
         for (const n of h.notes ?? []) opts.onEvent?.({ type: 'message', text: `Repair note: "${h.scenario}": ${n}` });
       }
-      if (decision.run) opts.onEvent?.(repairDoneEvent(merged.history, repairUsd));
+      if (decision.run) { opts.onEvent?.(repairDoneEvent(merged.history, repairUsd)); wrongPasswordLine('repair'); }
     }
     scenariosForReplay = kept;
   }
@@ -1584,10 +1693,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   let emittedScenarios = scenariosForReplay;
   if (!opts.skipReplay && scenariosForReplay.length > 0) {
     try {
-      const storageStatePath = path.join(process.cwd(), 'playwright', '.auth', 'user.json');
       const r = await replay({
         scenarios: scenariosForReplay,
-        storageStatePath,
+        credentials: testCredentials ? { user: testCredentials.user, pass: testCredentials.pass } : null,
+        ...(wrongPassword ? { wrongPassword } : {}),
         timeoutMs: opts.replayTimeoutMs,
         onEvent: (ev: ReplayEvent) => {
           switch (ev.type) {
@@ -1606,11 +1715,15 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
                 error: ev.error,
               });
               return;
+            case 'scenario_refused':
+              opts.onEvent?.({ type: 'replay_scenario_refused', name: ev.name, reason: ev.reason });
+              return;
             case 'replay_done':
               opts.onEvent?.({
                 type: 'replay_done',
                 passed: ev.passed,
                 failed: ev.failed,
+                refused: ev.refused,
                 durationMs: ev.durationMs,
               });
               return;
@@ -1620,12 +1733,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         },
       });
       emittedScenarios = r.emitted;
-      replayInfo = {
-        passed: r.emitted.length,
-        failed: r.dropped.length,
-        durationMs: r.durationMs,
-        verdicts: r.verdicts,
-      };
+      wrongPasswordLine('replay');
+      replayInfo = replayReportBlock(r);
     } catch (err) {
       opts.onEvent?.({ type: 'message', text: `Replay skipped: ${(err as Error).message}` });
       replayInfo = { skipped: true, passed: 0, failed: 0, durationMs: 0, verdicts: [] };
@@ -1642,10 +1751,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   const stabilityInput = emittedScenarios;
   if (!opts.skipStability && emittedScenarios.length > 0) {
     try {
-      const storageStatePath = path.join(process.cwd(), 'playwright', '.auth', 'user.json');
       const s = await stability({
         scenarios: emittedScenarios,
-        storageStatePath,
+        credentials: testCredentials ? { user: testCredentials.user, pass: testCredentials.pass } : null,
+        ...(wrongPassword ? { wrongPassword } : {}),
         iterations: opts.stabilityIterations,
         timeoutMs: opts.replayTimeoutMs,
         stabilize: opts.stabilize,
@@ -1674,12 +1783,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
                 error: ev.error,
               });
               return;
+            case 'scenario_refused':
+              opts.onEvent?.({ type: 'stability_scenario_refused', name: ev.name, reason: ev.reason });
+              return;
             case 'stability_done':
               opts.onEvent?.({
                 type: 'stability_done',
                 stable: ev.stable,
                 flaked: ev.flaked,
                 recovered: ev.recovered,
+                refused: ev.refused,
                 iterations: ev.iterations,
                 flakeRate: ev.flakeRate,
                 durationMs: ev.durationMs,
@@ -1723,21 +1836,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         },
       });
       emittedScenarios = s.emitted;
-      stabilityInfo = {
-        iterations: s.iterations,
-        passed: s.emitted.length,
-        flaked: s.flaked.length,
-        flaky: s.flaky.length,
-        broken: s.broken.length,
-        recovered: s.recovered.length,
-        stabilizerCostUsd: s.stabilizerCostUsd,
-        flakeRate: s.flakeRate,
-        durationMs: s.durationMs,
-        verdicts: s.verdicts,
-        // Stabilizer spend with no attempt recorded is an inconsistency, never
-        // shown as "none recorded": the report carries the warning.
-        ...(s.warning ? { warning: s.warning } : {}),
-      };
+      wrongPasswordLine('stability');
+      stabilityInfo = stabilityReportBlock(s);
       if (s.warning) opts.onEvent?.({ type: 'message', text: `WARNING: ${s.warning}` });
     } catch (err) {
       opts.onEvent?.({ type: 'message', text: `Stability skipped: ${(err as Error).message}` });
@@ -1805,6 +1905,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     findings,
     heals: heals.length > 0 ? heals : undefined,
     skipped: skipped.length > 0 ? skipped : undefined,
+    ...(wrongPassword ? { wrongPasswordAttempts: wrongPassword } : {}),
   };
 
   // Reporting reconciliation — planned === generated + dropped, with every
@@ -1869,14 +1970,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   }
 
   fs.mkdirSync(opts.outDir, { recursive: true });
+  // No test-account value reaches a file under output/ (invariant 70): every
+  // string is masked on the way to disk; the in-memory report is untouched.
   fs.writeFileSync(
     path.join(opts.outDir, 'run-report.json'),
-    JSON.stringify(report, null, 2),
+    JSON.stringify(maskForDisk(report), null, 2),
   );
   if (report.ruleCoverage) {
     fs.writeFileSync(
       path.join(opts.outDir, 'rule-coverage.json'),
-      JSON.stringify(report.ruleCoverage, null, 2),
+      JSON.stringify(maskForDisk(report.ruleCoverage), null, 2),
     );
   }
 

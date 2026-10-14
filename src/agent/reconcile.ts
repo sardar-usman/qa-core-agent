@@ -34,6 +34,10 @@ import { matchPlanned, scenarioNameKey } from './rule-coverage.js';
  *   - stability — flaky or broken across the N iterations (broken includes the
  *                 scenarios the Stabilizer attempted and gave up on)
  *
+ * A scenario the wrong-password cap refused at replay or stability (invariant
+ * 70) is dropped at that stage with the cap reason, but it is not a failure:
+ * it never counts as flaky or broken, and `refused` counts it apart.
+ *
  * The "stable" headline counts only scenarios that passed every iteration with
  * NO relaxed rule. Scenarios that needed the Stabilizer to pass (recovered) ship
  * but are reported separately, so a relaxed-rule survivor is never sold as a
@@ -125,6 +129,12 @@ export interface Reconciliation {
   flaky: number;
   /** Dropped broken, including scenarios the Stabilizer gave up on. */
   broken: number;
+  /**
+   * Dropped because the wrong-password cap refused them at replay or
+   * stability (invariant 70), never counted as flaky or broken. Present only
+   * when above 0.
+   */
+  refused?: number;
   /** True when no Planner plan was recorded and planned fell back to the total. */
   noPlan?: boolean;
   /** Explains the delta when planned !== accountedFor. */
@@ -146,6 +156,15 @@ export interface ReconcileOptions {
    * `unmatchedDropNames`; the runtime passes a handler that prints the line.
    */
   onUnmatchedName?: (message: string) => void;
+}
+
+/**
+ * The console note for scenarios the wrong-password cap refused at a stage
+ * (invariant 70), shown apart from failures and flakes; '' when none. The
+ * CLI summary and the gateway summary both print it.
+ */
+export function refusedNote(refused: number | undefined): string {
+  return (refused ?? 0) > 0 ? ` · ${refused} refused by the wrong-password cap (not run, not counted as failed)` : '';
 }
 
 /** The loud line for a drop whose recorded name claims no planned name. */
@@ -214,9 +233,15 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
   }
 
   // 3. Replay — failed the single fresh-context re-run.
+  let refused = 0;
   if (report.replay && !report.replay.skipped) {
     for (const v of report.replay.verdicts) {
       if (v.passed) continue;
+      if (v.refused) {
+        refused++;
+        dropped.push({ name: v.name, stage: 'replay', reason: v.error ?? 'refused by the wrong-password cap' });
+        continue;
+      }
       const at = v.failedStep != null ? ` at step ${v.failedStep + 1}` : '';
       const kind = v.stepKind ? ` (${v.stepKind})` : '';
       dropped.push({
@@ -238,6 +263,11 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
       if (v.classification === 'stable') {
         if (v.relaxed) recovered++;
         else stable++;
+        continue;
+      }
+      if (v.classification === 'refused') {
+        refused++;
+        dropped.push({ name: v.name, stage: 'stability', reason: v.refusedReason ?? 'refused by the wrong-password cap' });
         continue;
       }
       if (v.classification === 'broken') {
@@ -375,7 +405,7 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
     note = `Explorer accounted for ${accountedFor} scenario(s) vs ${planned} planned (${shortfall} fewer). ${shortfall} planned scenario(s) vanished without a drop or incomplete reason.`;
   }
 
-  return { planned, generated, dropped, incomplete, findings, skipped, emitted_failed: emittedFailed, ...(unmatchedDropNames.length > 0 ? { unmatchedDropNames } : {}), accountedFor, added, balanced, stable, recovered, flaky, broken, noPlan, note };
+  return { planned, generated, dropped, incomplete, findings, skipped, emitted_failed: emittedFailed, ...(unmatchedDropNames.length > 0 ? { unmatchedDropNames } : {}), accountedFor, added, balanced, stable, recovered, flaky, broken, ...(refused > 0 ? { refused } : {}), noPlan, note };
 }
 
 /** Which stage of the pipeline left a zero-scenario run empty. */
@@ -472,6 +502,7 @@ export function renderReconciliation(rec: Reconciliation): string[] {
   );
   lines.push(
     `  stable ${rec.stable} · recovered ${rec.recovered} · flaky ${rec.flaky} · broken ${rec.broken}` +
+      ((rec.refused ?? 0) > 0 ? ` · refused by the wrong-password cap ${rec.refused}` : '') +
       (rec.recovered > 0 ? '   (stable excludes recovered — relaxed-rule survivors)' : ''),
   );
   if (rec.dropped.length > 0) {

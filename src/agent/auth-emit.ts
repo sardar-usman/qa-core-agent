@@ -51,18 +51,52 @@ export function credentialEnvFor(intent: string): typeof AUTH_ENV_USER | typeof 
   return null;
 }
 
+type FillStep = Extract<TraceStep, { kind: 'fill' }>;
+
 /**
- * The happy login the auth setup replays: an emitted login-feature scenario,
- * happy category, that filled a password. Null when the run has none (and
- * then NOTHING about the emitted framework changes — the emitter-only
- * guarantee).
+ * The happy login the auth setup replays. Keyed on the credential marker
+ * (invariant 70): the happy scenario that filled the test account's password
+ * (`credential: 'pass'`), whatever its feature is called (Toolshop's map
+ * names it `account`). A report written before the marker existed carries
+ * none, and is read by the legacy rule: a login-feature happy scenario that
+ * filled a password. Null when the run has none (and then NOTHING about the
+ * emitted framework changes, the emitter-only guarantee).
  */
-export function findHappyLoginScenario(report: RunReport): Scenario | null {
+export function findHappyLoginScenario(report: Pick<RunReport, 'scenarios'>): Scenario | null {
+  const marked = report.scenarios.find((s) =>
+    s.category === 'happy' && s.steps.some((st) => st.kind === 'fill' && st.credential === 'pass'));
+  if (marked) return marked;
   return report.scenarios.find((s) =>
     s.feature === 'login' &&
     s.category === 'happy' &&
-    s.steps.some((st) => st.kind === 'fill' && CREDENTIAL_PASS_RE.test(st.target.intent)),
+    s.steps.some((st) => st.kind === 'fill' && !st.credential && CREDENTIAL_PASS_RE.test(st.target.intent)),
   ) ?? null;
+}
+
+/**
+ * The feature whose spec drives the login UI itself and so runs without the
+ * saved session: the happy login's own feature ('login' when it has none,
+ * the pre-marker convention). Its leading login is never stripped.
+ */
+export function loginFeatureOf(login: Scenario | null | undefined): string {
+  return login?.feature ?? 'login';
+}
+
+/**
+ * The env variable a fill reads in an emitted file, or null for a literal:
+ * a credential-marked fill always reads the generic pair (the framework
+ * keeps QA_CORE_TEST_USER / QA_CORE_TEST_PASS whatever pair the agent ran
+ * with); an unmarked fill on an older report reads it only when its value
+ * equals the recorded happy login's (value-based, envForCredentialValue).
+ */
+export function envVarForFill(step: FillStep, creds: AuthCredentials | null): typeof AUTH_ENV_USER | typeof AUTH_ENV_PASS | null {
+  if (step.credential) return step.credential === 'user' ? AUTH_ENV_USER : AUTH_ENV_PASS;
+  return creds ? envForCredentialValue(step.value, creds) : null;
+}
+
+/** True when any step of the report carries a credential marker. */
+export function reportUsesTestAccount(report: Pick<RunReport, 'scenarios'>): boolean {
+  return report.scenarios.some((s) => s.steps.some((st) => (st.kind === 'fill' && st.credential !== undefined) || (st.kind === 'assert' && st.assertion.type === 'toHaveValue' && st.assertion.credential !== undefined)));
 }
 
 export interface AuthCredentials {
@@ -87,11 +121,15 @@ export function envForCredentialValue(
   return null;
 }
 
-/** The recorded credential values the happy login signed in with. */
+/**
+ * The recorded credential values the happy login signed in with. A
+ * credential-marked fill recorded no value (the env holds it), so it adds
+ * nothing here.
+ */
 export function recordedCredentials(login: Scenario): AuthCredentials {
   const out: { user?: string; pass?: string } = {};
   for (const st of login.steps) {
-    if (st.kind !== 'fill') continue;
+    if (st.kind !== 'fill' || st.credential) continue;
     const env = credentialEnvFor(st.target.intent);
     if (env === AUTH_ENV_PASS && out.pass === undefined) out.pass = st.value;
     if (env === AUTH_ENV_USER && out.user === undefined) out.user = st.value;
@@ -113,7 +151,7 @@ export function stripLeadingLogin(steps: TraceStep[]): TraceStep[] {
   let passIdx = -1;
   for (let i = 0; i < steps.length; i++) {
     const st = steps[i]!;
-    if (st.kind === 'fill' && CREDENTIAL_PASS_RE.test(st.target.intent)) { passIdx = i; break; }
+    if (st.kind === 'fill' && (st.credential === 'pass' || CREDENTIAL_PASS_RE.test(st.target.intent))) { passIdx = i; break; }
     // Only navigates, fills, clicks, presses, waits, and checkpoints may
     // precede the login submit; anything else means no leading login block.
     if (!['navigate', 'fill', 'click', 'press', 'wait', 'stability_wait', 'checkpoint'].includes(st.kind)) return steps;
@@ -176,8 +214,8 @@ export function renderAuthSetup(login: Scenario, url: string, lang: 'ts' | 'js')
       continue;
     }
     if (step.kind === 'fill') {
-      // Value-based: only the fills carrying the REAL credentials read env.
-      const env = envForCredentialValue(step.value, creds);
+      // The marker, else value-based: only the fills carrying the REAL credentials read env.
+      const env = envVarForFill(step, creds);
       const value = env ? `process.env.${env} ?? ''` : JSON.stringify(step.value);
       out.push(`  await ${loc(step.target)}.fill(${value});`);
       continue;

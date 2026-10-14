@@ -39,6 +39,7 @@ export const exploreArgs = {
   stabilityIterations: z.number().int().positive().default(3).describe('Stability re-runs per scenario (CLI: --stability N, default 3).'),
   stabilize: z.boolean().default(true).describe('Run the Stage 5b Stabilizer on flaky scenarios (CLI: --no-stabilize to disable).'),
   stabilizeAttempts: z.number().int().positive().default(3).describe('Max Stabilizer fix attempts per flaky scenario (CLI: --stabilize-attempts N, default 3).'),
+  loginUrl: z.string().optional().describe('The login page the login preflight tries first, before the entry URL and the common login paths: an http(s) URL or a path such as /auth/login; only used when the host .env holds the test account (CLI: --login-url <url>).'),
   emittedCheck: z.boolean().default(true).describe('Run the emitted-spec check: the written framework is executed once with Playwright against the live site before the zip, a test that fails twice is dropped and named on the report (CLI: --no-emitted-check to skip, --emitted-check is the default).'),
   ...settingArgs,
 };
@@ -133,6 +134,7 @@ export function exploreRequestFromToolArgs(a: ExploreToolArgs, srsPathFromText?:
   req.stabilize = a.stabilize ?? true;
   req.stabilizeAttempts = a.stabilizeAttempts ?? 3;
   req.emittedCheck = a.emittedCheck ?? true;
+  if (a.loginUrl) req.loginUrl = a.loginUrl;
   req.env = envFromSettings(a);
   return req;
 }
