@@ -11,6 +11,10 @@
  *   - a volatile planned page and a plan entry with no pageUrl are exempt
  *   - a lightly rephrased planned name resolves to its plan entry's page
  *   - the pure function agrees with the tool on the same traces
+ *   - a page reached by action (invariant 71): a navigate to the feature's
+ *     revealed page is refused as navigated-to-reached-page, the second
+ *     strike goes to brokenByGate, the click path is accepted, and neither
+ *     the volatile nor the no-pageUrl exemption lets the navigate through
  *
  * Stub page, no browser, no LLM (same pattern as smoke-plan-enforcement).
  * Every runTool result is checked (standing rule 7).
@@ -194,6 +198,33 @@ async function drive(ctx: ReturnType<typeof createContext>, name: string, steps:
     plannedPageViolation([nav(`${HOST}/category/hand-tools`)], undefined) === null);
 }
 
+/* ─── J. a page reached by action is never navigated to (invariant 71) ─────── */
+{
+  const CART_ADD = 'opened the cart from the header and it listed the added product';
+  const CART_R6 = 'added a product and the cart count in the header increased';
+  const reached = `${HOST}/checkout`;
+  const ctx = createContext(stubPage, 80);
+  ctx.plannedNames = [CART_ADD, CART_R6];
+  ctx.plannedPages = new Map([
+    [CART_ADD, { pageUrl: `${HOST}/`, reachedPageUrl: reached }],
+    [CART_R6, { pageUrl: `${HOST}/`, reachedPageUrl: reached }],
+  ]);
+  const first = await drive(ctx, CART_ADD, [nav(`${HOST}/`), click(), nav(`${HOST}/checkout/`), assertVisible()], 'J0.');
+  check('J1. a navigate to the revealed page is refused, naming both paths and that the page is reached by action',
+    first.ok === false && /planned on \/, but the trace navigated to \/checkout, a page that is reached by action from \//.test(first.error ?? '') && /\/checkout exists only after an action: open \//.test(first.error ?? ''), first.error);
+  check('J2. the refusal keeps the three ways out of invariant 65', /\(1\) restart with begin_scenario[\s\S]*\(2\)[\s\S]*\(3\) use skip_scenario/.test(first.error ?? ''), first.error);
+  const second = await drive(ctx, CART_ADD, [nav(`${HOST}/`), nav(`${HOST}/checkout`), assertVisible()], 'J3.');
+  check('J4. the second strike goes to brokenByGate with the reached-by reason', second.ok === false && ctx.brokenByGate.length === 1 && ctx.brokenByGate[0]!.scenario === CART_ADD && /reached by action/.test(ctx.brokenByGate[0]!.reason), JSON.stringify(ctx.brokenByGate));
+  const clicks = await drive(ctx, CART_R6, [nav(`${HOST}/`), click(), click(), click(), assertVisible()], 'J5.');
+  check('J6. the click path (navigate to the origin, click through) is accepted', clicks.ok === true && ctx.scenarios.some((s) => s.name === CART_R6), clicks.error);
+  const v1 = plannedPageViolation([nav(`${HOST}/category`), nav(reached)], { pageUrl: `${HOST}/product/01HZX5Y9K3M2N7P8Q1R4S6T0V2`, volatilePage: true, reachedPageUrl: reached });
+  const v2 = plannedPageViolation([nav(reached)], { reachedPageUrl: reached });
+  check('J7. no exemption: a volatile planned page and an entry with no pageUrl are refused for the navigate too',
+    v1?.kind === 'navigated-to-reached-page' && v2?.kind === 'navigated-to-reached-page' && v2.offendingPath === '/checkout', JSON.stringify([v1, v2]));
+  check('J8. without reachedPageUrl the same trace is judged by invariant 65 alone',
+    plannedPageViolation([nav(`${HOST}/`), click()], { pageUrl: `${HOST}/` }) === null && plannedPageViolation([nav(reached)], {}) === null);
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: a scenario is recorded on its planned page or refused; the second violation is dropped with both paths; clicks, slashes, queries, volatile pages and single-page runs are never flagged.');
+console.log('OK: a scenario is recorded on its planned page or refused; the second violation is dropped with both paths; clicks, slashes, queries, volatile pages and single-page runs are never flagged; a page reached by action is never navigated to.');

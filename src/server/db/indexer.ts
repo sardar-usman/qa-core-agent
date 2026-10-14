@@ -188,13 +188,14 @@ function upsertRun(db: Database.Database, row: RunRow): void {
   db.prepare(`INSERT INTO runs (${cols}) VALUES (${vals}) ON CONFLICT(id) DO UPDATE SET ${sets}`).run(row);
 }
 
-const UNCOVERED_STATUS: Record<string, 'not_planned' | 'planned_but_dropped' | 'planned_not_explored'> = {
+export const UNCOVERED_STATUS: Record<string, 'not_planned' | 'planned_but_dropped' | 'planned_not_explored'> = {
   'not-planned': 'not_planned',
   'planned-but-dropped': 'planned_but_dropped',
   'planned-not-explored': 'planned_not_explored',
   // The index keeps the coarse status; the report and the console carry the
   // precise reason and its detail.
   'not-reachable': 'not_planned',
+  'not-revealed': 'not_planned',
 };
 
 /** Index one run directory: the runs row and its derived rows. */

@@ -308,7 +308,9 @@ async function main(): Promise<void> {
           // the 240-char cap below also silently ate them, which is how two
           // live ceiling runs ended with no hint at all.
           if (e.text.startsWith('Run stopped:')) break;
-          if (e.text.length < 240) console.log(`      ${e.text.trim()}`); break;
+          // A state probe line names every page and control it tried and is
+          // printed whole, never cut by the cap (invariant 71).
+          if (e.text.length < 240 || e.text.startsWith('State probe "')) console.log(`      ${e.text.trim()}`); break;
         case 'usage':
           process.stdout.write(`      $${e.usd.toFixed(4)} · ${e.tokens} tok\r`); break;
         case 'critic_started':

@@ -12,6 +12,9 @@
  *   - the crawl: depth cap, page cap, robots-disallowed paths skipped,
  *     discovery user agent sent, sequential fetching
  *   - the entry-only fallback carries warnings naming what each rung tried
+ *   - every crawl candidate records linkedFrom, the page whose anchor led to
+ *     it (invariant 71: a volatile trigger page's origin); the crawl caps,
+ *     the delay and the robots rules are unchanged by it
  *
  * Pure in-code fixtures via the injectable fetchFn. No network. No LLM.
  */
@@ -22,6 +25,9 @@ import {
   DISCOVERY_UA,
   SITEMAP_PAGE_CAP,
   CRAWL_PAGE_CAP,
+  CRAWL_VOLATILE_CAP,
+  CRAWL_MAX_DEPTH,
+  CRAWL_DELAY_MS,
   type FetchLike,
   type RenderedLinkCollector,
   waitForAnchors,
@@ -167,6 +173,10 @@ const map: RequirementsMap = {
   check('F6. crawl fetches identify with the discovery user agent', requests.filter((q) => !q.url.includes('robots') && !q.url.includes('sitemap')).every((q) => q.ua === DISCOVERY_UA));
   check(`F7. page cap constant is ${CRAWL_PAGE_CAP}`, CRAWL_PAGE_CAP === 15);
   check('F8. fragment link deduped by pathname (login fetched once)', requests.filter((q) => new URL(q.url).pathname === '/login').length === 1);
+  const from = Object.fromEntries(r.pages.map((p) => [new URL(p.url).pathname, p.linkedFrom ? new URL(p.linkedFrom).pathname : null]));
+  check('F9. every candidate records linkedFrom, the page whose anchor led to it; the entry has none',
+    JSON.stringify(from) === JSON.stringify({ '/': null, '/login': '/', '/cart': '/', '/login/help': '/login', '/checkout': '/cart' }), JSON.stringify(from));
+  check('F10. the crawl caps, delay and depth are unchanged', CRAWL_PAGE_CAP === 15 && CRAWL_VOLATILE_CAP === 3 && CRAWL_MAX_DEPTH === 2 && CRAWL_DELAY_MS === 500);
 }
 
 /* ─── G. robots disallow-all routes past sitemap AND crawl ─────────────────── */
@@ -234,6 +244,8 @@ const map: RequirementsMap = {
   check('I4. robots-disallowed link never visited by the browser', !calls.includes(`${ORIGIN}/admin`), JSON.stringify(calls));
   check('I5. asset, cross-origin, and depth-3 links never visited', !calls.some((c) => c.endsWith('.png') || c.includes('other.example') || c.includes('/too/deep/now')));
   check('I6. fragment link deduped by pathname (login visited once)', calls.filter((c) => new URL(c).pathname === '/login').length === 1);
+  const from = Object.fromEntries(r.pages.map((p) => [new URL(p.url).pathname, p.linkedFrom ? new URL(p.linkedFrom).pathname : null]));
+  check('I7. the browser crawl records linkedFrom the same way', JSON.stringify(from) === JSON.stringify({ '/': null, '/login': '/', '/cart': '/', '/login/help': '/login' }), JSON.stringify(from));
 }
 
 /* ─── J. browser-crawl rung is SKIPPED when the fetch crawl succeeded ──────── */

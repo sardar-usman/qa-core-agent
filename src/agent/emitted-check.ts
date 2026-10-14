@@ -6,7 +6,7 @@ import type { RunReport } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { reconcile, unmatchedDropLine } from './reconcile.js';
 import { attachDroppedTraces, recordOf, storeFromDroppedTraces, storeTrace, type TraceRecord } from './dropped-traces.js';
-import { computeRuleCoverage } from './rule-coverage.js';
+import { computeRuleCoverage, notRevealedFeatures } from './rule-coverage.js';
 import { unreachableFeatures } from './planner.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, reportUsesTestAccount, type AuthCredentials } from './auth-emit.js';
 import {
@@ -347,7 +347,8 @@ function rebuildAccounting(
         planned: report.plan ?? [],
         scenarios: report.scenarios,
         dropReasons,
-        ...(report.discovery ? { unreachableFeatures: unreachableFeatures(requirements, report.discovery.pages).map((f) => f.name) } : {}),
+        ...(report.discovery ? { unreachableFeatures: unreachableFeatures(requirements, report.discovery.pages, report.discovery.stateProbes).map((f) => f.name) } : {}),
+        ...(report.discovery?.stateProbes ? { notRevealed: notRevealedFeatures(report.discovery.stateProbes) } : {}),
       }),
       ...(derivation ? { derivation } : {}),
     };

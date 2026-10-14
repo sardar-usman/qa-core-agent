@@ -14,16 +14,30 @@ import type { RequirementsMap } from './requirements.js';
  *   not-reachable      : no planned scenario cited the rule because no
  *                         discovered page carries the rule's feature (the
  *                         cart of run 591732, reached only after an add)
+ *   not-revealed       : no planned scenario cited the rule, and the
+ *                         feature's state probe revealed no page (invariant
+ *                         71); the detail names every page the probe tried
  *
  * A run with a map ends with "X of Y rules covered" plus the named uncovered
  * rules, so a rule that was considered but not automated is reported, never
  * silently absent.
  */
 
-export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable';
+export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable' | 'not-revealed';
 
 /** The detail every not-reachable rule carries, so the report says why. */
 export const NOT_REACHABLE_DETAIL = 'no discovered page carries this feature';
+
+/**
+ * The features whose state probe revealed no page, each with the probe's
+ * detail ("no page revealed: tried /, /product/..."), for computeRuleCoverage.
+ * A structural type, so the report's stored probes feed it as they are.
+ */
+export function notRevealedFeatures(stateProbes: Array<{ feature: string; outcome: string; detail: string }> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of stateProbes ?? []) if (p.outcome !== 'revealed') out[p.feature] = p.detail;
+  return out;
+}
 
 export interface RuleCoverage {
   covered: Array<{ ruleId: string; scenarios: string[] }>;
@@ -135,6 +149,13 @@ export function computeRuleCoverage(opts: {
    * instead of a plain not-planned.
    */
   unreachableFeatures?: string[];
+  /**
+   * Features whose state probe revealed no page, with the probe's detail
+   * (notRevealedFeatures). A rule of such a feature that no scenario cited
+   * classifies not-revealed with that detail. A cited rule is classified
+   * exactly as without the probe: the probe only adds (invariant 71).
+   */
+  notRevealed?: Record<string, string>;
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
@@ -150,9 +171,10 @@ export function computeRuleCoverage(opts: {
         continue;
       }
       const citing = opts.planned.filter((p) => (p.ruleIds ?? []).includes(rule.id));
+      const notRevealedDetail = opts.notRevealed?.[feature.name];
       const reason: UncoveredReason =
         citing.length === 0
-          ? unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
+          ? notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
           : citing.every((p) => unexploredKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
@@ -163,7 +185,9 @@ export function computeRuleCoverage(opts: {
         ? citing.map((p) => reasonByKey.get(nameKey(p.name))).filter((r): r is string => !!r).map(causeOf).filter((r, i, a) => a.indexOf(r) === i).join(' | ')
         : reason === 'not-reachable'
           ? NOT_REACHABLE_DETAIL
-          : '';
+          : reason === 'not-revealed'
+            ? notRevealedDetail ?? ''
+            : '';
       uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }

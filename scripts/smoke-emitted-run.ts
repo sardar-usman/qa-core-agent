@@ -10,7 +10,11 @@
  *      capture plus assert_compare with changed, greater on a currency string
  *      and on a cart badge's text (run 44cb3d: a counter is read by its text,
  *      never as a literal or an element count), equal against a different
- *      target, and a frame chain.
+ *      target, and a frame chain. A cart feature reached by action
+ *      (invariant 71): the cart link renders only after an add, and the
+ *      cart page is reached by clicking through from the shop page.
+ *      The emitted specs, POM and single file in TS and JS, hold no
+ *      page.goto on the revealed URL.
  *   2. A small static site is served from a local port by this process
  *      (node:http, in memory, no files on disk) so the shipped tests have
  *      something real to drive. The assertions are true on that site.
@@ -32,6 +36,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { scaffold } from '../src/agent/scaffold.js';
+import { transcribe } from '../src/agent/transcriber.js';
 import type { RunReport, Scenario, SelectorRecord } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -145,6 +150,52 @@ const delayedHtml = `<!doctype html>
 </script>
 </body></html>`;
 
+// A page that exists only after an action (invariant 71): the cart link is
+// built by script after an add, from split strings so no crawl of the page
+// source finds it, and the cart page lists what localStorage holds.
+const cartLinkScript = `<script>
+function renderCart() {
+  var items = JSON.parse(localStorage.getItem('cart') || '[]');
+  if (!items.length || document.querySelector('[data-test="nav-cart"]')) return;
+  var a = document.createElement('a');
+  a.setAttribute('data-test', 'nav-cart');
+  a.textContent = 'Cart';
+  a.setAttribute('hr' + 'ef', '/check' + 'out');
+  document.getElementById('cart-slot').appendChild(a);
+}
+renderCart();
+</script>`;
+const shopHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shop</title></head>
+<body><header><span id="cart-slot"></span></header><main>
+  <h1>Shop</h1>
+  <a href="/item.html">Combination Pliers</a>
+</main>${cartLinkScript}</body></html>`;
+const itemHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Combination Pliers</title></head>
+<body><header><span id="cart-slot"></span></header><main>
+  <h1>Combination Pliers</h1>
+  <button type="button" data-testid="add-to-cart">Add to cart</button>
+</main>${cartLinkScript}
+<script>
+  document.querySelector('[data-testid="add-to-cart"]').addEventListener('click', function () {
+    var items = JSON.parse(localStorage.getItem('cart') || '[]');
+    items.push({ name: 'Combination Pliers', qty: 1 });
+    localStorage.setItem('cart', JSON.stringify(items));
+    renderCart();
+  });
+</script></body></html>`;
+const checkoutHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cart</title></head>
+<body><main><h1>Cart</h1><table id="rows"></table></main>
+<script>
+  JSON.parse(localStorage.getItem('cart') || '[]').forEach(function (it) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + it.name + '</td><td><input type="number" aria-label="Quantity" value="' + it.qty + '"></td>';
+    document.getElementById('rows').appendChild(tr);
+  });
+</script></body></html>`;
+
 const sanderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#888"/></svg>`;
 
 const routes: Record<string, { body: string; type: string }> = {
@@ -155,6 +206,9 @@ const routes: Record<string, { body: string; type: string }> = {
   '/register.html': { body: registerHtml, type: 'text/html; charset=utf-8' },
   '/delayed.html': { body: delayedHtml, type: 'text/html; charset=utf-8' },
   '/assets/products/sander.svg': { body: sanderSvg, type: 'image/svg+xml' },
+  '/shop.html': { body: shopHtml, type: 'text/html; charset=utf-8' },
+  '/item.html': { body: itemHtml, type: 'text/html; charset=utf-8' },
+  '/checkout': { body: checkoutHtml, type: 'text/html; charset=utf-8' },
 };
 
 const server = http.createServer((req, res) => {
@@ -200,6 +254,13 @@ const filterButton: SelectorRecord = { level: 'role', arg: { role: 'button', nam
 const addButton: SelectorRecord = { level: 'role', arg: { role: 'button', name: 'Add to cart' }, intent: 'add to cart button' };
 const cartBadge: SelectorRecord = { level: 'css', arg: '#badge', intent: 'cart badge' };
 const sendNoIntent: SelectorRecord = { level: 'css', arg: '#send', intent: 'element' };
+const itemLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Combination Pliers' }, intent: 'product link' };
+const addToCart: SelectorRecord = { level: 'testid', arg: 'add-to-cart', intent: 'add to cart button' };
+const navCart: SelectorRecord = { level: 'css', arg: '[data-test="nav-cart"]', intent: 'cart link in header' };
+const quantityInput: SelectorRecord = { level: 'label', arg: 'Quantity', intent: 'quantity input' };
+// The cart page is revealed by an add (invariant 71) and is reached by these
+// clicks from the shop page, never by its URL.
+const REVEALED_PATH = '/checkout';
 
 function scenarios(): Scenario[] {
   return [
@@ -286,6 +347,22 @@ function scenarios(): Scenario[] {
       { kind: 'click', target: addButton },
       { kind: 'assert_compare', varName: 'cap_badgeText', relation: 'greater', source: 'text', target: cartBadge, intent: 'cart badge', readVar: 'cap_badgeText_now' },
     ] },
+    // Reached by action (invariant 71): the origin rule is verified on the
+    // shop page, the cart rule by clicking through to the revealed page.
+    { name: 'adding a product from its page shows the cart link in the header', category: 'happy', feature: 'cart', steps: [
+      { kind: 'navigate', url: `${base}/shop.html` },
+      { kind: 'click', target: itemLink },
+      { kind: 'click', target: addToCart },
+      { kind: 'assert', name: 'cl', assertion: { type: 'toBeVisible', target: navCart, timeout: 10000 } },
+    ] },
+    { name: 'opening the cart from the header lists the added product with a quantity', category: 'happy', feature: 'cart', steps: [
+      { kind: 'navigate', url: `${base}/shop.html` },
+      { kind: 'click', target: itemLink },
+      { kind: 'click', target: addToCart },
+      { kind: 'click', target: navCart },
+      { kind: 'assert', name: 'cu', assertion: { type: 'toHaveURL', pattern: 'checkout', timeout: 10000 } },
+      { kind: 'assert', name: 'cq', assertion: { type: 'toHaveValue', target: quantityInput, value: '1', timeout: 10000 } },
+    ] },
     { name: 'the create account link on the landing page opens the registration form', category: 'happy', feature: 'registration', steps: [
       { kind: 'navigate', url: `${base}/` },
       { kind: 'click', target: createAccountLink },
@@ -297,9 +374,31 @@ function scenarios(): Scenario[] {
 
 const SCENARIO_COUNT = scenarios().length;
 
+const CART_REACHED_BY = {
+  origin: `${base}/shop.html`,
+  actions: [
+    { kind: 'click' as const, via: 'item-link' as const },
+    { kind: 'click' as const, control: 'getByTestId("add-to-cart")' },
+    { kind: 'click' as const, control: 'getByTestId("nav-cart")' },
+  ],
+};
+
 function buildReport(language: 'ts' | 'js'): RunReport {
   return {
     url: `${base}/`, language,
+    // The run-report a reached-by-action run writes: the revealed page on the
+    // discovery record and reachedBy on its plan entry. The emitters read the
+    // recorded steps only, so neither changes what they write.
+    discovery: {
+      method: 'crawl',
+      pages: [
+        { url: `${base}/shop.html`, source: 'crawl', feature: 'cart' },
+        { url: `${base}${REVEALED_PATH}`, source: 'action', feature: 'cart', reachedBy: { ...CART_REACHED_BY, feature: 'cart' } },
+      ],
+      warnings: [],
+      stateProbes: [{ feature: 'cart', outcome: 'revealed', origins: [`${base}/shop.html`], tried: [], revealed: `${base}${REVEALED_PATH}`, detail: `revealed ${REVEALED_PATH} from /shop.html`, rulesSplit: [] }],
+    },
+    plan: [{ name: 'opening the cart from the header lists the added product with a quantity', category: 'happy', rationale: 'fixture', feature: 'cart', pageUrl: `${base}/shop.html`, reachedBy: { pageUrl: `${base}${REVEALED_PATH}`, origin: `${base}/shop.html`, actions: CART_REACHED_BY.actions } }],
     scenarios: scenarios(),
     cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
     cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
@@ -385,6 +484,23 @@ for (const language of ['ts', 'js'] as const) {
     check(`${language}: the delayed spec imports awaitCaptureReady from helpers/assertions and the helper is shipped`, delayedSpec.includes(helperImport) && fs.readFileSync(path.join(outDir, `helpers/assertions.${language}`), 'utf8').includes('async function awaitCaptureReady(locator'), delayedSpec.split('\n').slice(0, 6).join(' | '));
     const contactBeforeEach = contactSpec.slice(contactSpec.indexOf('test.beforeEach'), contactSpec.indexOf('test("'));
     check(`${language}: a feature whose scenarios share one first URL keeps the beforeEach goto`, /contactPage\.goto\(\)/.test(contactBeforeEach), contactBeforeEach);
+    // Invariant 71: no emitted file opens the revealed page by its URL, POM
+    // or single file. The tree is grepped for any goto line naming it and
+    // for a page-object url set to it.
+    const singleDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-emitted-single-${language}-`));
+    try {
+      const single = transcribe({ report, outDir: singleDir, name: 'cart-fixture' });
+      const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => d.name === 'node_modules' ? [] : d.isDirectory() ? walk(path.join(dir, d.name)) : [path.join(dir, d.name)]);
+      const emitted = [...walk(outDir).filter((f) => /\.(ts|js)$/.test(f)), single.specPath];
+      const hits = emitted.flatMap((f) => fs.readFileSync(f, 'utf8').split('\n').filter((l) => (/\.goto\(/.test(l) || /\burl\s*=/.test(l)) && l.includes(REVEALED_PATH)).map((l) => `${path.basename(f)}: ${l.trim()}`));
+      check(`${language}: no page.goto (or page-object url) on the revealed ${REVEALED_PATH} in the POM tree or the single-file spec: ${hits.length} hits`, hits.length === 0, hits.join(' | '));
+      const cartSpec = fs.readFileSync(path.join(outDir, `tests/cart/cart.spec.${language}`), 'utf8');
+      const singleSpec = fs.readFileSync(single.specPath, 'utf8');
+      check(`${language}: the cart spec and the single-file spec reach the cart by the recorded clicks from the shop page`,
+        /cartPage\.goto\(\)/.test(cartSpec) && /nav-cart/.test(fs.readFileSync(path.join(outDir, `pages/cart-page.${language}`), 'utf8')) && singleSpec.includes('/shop.html') && singleSpec.includes('nav-cart'), cartSpec);
+    } finally {
+      fs.rmSync(singleDir, { recursive: true, force: true });
+    }
     check(`${language}: scaffold wrote the config, a spec per feature and the a11y spec`,
       fs.existsSync(path.join(outDir, `playwright.config.${language}`))
       && fs.existsSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`))

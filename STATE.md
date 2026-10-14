@@ -20,8 +20,8 @@ served at http://127.0.0.1:18789/, MCP server. All three build runs through
 src/agent/explore-request.ts.
 
 Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
-from scripts/, 87 smokes, 2 of them live and skipped unless
-QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "87 smokes, 85 passed, 0
+from scripts/, 93 smokes, 2 of them live and skipped unless
+QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "93 smokes, 91 passed, 0
 failed, 2 skipped (live)").
 Before any live run: npx tsx scripts/preflight-site.ts <url> --login (every run now makes the same login preflight itself before any spend, invariant 70).
 
@@ -93,8 +93,11 @@ Oct 6.
    that run ($0, scripts/recheck-run.ts): emitted check 6 of 6, zip 23
    entries, no session or report folder.
 4. Action-first discovery rung for state-dependent pages (item 3).
-   Brief: docs/design/state-dependent-pages.md (PR #46). Build PR follows
-   the brief.
+   Brief: docs/design/state-dependent-pages.md (PR #46). Built, PR #47,
+   click action only; login action designed in the brief, not built
+   (invariant 71: the state probe, the revealed page recorded as reached
+   by action, the never-navigate refusal, not-revealed coverage; $0,
+   proven on a fixture site, no live run).
 5. Console honesty: D8 plus the critique seam reaching the repair block
    (item 9).
 6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
@@ -302,12 +305,14 @@ using the qa-core-heal evaluation report as the template.
 - Run Detail keys rows by exact name; a replay or stability drop whose
   recorded name differs from the plan name shows as two rows (found in the
   #43 review).
-- Design item, state-dependent page: on practicesoftwaretesting.com the cart
-  link renders only after an add-to-cart, so no crawl of a fresh session
-  finds it and the cart rules report not-reachable (run 5 reached them by
-  action). Needs an action-first rung: plan the feature on the page that
-  starts the action and record the reached page as reached-by-action, never
-  by URL. Crawl caps and politeness rules stay.
+- ADDRESSED (engine/state-dependent-pages, Oct 14, not merged): Design
+  item, state-dependent page: on practicesoftwaretesting.com the cart link
+  renders only after an add-to-cart, so no crawl of a fresh session finds
+  it. Now the state probe reveals such a page by the action, plans its
+  rules from the post-action snapshot and refuses a navigate to it
+  (invariant 71, click action). Untested live until the confirmation run.
+- Login action for authenticated pages (brief section 7), after the
+  confirmation run.
 - ADDRESSED (engine/dropped-traces, Oct 8, not merged): Dropped scenarios
   keep only their name and verdict on the run-report; their recorded steps
   are lost, so a drop cannot be diagnosed from the artefact alone. Now
@@ -327,8 +332,9 @@ using the qa-core-heal evaluation report as the template.
   getByTestId with testIdAttribute in the config instead.
 - Explorer start-up waste: an orientation load of the entry page before the
   first planned scenario although the plan names each page.
-- The dashboard's rule table shows not-reachable as not planned (no index
-  column); the report and console carry the precise reason.
+- The dashboard's rule table shows not-reachable and not-revealed as not
+  planned (no index column); the report and console carry the precise
+  reason.
 - Enumerate every cap, truncation, filter, and catch in the pipeline; each is
   made loud or proven harmless (eight silent-failure bugs found since Sept).
 - Doctrine decision on absence-as-count-zero assertions.

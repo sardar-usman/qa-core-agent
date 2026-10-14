@@ -21,7 +21,7 @@ import path from 'node:path';
 import { openDatabase, schemaVersion } from '../src/server/db/migrate.js';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
-import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID, runRowFromLegacyRecord, legacyRunId, importLegacyRecords } from '../src/server/db/indexer.js';
+import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID, runRowFromLegacyRecord, legacyRunId, importLegacyRecords, UNCOVERED_STATUS } from '../src/server/db/indexer.js';
 import { newRunId, setLatest } from '../src/agent/output-layout.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -320,6 +320,11 @@ fs.rmSync(path.join(root, '.qa-core', 'sites', 'demo.playwright.dev.json'));
 const r4 = indexOutput(db2, root);
 check('T9. a record removed from the store vanishes from the index', r4.runs === 7 && r4.removed === 1 && !db2.prepare("SELECT 1 FROM runs WHERE project_id = 'demo-playwright-dev'").get());
 db2.close();
+
+// The index keeps the coarse status; the report and the console carry the
+// precise reason. not-reachable (invariant 61) and not-revealed (invariant
+// 71) both store as not_planned, so no schema change.
+check('UC. not-reachable and not-revealed index as not_planned', UNCOVERED_STATUS['not-reachable'] === 'not_planned' && UNCOVERED_STATUS['not-revealed'] === 'not_planned', JSON.stringify(UNCOVERED_STATUS));
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);

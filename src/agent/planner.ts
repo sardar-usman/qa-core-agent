@@ -3,6 +3,7 @@ import { chromium, type Frame, type Page } from 'playwright';
 import { installEvalShim } from './eval-shim.js';
 import { renderRequirementsBlock, type RequirementsMap, type RequirementRule, type RequirementFeature } from './requirements.js';
 import { citationMismatchReason, scenarioNameKey, REJECTION_RULE_RE } from './rule-coverage.js';
+import type { ReachAction } from './discovery.js';
 
 /**
  * Planner — Step 1 of the multi-agent pipeline.
@@ -45,6 +46,46 @@ export interface PlannedScenario {
    * name), never by navigating to the GUID URL directly.
    */
   volatilePage?: boolean;
+  /**
+   * Set when the scenario runs on a page that exists only after an action
+   * (invariant 71): `pageUrl` stays the origin the Explorer navigates to,
+   * `reachedBy.pageUrl` is the revealed page, reached by `actions` and never
+   * navigated to. Absent on every other scenario, including a state-dependent
+   * feature's origin rules (they are verified before the page is reached).
+   */
+  reachedBy?: { pageUrl: string; origin: string; actions: ReachAction[] };
+}
+
+/** The Anthropic client surface plan() calls. Injectable so a smoke plans from a fixture response with no model spend. */
+export interface PlannerClient {
+  messages: {
+    create(body: Anthropic.MessageCreateParamsNonStreaming): Promise<Pick<Anthropic.Message, 'content' | 'usage'>>;
+  };
+}
+
+/** The actions as the Planner and the Explorer read them: "click an item" for the item hop, else the control. */
+export function reachActionsText(actions: ReachAction[]): string {
+  return actions.map((a) => (a.via === 'item-link' ? 'click an item by its visible name' : a.kind === 'login' ? 'sign in' : `click ${a.control ?? 'the control'}`)).join(', then ');
+}
+
+/** The path of a URL, or the URL when it does not parse. */
+function urlPath(url: string): string {
+  try { return new URL(url).pathname || '/'; } catch { return url; }
+}
+
+/**
+ * The Planner's per-page block for a page reached by action (invariant 71).
+ * The snapshot is the page as it looks after the action, so the scenarios
+ * are planned from what it really holds; every scenario starts on the
+ * origin and reaches this page by the same actions, never by its URL, and a
+ * scenario that opens the URL directly (signed out or otherwise) is not
+ * planned. Exported for the smoke.
+ */
+export function reachedByBlock(revealedUrl: string, reachedBy: { origin: string; actions: ReachAction[] }): string {
+  const path = urlPath(revealedUrl);
+  return `This page exists only after an action: it was reached from ${reachedBy.origin} by these steps: ${reachActionsText(reachedBy.actions)}. The snapshot above is the page after those steps.
+Plan every scenario to start on ${reachedBy.origin}, perform those steps, and then do what the scenario tests on ${path}. Name the steps in the scenario when they matter (e.g. "added an item to the cart, opened the cart and ...").
+Never plan a scenario that opens ${path} by its URL, signed out or otherwise: the Explorer never navigates to ${path} directly.`;
 }
 
 /**
@@ -688,13 +729,26 @@ export async function plan(opts: {
    * a caller that passes none gets a fresh budget for this call.
    */
   ruleRetryBudget?: RuleRetryBudget;
+  /**
+   * A snapshot to plan from instead of loading the URL: the state probe's
+   * post-action snapshot of a revealed page (invariant 71), which a fresh
+   * load could never show. No browser is launched when it is given.
+   */
+  snapshot?: PageSnapshot;
+  /** The client to call. Defaults to an Anthropic client on apiKey; a smoke passes a fixture. */
+  client?: PlannerClient;
+  /** Set for a page reached by action: appends reachedByBlock so every scenario starts on the origin. */
+  reachedBy?: { origin: string; actions: ReachAction[] };
 }): Promise<PlanResult> {
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
+  if (!apiKey && !opts.client) throw new Error('ANTHROPIC_API_KEY is not set.');
   // Both env names are honored: QA_CORE_PLANNER_MODEL (documented) and the
   // older QA_CORE_MODEL_PLANNER. Default unchanged.
   const model = opts.model ?? process.env.QA_CORE_PLANNER_MODEL ?? process.env.QA_CORE_MODEL_PLANNER ?? 'claude-haiku-4-5';
-  const client = new Anthropic({ apiKey });
+  const client: PlannerClient = opts.client ?? (new Anthropic({ apiKey }) as unknown as PlannerClient);
+
+  // A given snapshot is planned as is; no browser.
+  if (opts.snapshot) return planFromSnapshot(opts.snapshot, opts, client, model);
 
   // Take one snapshot — title + visible interactive elements.
   const browser = await chromium.launch({ headless: true });
@@ -716,129 +770,142 @@ export async function plan(opts: {
       );
     }
     const snapshot = await snapshotPage(page);
-
-    // When the caller passed a feature list, append explicit steering text so
-    // the Planner produces scenarios ONLY for those features. This makes
-    // `--features login,cart` actually change what the agent tests, instead
-    // of just decorating the README.
-    const features = (opts.features ?? []).filter((f) => f && f.trim().length > 0);
-    const steeringBlock = features.length > 0
-      ? `\n\nThe user has asked for scenarios covering THESE features ONLY:\n${features.map((f) => `  - ${f}`).join('\n')}\n\n` +
-        `Rules when steering:\n` +
-        `- Propose 1-3 scenarios per listed feature.\n` +
-        `- Do NOT propose scenarios for other features visible on the page (e.g. don't add a search scenario if the user only asked for login).\n` +
-        `- If a requested feature is not visible on this homepage snapshot (e.g., a checkout flow only reachable after login), STILL propose scenarios for it — the Explorer can navigate to find it.\n` +
-        `- Across all listed features combined, stay within the 3-6 scenarios overall constraint.`
-      : '';
-
-    // When the page has content-bearing iframes, anchor the Planner on that
-    // content explicitly. The SYSTEM rule already forbids planning only around
-    // chrome, but listing the real frame content here makes Haiku act on it.
-    const volatileBlock = opts.volatilePage ? `\n\n${VOLATILE_PAGE_GUIDANCE}` : '';
-    // Credentials for wrong-credential negatives, with the lockout rules on
-    // this page named as the exception (see CREDENTIAL_STEERING).
-    const credentialBlock = `\n\n${credentialSteeringFor(opts.requirements)}`;
-
-    const contentFrames = snapshot.frames.filter(frameHasContent);
-    const iframeBlock = contentFrames.length > 0
-      ? `\n\nThis page has ${contentFrames.length} content-bearing iframe${contentFrames.length === 1 ? '' : 's'}. ` +
-        `The iframe content is the feature of this page, not the surrounding chrome. ` +
-        `You MUST include at least one scenario that reads or interacts with content INSIDE an iframe, and name the iframe in that scenario. Frame contents:\n` +
-        contentFrames.map((f, i) => `  frame ${i + 1} (${f.frameChain.join(' > ')}): ${describeFrame(f)}`).join('\n')
-      : '';
-
-    // Rule-driven planning: when a requirements map is present, a second system
-    // block lists the stated rules and switches the constraints to rule-first.
-    // It is appended AFTER the cached base SYSTEM block so the cache prefix is
-    // untouched, and it is absent entirely without a map, so the no-SRS prompt
-    // stays byte-identical to the pre-SRS behaviour.
-    const systemBlocks: Anthropic.TextBlockParam[] = [
-      { type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
-    ];
-    if (opts.requirements) {
-      systemBlocks.push({ type: 'text', text: `${renderRequirementsBlock(opts.requirements)}\n\n${RULE_PLANNING}` } as Anthropic.TextBlockParam);
-    }
-
-    const response = await client.messages.create({
-      model,
-      max_tokens: 2000,
-      system: systemBlocks,
-      messages: [
-        {
-          role: 'user',
-          content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}${volatileBlock}${credentialBlock}\n\nPropose scenarios.`,
-        },
-      ],
-    });
-
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n');
-
-    const parsed = parsePlan(text);
-    // Reject circular unchanged-assertions (capture a value, reload/no-op, assert
-    // it equals itself) before de-dup, so a vacuous test never reaches the plan.
-    const { kept: notCircular, rejected } = rejectCircular(parsed);
-    const { kept: deduped, dropped } = dedupePlan(notCircular);
-    // Page fit: a scenario that names a control the snapshot does not show (a
-    // password field on a one-field reset form, a price on cards that carry
-    // none) is dropped here, before the Explorer spends on it. Deterministic,
-    // never a prompt nudge. Runs before the iframe injection so a synthesized
-    // frame scenario (built from real frame content) is never judged.
-    const { kept: fit, rejected: pageFitRejected } = rejectPageFit(deduped, snapshot);
-    // Contradictions: a negative whose only cited rules state no rejection,
-    // or a name that asserts the opposite of a cited rule, is dropped here;
-    // a rule the drops left uncited gets ONE retry call of its own.
-    const { kept: coherent, rejected: contradictionRejected } = rejectContradictions(fit, opts.requirements);
-    let kept = coherent;
-    let ruleRetries: RuleRetry[] = [];
-    if (opts.requirements && contradictionRejected.length > 0) {
-      const map = opts.requirements;
-      const retry = await retryUncoveredRules({
-        dropped: contradictionRejected.map((r) => r.scenario),
-        kept: coherent,
-        map,
-        budget: opts.ruleRetryBudget ?? { remaining: RULE_RETRY_CAP },
-        ask: async (rule, feature) => {
-          const r = await client.messages.create({
-            model,
-            max_tokens: 400,
-            system: systemBlocks,
-            messages: [{ role: 'user', content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${credentialBlock}\n\n${ruleRetryAsk(rule, feature, opts.url)}` }],
-          });
-          const u = r.usage;
-          return {
-            text: r.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n'),
-            costUsd: (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000,
-          };
-        },
-        accept: (sc) => circularUnchangedReason(sc) ?? vacuousAbsenceReason(sc) ?? pageFitReason(sc, snapshot)?.reason ?? contradictionReason(sc, map),
-      });
-      kept = [...coherent, ...retry.added];
-      ruleRetries = retry.retries;
-    }
-    // Guarantee iframe coverage deterministically. The SYSTEM rule + steering
-    // block ask the model to plan an inside-frame scenario, but a prompt nudge
-    // can miss. When the page has content-bearing iframes and the plan still
-    // ignores them, synthesize one inside-frame scenario so the frameLocator
-    // path is always exercised on such a page. Runs last so the injected
-    // scenario is not dropped by dedup or rejected as circular.
-    const { scenarios: covered, injected } = ensureIframeCoverage(kept, snapshot.frames);
-    if (injected) {
-      console.log(`Planner: injected an inside-frame scenario (no model scenario covered the iframe): ${injected.name}`);
-    }
-    // A citation is a claim that the scenario verifies the rule; drop the ones
-    // the category makes impossible, so coverage never counts them.
-    const { scenarios: cited, citationDrops } = applyCitationChecks(covered, opts.requirements);
-    const u = response.usage;
-    const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000
-      + ruleRetries.reduce((n, r) => n + r.costUsd, 0);
-
-    return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, ruleRetries, fillableFields: snapshot.fillableCount };
+    return await planFromSnapshot(snapshot, opts, client, model);
   } finally {
     await browser.close();
   }
+}
+
+/** Everything plan() does once it has a snapshot: the prompt, the call, and every deterministic pass. */
+async function planFromSnapshot(
+  snapshot: PageSnapshot,
+  opts: Parameters<typeof plan>[0],
+  client: PlannerClient,
+  model: string,
+): Promise<PlanResult> {
+  // When the caller passed a feature list, append explicit steering text so
+  // the Planner produces scenarios ONLY for those features. This makes
+  // `--features login,cart` actually change what the agent tests, instead
+  // of just decorating the README.
+  const features = (opts.features ?? []).filter((f) => f && f.trim().length > 0);
+  const steeringBlock = features.length > 0
+    ? `\n\nThe user has asked for scenarios covering THESE features ONLY:\n${features.map((f) => `  - ${f}`).join('\n')}\n\n` +
+      `Rules when steering:\n` +
+      `- Propose 1-3 scenarios per listed feature.\n` +
+      `- Do NOT propose scenarios for other features visible on the page (e.g. don't add a search scenario if the user only asked for login).\n` +
+      `- If a requested feature is not visible on this homepage snapshot (e.g., a checkout flow only reachable after login), STILL propose scenarios for it — the Explorer can navigate to find it.\n` +
+      `- Across all listed features combined, stay within the 3-6 scenarios overall constraint.`
+    : '';
+
+  // When the page has content-bearing iframes, anchor the Planner on that
+  // content explicitly. The SYSTEM rule already forbids planning only around
+  // chrome, but listing the real frame content here makes Haiku act on it.
+  const volatileBlock = opts.volatilePage ? `\n\n${VOLATILE_PAGE_GUIDANCE}` : '';
+  // A page reached by action: every scenario starts on the origin and
+  // reaches the page by the recorded steps (invariant 71). Absent otherwise,
+  // so every other prompt is byte-identical.
+  const reachedBlock = opts.reachedBy ? `\n\n${reachedByBlock(opts.url, opts.reachedBy)}` : '';
+  // Credentials for wrong-credential negatives, with the lockout rules on
+  // this page named as the exception (see CREDENTIAL_STEERING).
+  const credentialBlock = `\n\n${credentialSteeringFor(opts.requirements)}`;
+
+  const contentFrames = snapshot.frames.filter(frameHasContent);
+  const iframeBlock = contentFrames.length > 0
+    ? `\n\nThis page has ${contentFrames.length} content-bearing iframe${contentFrames.length === 1 ? '' : 's'}. ` +
+      `The iframe content is the feature of this page, not the surrounding chrome. ` +
+      `You MUST include at least one scenario that reads or interacts with content INSIDE an iframe, and name the iframe in that scenario. Frame contents:\n` +
+      contentFrames.map((f, i) => `  frame ${i + 1} (${f.frameChain.join(' > ')}): ${describeFrame(f)}`).join('\n')
+    : '';
+
+  // Rule-driven planning: when a requirements map is present, a second system
+  // block lists the stated rules and switches the constraints to rule-first.
+  // It is appended AFTER the cached base SYSTEM block so the cache prefix is
+  // untouched, and it is absent entirely without a map, so the no-SRS prompt
+  // stays byte-identical to the pre-SRS behaviour.
+  const systemBlocks: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam,
+  ];
+  if (opts.requirements) {
+    systemBlocks.push({ type: 'text', text: `${renderRequirementsBlock(opts.requirements)}\n\n${RULE_PLANNING}` } as Anthropic.TextBlockParam);
+  }
+
+  const response = await client.messages.create({
+    model,
+    max_tokens: 2000,
+    system: systemBlocks,
+    messages: [
+      {
+        role: 'user',
+        content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${steeringBlock}${iframeBlock}${volatileBlock}${reachedBlock}${credentialBlock}\n\nPropose scenarios.`,
+      },
+    ],
+  });
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+
+  const parsed = parsePlan(text);
+  // Reject circular unchanged-assertions (capture a value, reload/no-op, assert
+  // it equals itself) before de-dup, so a vacuous test never reaches the plan.
+  const { kept: notCircular, rejected } = rejectCircular(parsed);
+  const { kept: deduped, dropped } = dedupePlan(notCircular);
+  // Page fit: a scenario that names a control the snapshot does not show (a
+  // password field on a one-field reset form, a price on cards that carry
+  // none) is dropped here, before the Explorer spends on it. Deterministic,
+  // never a prompt nudge. Runs before the iframe injection so a synthesized
+  // frame scenario (built from real frame content) is never judged.
+  const { kept: fit, rejected: pageFitRejected } = rejectPageFit(deduped, snapshot);
+  // Contradictions: a negative whose only cited rules state no rejection,
+  // or a name that asserts the opposite of a cited rule, is dropped here;
+  // a rule the drops left uncited gets ONE retry call of its own.
+  const { kept: coherent, rejected: contradictionRejected } = rejectContradictions(fit, opts.requirements);
+  let kept = coherent;
+  let ruleRetries: RuleRetry[] = [];
+  if (opts.requirements && contradictionRejected.length > 0) {
+    const map = opts.requirements;
+    const retry = await retryUncoveredRules({
+      dropped: contradictionRejected.map((r) => r.scenario),
+      kept: coherent,
+      map,
+      budget: opts.ruleRetryBudget ?? { remaining: RULE_RETRY_CAP },
+      ask: async (rule, feature) => {
+        const r = await client.messages.create({
+          model,
+          max_tokens: 400,
+          system: systemBlocks,
+          messages: [{ role: 'user', content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${credentialBlock}\n\n${ruleRetryAsk(rule, feature, opts.url)}` }],
+        });
+        const u = r.usage;
+        return {
+          text: r.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n'),
+          costUsd: (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000,
+        };
+      },
+      accept: (sc) => circularUnchangedReason(sc) ?? vacuousAbsenceReason(sc) ?? pageFitReason(sc, snapshot)?.reason ?? contradictionReason(sc, map),
+    });
+    kept = [...coherent, ...retry.added];
+    ruleRetries = retry.retries;
+  }
+  // Guarantee iframe coverage deterministically. The SYSTEM rule + steering
+  // block ask the model to plan an inside-frame scenario, but a prompt nudge
+  // can miss. When the page has content-bearing iframes and the plan still
+  // ignores them, synthesize one inside-frame scenario so the frameLocator
+  // path is always exercised on such a page. Runs last so the injected
+  // scenario is not dropped by dedup or rejected as circular.
+  const { scenarios: covered, injected } = ensureIframeCoverage(kept, snapshot.frames);
+  if (injected) {
+    console.log(`Planner: injected an inside-frame scenario (no model scenario covered the iframe): ${injected.name}`);
+  }
+  // A citation is a claim that the scenario verifies the rule; drop the ones
+  // the category makes impossible, so coverage never counts them.
+  const { scenarios: cited, citationDrops } = applyCitationChecks(covered, opts.requirements);
+  const u = response.usage;
+  const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000
+    + ruleRetries.reduce((n, r) => n + r.costUsd, 0);
+
+  return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, ruleRetries, fillableFields: snapshot.fillableCount };
 }
 
 /**
@@ -1535,7 +1602,9 @@ export function dedupeAcrossPages(
     }
     const e = all[idx]!;
     const incomingOnItsPage = !!s.feature && page.feature === s.feature;
-    const existingOnItsPage = !!e.feature && pageFeatureOf(e.pageUrl) === e.feature;
+    // A scenario reached by action runs on its revealed page, whose tag is
+    // page evidence (invariant 71); its pageUrl is only the origin.
+    const existingOnItsPage = !!e.feature && pageFeatureOf(e.reachedBy?.pageUrl ?? e.pageUrl) === e.feature;
     if (incomingOnItsPage && !existingOnItsPage) {
       dropped.push({ scenario: e, duplicateOf: s });
       all.splice(idx, 1);
@@ -1561,11 +1630,18 @@ export function dedupeAcrossPages(
  * 591732: cart, 4 rules, 0 scenarios). Never invents a URL. Exported for the
  * smoke.
  */
-export function unreachableFeatures(map: RequirementsMap | undefined, pages: Array<{ feature?: string }>): Array<{ name: string; rules: number }> {
+export function unreachableFeatures(
+  map: RequirementsMap | undefined,
+  pages: Array<{ feature?: string }>,
+  stateProbes?: Array<{ feature: string }>,
+): Array<{ name: string; rules: number }> {
   if (!map) return [];
   const tagged = new Set(pages.map((p) => p.feature).filter((f): f is string => !!f));
+  // A feature a state probe ran on has its own line (the probe line) and its
+  // own coverage reason (not-revealed), never "no discovered page" (invariant 71).
+  const probed = new Set((stateProbes ?? []).map((p) => p.feature));
   return map.features
-    .filter((f) => f.rules.length > 0 && !tagged.has(f.name))
+    .filter((f) => f.rules.length > 0 && !tagged.has(f.name) && !probed.has(f.name))
     .map((f) => ({ name: f.name, rules: f.rules.length }));
 }
 

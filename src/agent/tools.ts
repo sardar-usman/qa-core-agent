@@ -116,6 +116,9 @@ export interface ToolContext {
    * runtime beside plannedNames, so the repair pass inherits it. end_scenario
    * refuses a trace whose navigate steps leave the planned page (invariant
    * 65); an entry with no pageUrl, or none at all, exempts the scenario.
+   * An entry with reachedPageUrl (every scenario of a feature whose state
+   * probe revealed a page, invariant 71) is refused for any navigate to that
+   * page, with no exemption ('navigated-to-reached-page').
    */
   plannedPages: Map<string, PlannedPageEntry>;
   /** Planned-page violations per planned scenario; the second records the scenario as gate-broken. */

@@ -6,16 +6,19 @@ import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolCo
 import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
 import type { RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
-import { plan, lockoutScenarioNames, knownAccountIdentifiers, uniqueScenarioNames, dedupeAcrossPages, unreachableFeatures, unreachableFeatureLine, RULE_RETRY_CAP, type PlannedScenario, type RuleRetry } from './planner.js';
+import { plan, lockoutScenarioNames, knownAccountIdentifiers, unreachableFeatures, unreachableFeatureLine, reachActionsText, RULE_RETRY_CAP, type PlannedScenario } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
 import { replay, replayReportBlock, type ReplayEvent } from './replay.js';
 import { stability, stabilityReportBlock, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
-import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned } from './rule-coverage.js';
+import { attachRuleIds, computeDerivation, computeRuleCoverage, renderRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { totalCost } from './cost-total.js';
-import { discoverPages, writeDiscoveryJson } from './discovery.js';
+import { discoverPages, fetchRobots, writeDiscoveryJson } from './discovery.js';
+import { detectStateFeatures, runStateProbes } from './state-probe.js';
+import type { PlannedPageEntry } from './planned-page.js';
+import { buildPlanTargets, planAcrossPages, ruleRetryLine, PER_PAGE_SCENARIO_CAP, GLOBAL_PLAN_CAP } from './plan-pages.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
 import { featureTokenMap } from './requirements.js';
 import {
@@ -270,10 +273,8 @@ export interface ExplorerCredentialContext {
   wrongPassword?: WrongPasswordLedger;
 }
 
-/** Cap on scenarios planned per discovered page. */
-export const PER_PAGE_SCENARIO_CAP = 4;
-/** Global cap on planned scenarios per run; planning stops once reached. */
-export const GLOBAL_PLAN_CAP = 20;
+// The per-page and global plan caps live with the planning loop (plan-pages.ts).
+export { PER_PAGE_SCENARIO_CAP, GLOBAL_PLAN_CAP };
 
 /** Default fraction of the cost ceiling reserved for the repair pass. */
 export const DEFAULT_REPAIR_RESERVE = 0.15;
@@ -470,6 +471,10 @@ export function repairPlanFor(
       ...(s.feature ? { feature: s.feature } : {}),
       ...(planned?.pageUrl ? { pageUrl: planned.pageUrl } : {}),
       ...(planned?.volatilePage ? { volatilePage: true } : {}),
+      ...(planned?.reachedBy ? { reachedBy: planned.reachedBy } : {}),
+      // The cited rules travel too: the never-navigate refusal resolves a
+      // scenario's feature from them, never from its tag (invariant 71).
+      ...((planned?.ruleIds ?? s.ruleIds) ? { ruleIds: [...(planned?.ruleIds ?? s.ruleIds)!] } : {}),
     };
   });
   const recordedNameFor = (name: string): string => {
@@ -495,6 +500,10 @@ async function repairPass(args: {
    * (invariant 65). Before this the repair plan carried no page at all.
    */
   plan?: PlannedScenario[];
+  /** Per feature, its revealed page (invariant 71): the repair re-records under the same never-navigate rule. */
+  reachedPages?: Record<string, string>;
+  /** The requirements map, so the refusal resolves a scenario's feature from its cited rule ids. */
+  requirements?: RequirementsMap;
   onEvent?: ExploreOptions['onEvent'];
   /** The Explorer's credential context (known real accounts, lockout-exempt scenarios, the test account and its wrong-password counter), applied to the repair context too. */
   credentials?: ExplorerCredentialContext;
@@ -558,6 +567,8 @@ async function repairPass(args: {
       url: args.url,
       plan,
       repairNote,
+      ...(args.reachedPages ? { reachedPages: args.reachedPages } : {}),
+      ...(args.requirements ? { requirements: args.requirements } : {}),
       onEvent: args.onEvent,
     });
     const notes: string[] = [];
@@ -601,13 +612,6 @@ async function repairPass(args: {
     await context?.close();
     await browser?.close();
   }
-}
-
-/** A requirements map narrowed to one feature, for per-page rule context. */
-function subMapFor(map: RequirementsMap | undefined, feature: string | undefined): RequirementsMap | undefined {
-  if (!map || !feature) return map;
-  const matched = map.features.filter((f) => f.name === feature);
-  return matched.length > 0 ? { ...map, features: matched } : map;
 }
 
 /**
@@ -893,14 +897,6 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // across every page's plan() call.
   let contradictionRejected: PlannedScenario[] = [];
   const ruleRetryBudget = { remaining: RULE_RETRY_CAP };
-  const ruleRetryLine = (rr: RuleRetry): string => {
-    const what = rr.outcome === 'planned'
-      ? `planned "${rr.scenario}"`
-      : rr.outcome === 'rejected'
-        ? `rejected "${rr.scenario}": ${rr.reason}`
-        : `no scenario returned (${rr.reason})`;
-    return `Planner rule retry ${rr.ruleId}: ${what} · $${rr.costUsd.toFixed(4)}`;
-  };
 
   if (opts.resume) {
     // ── Resume: restore instead of re-doing ─────────────────────────────────
@@ -968,7 +964,27 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       });
     }
     opts.onEvent?.({ type: 'message', text: `discovery: ${pages.length} page(s) via ${disc.method}` });
-    discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings };
+    // State probe (invariant 71): a feature with rules and no page carrying
+    // it by page evidence is probed in a browser with no model call. The
+    // probe only ADDS a revealed page; when it reveals nothing, every page
+    // below is planned exactly as before, a page the model pick tagged
+    // included. Robots is the rule set discovery read, fetched now when an
+    // SRS or user rung won before robots.txt was read.
+    const probeMap = opts.requirements;
+    const probeTokens = probeMap ? featureTokenMap(probeMap) : undefined;
+    const probes = probeMap && detectStateFeatures(probeMap, disc.pages, probeTokens).length > 0
+      ? await runStateProbes({
+          map: probeMap,
+          candidates: disc.pages,
+          ...(disc.pageControls ? { pageControls: disc.pageControls } : {}),
+          robots: disc.robots ?? await fetchRobots(new URL(opts.url)),
+          ...(probeTokens ? { featureTokens: probeTokens } : {}),
+        })
+      : { probes: [], revealed: [], lines: [] };
+    for (const line of probes.lines) opts.onEvent?.({ type: 'message', text: line });
+    const planned = buildPlanTargets({ pages, map: opts.requirements, features: opts.features, revealed: probes.revealed, candidates: disc.pages });
+    pages = planned.pages;
+    discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings, ...(probes.probes.length > 0 ? { stateProbes: probes.probes } : {}) };
     try {
       writeDiscoveryJson(opts.outDir, discoveryInfo);
     } catch (err) {
@@ -981,116 +997,45 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
 
     // An SRS feature with rules but no page tagged for it can only report
     // not-planned; say so now, at plan time, and never invent a URL for it.
-    for (const f of unreachableFeatures(opts.requirements, pages)) {
+    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes)) {
       opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
     }
 
     // Per-page planning: up to PER_PAGE_SCENARIO_CAP scenarios per page,
     // GLOBAL_PLAN_CAP total. Cost is itemized per page. A page whose plan
-    // fails is skipped with a message; the other pages still plan.
-    let combined: PlannedScenario[] = [];
-    const combinedDropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> = [];
-    const combinedRejected: Array<{ scenario: PlannedScenario; reason: string }> = [];
-    const combinedCitationDrops: Array<{ scenario: string; ruleId: string; reason: string }> = [];
-    const pageFeatureOf = (url: string | undefined): string | undefined => pages.find((p) => p.url === url)?.feature;
-    let fillableMax = 0;
-    for (const [idx, pg] of pages.entries()) {
-      if (combined.length >= GLOBAL_PLAN_CAP) {
-        planCapHit = true;
-        opts.onEvent?.({
-          type: 'message',
-          text: `Planner: global cap of ${GLOBAL_PLAN_CAP} scenarios reached; ${pages.length - idx} page(s) not planned.`,
-        });
-        break;
-      }
-      let p: Awaited<ReturnType<typeof plan>>;
-      try {
-        p = await plan({
-          url: pg.url,
-          apiKey,
-          features: pg.feature ? [pg.feature] : opts.features,
-          requirements: subMapFor(opts.requirements, pg.feature),
-          ...(pg.volatile ? { volatilePage: true } : {}),
-          ruleRetryBudget,
-        });
-      } catch (err) {
+    // fails is skipped with a message; the other pages still plan. A page
+    // reached by action is planned right after its origin, from the probe's
+    // own post-action snapshot (plan-pages.ts).
+    const planned2 = await planAcrossPages({
+      targets: planned.targets,
+      planFn: (a) => plan({ ...a, apiKey, ruleRetryBudget }),
+      onMessage: (text) => opts.onEvent?.({ type: 'message', text }),
+      onPlanError: (err, _t, partial) => {
         // Billing/credit exhaustion or a persistent API failure must not be
         // silently absorbed as a per-page skip (the loop would skip EVERY
         // page and bill nothing but noise). Save state, say how to resume,
         // stop cleanly.
         const cls = classifyRunError(err);
         if (cls.kind !== 'other') {
-          cpState.plan = combined;
-          cpState.spend.planner = plannerUsd;
+          cpState.plan = partial.combined;
+          cpState.spend.planner = plannerUsd + partial.plannerUsd;
           cpState.phase = 'planning';
           const cpFile = saveCheckpoint();
           opts.onEvent?.({ type: 'message', text: stopMessage(cls.reason, cpFile) });
           process.removeListener('SIGINT', onSigint);
           throw new Error(stopMessage(cls.reason, cpFile));
         }
-        opts.onEvent?.({
-          type: 'message',
-          text: `Planner failed on ${pg.url} (${(err as Error).message}); page skipped.`,
-        });
-        continue;
-      }
-      let scen = p.scenarios.map((s): PlannedScenario => ({
-        ...s,
-        pageUrl: pg.url,
-        ...(pg.volatile ? { volatilePage: true } : {}),
-        ...(pg.feature && !s.feature ? { feature: pg.feature } : {}),
-      }));
-      // Page fit: each drop is named with its page, and the scenario never
-      // reaches the plan, so the funnel stays balanced.
-      for (const r of p.pageFitRejected) {
-        opts.onEvent?.({ type: 'message', text: `Rejected page-fit scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}` });
-        pageFitRejected.push({ ...r.scenario, pageUrl: pg.url, ...(pg.feature && !r.scenario.feature ? { feature: pg.feature } : {}) });
-      }
-      for (const r of p.contradictionRejected) {
-        opts.onEvent?.({ type: 'message', text: `Rejected contradiction scenario: "${r.scenario.name}" on ${pg.url}: ${r.reason}` });
-        contradictionRejected.push({ ...r.scenario, pageUrl: pg.url, ...(pg.feature && !r.scenario.feature ? { feature: pg.feature } : {}) });
-      }
-      for (const rr of p.ruleRetries) opts.onEvent?.({ type: 'message', text: ruleRetryLine(rr) });
-      if (scen.length > PER_PAGE_SCENARIO_CAP) {
-        planCapHit = true;
-        opts.onEvent?.({
-          type: 'message',
-          text: `Planner: ${pg.url} planned ${scen.length} scenarios, trimmed to the per-page cap of ${PER_PAGE_SCENARIO_CAP}.`,
-        });
-        scen = scen.slice(0, PER_PAGE_SCENARIO_CAP);
-      }
-      const room = GLOBAL_PLAN_CAP - combined.length;
-      if (scen.length > room) { planCapHit = true; scen = scen.slice(0, room); }
-      // The same feature + category + intent planned on two pages is one
-      // scenario: the copy on the page tagged for its feature wins, else the
-      // first in ladder order. The dropped copy never reaches the plan.
-      const cross = dedupeAcrossPages(combined, scen, pg, pageFeatureOf);
-      for (const d of cross.dropped) {
-        const keptOn = d.duplicateOf.pageUrl ?? pg.url;
-        const droppedOn = d.scenario.pageUrl ?? pg.url;
-        opts.onEvent?.({ type: 'message', text: `Rejected cross-page duplicate: "${d.scenario.name}" on ${droppedOn} (same feature, category and intent as the scenario kept on ${keptOn})` });
-      }
-      combined = cross.existing;
-      scen = cross.incoming;
-      // Names unique across pages: skip_scenario, verdict matching and the
-      // funnel key on the name, so a genuinely different scenario that shares
-      // a name with one from another page gets the feature or path appended.
-      const unique = uniqueScenarioNames(combined, scen, pg);
-      for (const r of unique.renames) {
-        opts.onEvent?.({ type: 'message', text: `Renamed duplicate scenario: "${r.from}" -> "${r.to}" (the same name was planned on another page)` });
-      }
-      scen = unique.scenarios;
-      combined.push(...scen);
-      combinedDropped.push(...p.dropped);
-      combinedRejected.push(...p.rejected);
-      combinedCitationDrops.push(...p.citationDrops);
-      fillableMax = Math.max(fillableMax, p.fillableFields);
-      plannerUsd += p.costUsd;
-      opts.onEvent?.({
-        type: 'message',
-        text: `Planner [${idx + 1}/${pages.length}] ${pg.url}: ${scen.length} scenario(s) · $${p.costUsd.toFixed(4)}`,
-      });
-    }
+      },
+    });
+    const combined = planned2.combined;
+    const combinedDropped = planned2.dropped;
+    const combinedRejected = planned2.rejected;
+    const combinedCitationDrops = planned2.citationDrops;
+    const fillableMax = planned2.fillableMax;
+    pageFitRejected.push(...planned2.pageFitRejected);
+    contradictionRejected.push(...planned2.contradictionRejected);
+    plannerUsd += planned2.plannerUsd;
+    if (planned2.planCapHit) planCapHit = true;
 
     if (combined.length === 0) {
       throw new Error(
@@ -1321,6 +1266,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           client, model, maxUsd: loopBudgetUsd, price, maxSteps,
           ctx, url: opts.url,
           plan: toExplore,
+          reachedPages: reachedPagesOf(discoveryInfo),
+          ...(opts.requirements ? { requirements: opts.requirements } : {}),
           onEvent: opts.onEvent,
           // Per-scenario checkpoint: crash-safe by construction, trivial cost.
           onScenarioComplete: (loopUsd) => {
@@ -1600,6 +1547,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             rework: decision.rework,
             verdicts: review.verdicts,
             plan: planResult.scenarios,
+            reachedPages: reachedPagesOf(discoveryInfo),
+            ...(opts.requirements ? { requirements: opts.requirements } : {}),
             onEvent: opts.onEvent,
             ...(explorerCredentialContext ? { credentials: explorerCredentialContext } : {}),
           });
@@ -1951,7 +1900,10 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // A feature no discovered page carries reports its rules as
         // not-reachable, never plain not-planned. Only a discovery run knows
         // its page set; a single-page or from-plan run has no such feature.
-        ...(discoveryInfo ? { unreachableFeatures: unreachableFeatures(opts.requirements, discoveryInfo.pages).map((f) => f.name) } : {}),
+        ...(discoveryInfo ? { unreachableFeatures: unreachableFeatures(opts.requirements, discoveryInfo.pages, discoveryInfo.stateProbes).map((f) => f.name) } : {}),
+        // A feature whose state probe revealed no page: its rules still
+        // uncited after planning read not-revealed with the probe's detail.
+        ...(discoveryInfo?.stateProbes ? { notRevealed: notRevealedFeatures(discoveryInfo.stateProbes) } : {}),
       }),
       // Derivation: which checklist categories produced scenarios per feature
       // and which were skipped, with the reason. The considered-not-automated
@@ -2051,6 +2003,66 @@ function collectResolvedIntents(scenarios: Scenario[]): Array<{ intent: string; 
 
 // Exported so smoke-cost-ceiling can drive the loop with a fake client and
 // prove the ceiling breaks cleanly instead of throwing.
+/** The path of a URL for a prompt line, or the URL when it does not parse. */
+function pathOfUrl(url: string): string {
+  try { return new URL(url).pathname || '/'; } catch { return url; }
+}
+
+/** Each scenario's revealed page: its own reachedBy, else its feature's revealed page. */
+/** A feature name as compared here: lower-case, trimmed, runs of spaces, hyphens and underscores folded to one hyphen. */
+function featureKey(name: string): string {
+  return name.toLowerCase().trim().replace(/[\s_-]+/g, '-');
+}
+
+/**
+ * Each scenario's revealed page (invariant 71): its own reachedBy first;
+ * else the feature its CITED RULE IDS belong to in the requirements map (ids
+ * upper-cased and trimmed), never the model's tag (standing rule 1); only a
+ * scenario that cites no rule falls back to its feature tag, normalized
+ * (featureKey) before it is compared with the probe's feature name.
+ */
+function reachedPageResolver(plan: PlannedScenario[], reachedPages?: Record<string, string>, map?: RequirementsMap): (p: PlannedScenario) => string | undefined {
+  const ruleOwner = new Map<string, string>();
+  for (const f of map?.features ?? []) for (const r of f.rules) ruleOwner.set(r.id.trim().toUpperCase(), f.name);
+  const ownersOf = (p: PlannedScenario): string[] => (p.ruleIds ?? []).map((id) => ruleOwner.get(id.trim().toUpperCase())).filter((f): f is string => !!f);
+  const byFeature = new Map<string, string>(Object.entries(reachedPages ?? {}).map(([f, u]) => [featureKey(f), u]));
+  // A plan entry reached by action lends its page to the feature its rules belong to.
+  for (const p of plan) if (p.reachedBy) for (const f of ownersOf(p)) if (!byFeature.has(featureKey(f))) byFeature.set(featureKey(f), p.reachedBy.pageUrl);
+  return (p) => {
+    if (p.reachedBy) return p.reachedBy.pageUrl;
+    if ((p.ruleIds ?? []).length > 0) {
+      for (const f of ownersOf(p)) {
+        const hit = byFeature.get(featureKey(f));
+        if (hit) return hit;
+      }
+      return undefined;
+    }
+    return p.feature ? byFeature.get(featureKey(p.feature)) : undefined;
+  };
+}
+
+/**
+ * The planned-page entries end_scenario checks (invariants 65 and 71), keyed
+ * by planned name: the page, whether it is volatile, and for every scenario
+ * of a feature with a revealed page, reachedBy or not, that page as
+ * reachedPageUrl. Exported so smoke-state-probe checks the runtime's own
+ * entries.
+ */
+export function plannedPagesFor(plan: PlannedScenario[], reachedPages?: Record<string, string>, map?: RequirementsMap): Map<string, PlannedPageEntry> {
+  const reachedPageOf = reachedPageResolver(plan, reachedPages, map);
+  return new Map(plan.map((p) => {
+    const reached = reachedPageOf(p);
+    return [p.name, { ...(p.pageUrl ? { pageUrl: p.pageUrl } : {}), ...(p.volatilePage ? { volatilePage: true } : {}), ...(reached ? { reachedPageUrl: reached } : {}) }];
+  }));
+}
+
+/** Per feature, the page its state probe revealed, from the run's discovery record. */
+export function reachedPagesOf(discovery: RunReport['discovery'] | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of discovery?.stateProbes ?? []) if (p.outcome === 'revealed' && p.revealed) out[p.feature] = p.revealed;
+  return out;
+}
+
 export async function runAgentLoop(args: {
   client: Anthropic;
   model: string;
@@ -2075,6 +2087,14 @@ export async function runAgentLoop(args: {
   onScenarioComplete?: (loopCostUsd: number) => void;
   /** Closeout grace above maxUsd; defaults to COST_CLOSEOUT_GRACE_USD. 0 disables it. */
   closeoutGraceUsd?: number;
+  /**
+   * Per feature, the page its state probe revealed (invariant 71). Every
+   * planned scenario of such a feature, reachedBy or not, carries it as
+   * reachedPageUrl, and end_scenario refuses a navigate to it.
+   */
+  reachedPages?: Record<string, string>;
+  /** The requirements map: a scenario's feature for the never-navigate refusal comes from its cited rule ids. */
+  requirements?: RequirementsMap;
 }): Promise<{
   cost: RunReport['cost'];
   endedReason: 'finished' | 'model_stop' | 'budget' | 'cost_ceiling' | 'run_stopped';
@@ -2092,7 +2112,10 @@ export async function runAgentLoop(args: {
   // whether it is volatile, keyed by the same name, so end_scenario can
   // refuse a trace recorded somewhere else. The repair pass runs this loop
   // too, so its plan carries the page as well (see repairPass).
-  ctx.plannedPages = new Map(args.plan.map((p) => [p.name, { ...(p.pageUrl ? { pageUrl: p.pageUrl } : {}), ...(p.volatilePage ? { volatilePage: true } : {}) }]));
+  // A feature with a revealed page (invariant 71): every one of its
+  // scenarios carries that page, so end_scenario refuses a navigate to it.
+  const reachedPageOf = reachedPageResolver(args.plan, args.reachedPages, args.requirements);
+  ctx.plannedPages = plannedPagesFor(args.plan, args.reachedPages, args.requirements);
 
   const cost: RunReport['cost'] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0, calls: [] };
 
@@ -2122,7 +2145,15 @@ export async function runAgentLoop(args: {
               ? `\n     page: ${p.pageUrl} (VOLATILE generated-id URL — do NOT navigate to it directly; start from the entry/listing page and click through to the item by its visible name)`
               : `\n     page: ${p.pageUrl}`
             : '';
-          return `  ${i + 1}. ${tag} ${p.name} — ${p.rationale}${pageNote}`;
+          // A page that exists only after an action (invariant 71): name the
+          // actions and the page never to navigate to.
+          const reached = reachedPageOf(p);
+          const reachedNote = p.reachedBy
+            ? `\n     reached by: ${reachActionsText(p.reachedBy.actions)}; do NOT navigate to ${pathOfUrl(p.reachedBy.pageUrl)}`
+            : reached
+              ? `\n     do NOT navigate to ${pathOfUrl(reached)}; it is reached by action`
+              : '';
+          return `  ${i + 1}. ${tag} ${p.name} — ${p.rationale}${pageNote}${reachedNote}`;
         })
         .join('\n')
     : null;
