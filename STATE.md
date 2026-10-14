@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-04. Update this file at the end of every working day.
+Updated: 2026-10-14. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -85,11 +85,16 @@ Oct 6.
 3. Test credentials (audit item 1, D7; decided Oct 8): the client supplies
    a dedicated test account through the host .env; self-registration is
    not the login source. Brief first (docs/design/test-credentials.md),
-   then PR. Built, PR #45, pending the saucedemo regression run (invariant
-   70: the fill marker, the login preflight before any spend, the
-   wrong-password cap, no account value under output/, QA_CORE_AUTH_*
-   retired).
+   then PR. DONE, PR #45 merged Oct 14 (main ab085f6) (invariant 70: the
+   fill marker, the login preflight before any spend, the wrong-password
+   cap, no account value under output/, QA_CORE_AUTH_* retired, session
+   files kept out of every zip by path). The saucedemo regression run
+   20261013T135013Z-4b0e43 ($0.41) met its bar on all six lines. Recheck of
+   that run ($0, scripts/recheck-run.ts): emitted check 6 of 6, zip 23
+   entries, no session or report folder.
 4. Action-first discovery rung for state-dependent pages (item 3).
+   Brief: docs/design/state-dependent-pages.md (PR #46). Build PR follows
+   the brief.
 5. Console honesty: D8 plus the critique seam reaching the repair block
    (item 9).
 6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
@@ -342,6 +347,22 @@ using the qa-core-heal evaluation report as the template.
   logs in through its own recorded steps. Owner decision A (Oct 9): no new
   tag in PR #45; design it with the action-first discovery rung (phase
   item 4).
+- RULE 7 refused the "Products" page title (.title) as catalogue data, a
+  heading false positive (phase item 6, D9).
+- The console printed 'Feature "login" has 4 rules and no discovered page'
+  on saucedemo, then 4 of 4 covered (phase item 5).
+- The skip reason "test credentials not provided" is wrong when credentials
+  were set but no login page was found (phase item 5).
+- The console line "Run the framework: cd <run dir> && npm install" is
+  misleading: the run folder holds only the zip (phase item 5).
+- CI only type-checks; the smoke suite in CI is backlog.
+- Run 7c78fc (saucedemo, Oct 1): its zip holds a playwright/.auth session
+  file from the public demo account, made before the PR #45 guard. Keep the
+  folder (the audit appendix references it); never share that zip.
+- CLAUDE.md "Quick orientation for new conversations" section is stale
+  (says no .git, 7 smokes, an old repo URL).
+- recheck-run.ts spends one wrong-password submit against the account's cap
+  per recheck.
 
 ## Then: go to market
 
