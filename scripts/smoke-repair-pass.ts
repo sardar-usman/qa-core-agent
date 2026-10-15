@@ -77,9 +77,11 @@ check('B3. non-rework verdicts pass through untouched',
   merged.final.find((x) => x.scenario === 's-reject')?.verdict === 'reject' &&
   merged.final.find((x) => x.scenario === 's-pass')?.verdict === 'pass');
 check('B4. history records both journeys',
+  // Each re-judged entry keeps the first pass's reasons (firstReasons,
+  // invariant 72): the final verdict carries the second pass's.
   JSON.stringify(merged.history) === JSON.stringify([
-    { scenario: 's-rework-a', first: 'rework', second: 'pass', outcome: 'kept' },
-    { scenario: 's-rework-b', first: 'rework', second: 'rework', outcome: 'dropped' },
+    { scenario: 's-rework-a', first: 'rework', firstReasons: verdicts.find((x) => x.scenario === 's-rework-a')!.reasons, second: 'pass', outcome: 'kept' },
+    { scenario: 's-rework-b', first: 'rework', firstReasons: verdicts.find((x) => x.scenario === 's-rework-b')!.reasons, second: 'rework', outcome: 'dropped' },
   ]), JSON.stringify(merged.history));
 
 /* ─── C. rework -> reject also drops; not-re-recorded drops ────────────────── */

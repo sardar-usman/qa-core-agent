@@ -189,6 +189,13 @@ export interface ToolContext {
    * fill then skips the scenario with "test credentials not provided".
    */
   testCredentials: { user: string; pass: string } | null;
+  /**
+   * Why the run has no test account when credentials were set but the login
+   * preflight found no login page (NO_LOGIN_PAGE_REASON). A marked fill then
+   * skips with this reason, never with "test credentials not provided"
+   * (invariant 72). Absent when credentials were simply not provided.
+   */
+  accountSkipReason?: string;
   /** The wrong-password counter shared across the run's stages (invariant 70); absent without credentials. */
   wrongPassword?: WrongPasswordLedger;
   /** Which stage this loop counts its wrong-password submits against. */
@@ -912,7 +919,7 @@ function credentialFillRefusal(ctx: ToolContext, input: Record<string, unknown>,
     return null;
   }
   const canonical = ctx.plannedNames.length > 0 ? plannedNameFor(ctx, current.name) ?? current.name : current.name;
-  if (credential && !ctx.testCredentials) return skipCurrentScenario(ctx, CREDENTIALS_NOT_PROVIDED);
+  if (credential && !ctx.testCredentials) return skipCurrentScenario(ctx, ctx.accountSkipReason ?? CREDENTIALS_NOT_PROVIDED);
   // A reset flow never uses the account (owner decision F): its email is
   // generated, and a reset that needs a registered account's inbox is skipped.
   const resetFlow = FORGOT_FLOW_RE.test(`${current.feature ?? ''} ${canonical} ${safeUrl(ctx.page)}`);
@@ -925,7 +932,7 @@ function credentialFillRefusal(ctx: ToolContext, input: Record<string, unknown>,
   const hints = ['intent', 'testid', 'label', 'role', 'css', 'placeholder'].map((k) => input[k]).filter((x) => typeof x === 'string').join(' ');
   const value = String(input.value ?? '');
   if (!credential && value !== '' && CREDENTIAL_PASSWORD_HINT_RE.test(hints)) {
-    if (!ctx.testCredentials) return skipCurrentScenario(ctx, CREDENTIALS_NOT_PROVIDED);
+    if (!ctx.testCredentials) return skipCurrentScenario(ctx, ctx.accountSkipReason ?? CREDENTIALS_NOT_PROVIDED);
     return {
       ok: false,
       error: 'A happy login signs in with the dedicated test account: fill the password with credential: "pass" and the identifier with credential: "user", with no value. Never type a password into a sign-in; the value comes from the env on every run.',

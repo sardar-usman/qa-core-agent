@@ -1530,6 +1530,16 @@ function termEvidenced(t: PageFitTerm, ev: PageEvidence): boolean {
  * four rentals scenarios asserting a price on cards that carry none; each
  * would have failed or thrashed in the Explorer. Exported for the smoke.
  */
+/**
+ * The console line for a page-fit drop. It ends with the rule ids the
+ * scenario cited, or "(cited no rule)", so a rejected scenario's citations
+ * can be traced from the artifact (invariant 72). Exported for the smoke.
+ */
+export function pageFitRejectionLine(s: Pick<PlannedScenario, 'name' | 'ruleIds'>, url: string, reason: string): string {
+  const cited = s.ruleIds && s.ruleIds.length > 0 ? `(cited ${s.ruleIds.join(', ')})` : '(cited no rule)';
+  return `Rejected page-fit scenario: "${s.name}" on ${url}: ${reason} ${cited}`;
+}
+
 export function pageFitReason(s: PlannedScenario, snapshot: PageFitSnapshot): { control: string; reason: string } | null {
   // "forgot-password form" on the forgot-password page names the form, not a
   // password field: the page's own form-name phrases are not judged.
@@ -1626,22 +1636,34 @@ export function dedupeAcrossPages(
 /**
  * SRS features with stated rules that no discovered page carries as its
  * feature tag. Their rules can only report not-planned, and the run should
- * say so at plan time instead of leaving it to the coverage report (run
- * 591732: cart, 4 rules, 0 scenarios). Never invents a URL. Exported for the
- * smoke.
+ * say so instead of leaving it to the coverage report (run 591732: cart, 4
+ * rules, 0 scenarios). Never invents a URL. Exported for the smoke.
+ *
+ * With the plan given (`planned`, the run's planned scenarios), a feature the
+ * plan carries is not unreachable: a planned scenario tagged with the feature
+ * (an entry-page fallback that planned it counts) or citing one of its rules
+ * (invariant 72; saucedemo printed 'Feature "login" has 4 rules and no
+ * discovered page', then 4 of 4 covered, because discovery fell back to the
+ * entry page and the login was planned there). The console line is printed
+ * after planning, with the plan; coverage passes the same plan.
  */
 export function unreachableFeatures(
   map: RequirementsMap | undefined,
   pages: Array<{ feature?: string }>,
   stateProbes?: Array<{ feature: string }>,
+  planned?: Array<{ feature?: string; ruleIds?: string[] }>,
 ): Array<{ name: string; rules: number }> {
   if (!map) return [];
-  const tagged = new Set(pages.map((p) => p.feature).filter((f): f is string => !!f));
+  const norm = (f: string): string => f.trim().toLowerCase();
+  const tagged = new Set(pages.map((p) => p.feature).filter((f): f is string => !!f).map(norm));
   // A feature a state probe ran on has its own line (the probe line) and its
   // own coverage reason (not-revealed), never "no discovered page" (invariant 71).
   const probed = new Set((stateProbes ?? []).map((p) => p.feature));
+  const plannedFeatures = new Set((planned ?? []).map((p) => p.feature).filter((f): f is string => !!f).map(norm));
+  const citedRules = new Set((planned ?? []).flatMap((p) => p.ruleIds ?? []));
   return map.features
-    .filter((f) => f.rules.length > 0 && !tagged.has(f.name) && !probed.has(f.name))
+    .filter((f) => f.rules.length > 0 && !tagged.has(norm(f.name)) && !probed.has(f.name))
+    .filter((f) => !plannedFeatures.has(norm(f.name)) && !f.rules.some((r) => citedRules.has(r.id)))
     .map((f) => ({ name: f.name, rules: f.rules.length }));
 }
 

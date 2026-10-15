@@ -29,6 +29,16 @@ export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-n
 export const NOT_REACHABLE_DETAIL = 'no discovered page carries this feature';
 
 /**
+ * The incomplete reason salvageOnCostCeiling (runtime.ts) writes for the
+ * scenario in progress when the ceiling hit, and the detail a rule cited only
+ * by such a scenario carries: a ceiling cut is never a drop (invariant 72,
+ * standing rule 2; run 51d535's R9 read planned-but-dropped with no detail).
+ */
+export const CEILING_MID_SCENARIO_DETAIL = 'cost ceiling hit mid-scenario';
+/** The incomplete reason prefix of a planned scenario the ceiling stopped before it started. */
+const NEVER_EXPLORED_PREFIX = 'never explored:';
+
+/**
  * The features whose state probe revealed no page, each with the probe's
  * detail ("no page revealed: tried /, /product/..."), for computeRuleCoverage.
  * A structural type, so the report's stored probes feed it as they are.
@@ -156,10 +166,27 @@ export function computeRuleCoverage(opts: {
    * exactly as without the probe: the probe only adds (invariant 71).
    */
   notRevealed?: Record<string, string>;
+  /**
+   * The run's incomplete entries (reconciliation.incomplete). A citing
+   * scenario the cost ceiling cut mid-scenario or stopped before it started
+   * was never explored to the end: a rule cited only by such scenarios reads
+   * planned-not-explored, with the detail "cost ceiling hit mid-scenario"
+   * when one of them was cut mid-scenario, never planned-but-dropped.
+   */
+  incomplete?: Array<{ name: string; reason: string }>;
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
   const unexploredKeys = new Set((opts.unexplored ?? []).map(nameKey));
+  // The incomplete entry carries the recorded name; it is claimed onto the
+  // planned name it matches (exact key first, then containment, each planned
+  // name once), never compared by exact text (standing rule 1).
+  const midScenarioKeys = new Set<string>();
+  const plannedNames = opts.planned.map((p) => p.name);
+  const mid = (opts.incomplete ?? []).filter((i) => i.reason.startsWith(CEILING_MID_SCENARIO_DETAIL)).map((i) => i.name);
+  const never = (opts.incomplete ?? []).filter((i) => i.reason.startsWith(NEVER_EXPLORED_PREFIX)).map((i) => i.name);
+  for (const p of matchPlanned(plannedNames, mid).values()) midScenarioKeys.add(nameKey(p));
+  for (const p of matchPlanned(plannedNames, never).values()) unexploredKeys.add(nameKey(p));
   const unreachable = new Set(opts.unreachableFeatures ?? []);
   const reasonByKey = new Map<string, string>();
   for (const [name, reason] of opts.dropReasons ?? []) reasonByKey.set(nameKey(name), reason);
@@ -175,7 +202,7 @@ export function computeRuleCoverage(opts: {
       const reason: UncoveredReason =
         citing.length === 0
           ? notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
-          : citing.every((p) => unexploredKeys.has(nameKey(p.name)))
+          : citing.every((p) => unexploredKeys.has(nameKey(p.name)) || midScenarioKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
       // The cause, not the critic's reasons: "rework, not repaired: reserve
@@ -187,7 +214,9 @@ export function computeRuleCoverage(opts: {
           ? NOT_REACHABLE_DETAIL
           : reason === 'not-revealed'
             ? notRevealedDetail ?? ''
-            : '';
+            : reason === 'planned-not-explored' && citing.some((p) => midScenarioKeys.has(nameKey(p.name)))
+              ? CEILING_MID_SCENARIO_DETAIL
+              : '';
       uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }

@@ -20,8 +20,8 @@ served at http://127.0.0.1:18789/, MCP server. All three build runs through
 src/agent/explore-request.ts.
 
 Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
-from scripts/, 93 smokes, 2 of them live and skipped unless
-QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "93 smokes, 91 passed, 0
+from scripts/, 95 smokes, 2 of them live and skipped unless
+QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "95 smokes, 93 passed, 0
 failed, 2 skipped (live)").
 Before any live run: npx tsx scripts/preflight-site.ts <url> --login (every run now makes the same login preflight itself before any spend, invariant 70).
 
@@ -93,13 +93,19 @@ Oct 6.
    that run ($0, scripts/recheck-run.ts): emitted check 6 of 6, zip 23
    entries, no session or report folder.
 4. Action-first discovery rung for state-dependent pages (item 3).
-   Brief: docs/design/state-dependent-pages.md (PR #46). Built, PR #47,
-   click action only; login action designed in the brief, not built
-   (invariant 71: the state probe, the revealed page recorded as reached
-   by action, the never-navigate refusal, not-revealed coverage; $0,
-   proven on a fixture site, no live run).
+   Brief: docs/design/state-dependent-pages.md (PR #46). DONE, PR #47
+   merged Oct 14 (main 29d20d9); click action only; login action
+   designed, not built (invariant 71: the state probe, the revealed page
+   recorded as reached by action, the never-navigate refusal, not-revealed
+   coverage; $0, proven on a fixture site, no live run).
 5. Console honesty: D8 plus the critique seam reaching the repair block
-   (item 9).
+   (item 9). Built, PR #48 (invariant 72: one rule-coverage print
+   after the emitted-spec check, the closing Critic paragraph from the
+   final verdicts, the repair budget named and rounded, the no-page
+   warning only when true, no console message dropped, the real skip
+   reason, runnable "Run the framework" steps, a ceiling cut never a drop,
+   page-fit rule ids, the critique seam; $0, locked by
+   smoke-console-honesty and smoke-repair-block, no live run).
 6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
    orientation load waste (item 11).
 7. Model pricing honesty ($0): one price table keyed by model id; every
@@ -293,11 +299,12 @@ using the qa-core-heal evaluation report as the template.
   account under a name that claims a wrong password for a known one, and
   Toolshop R11 (duplicate email) cannot be automated; belongs to the
   own-account design. docs/audit/run-44cb3d-diagnosis.md.
-- D8 (run 6): console contradictions (two rule-coverage totals, a stale
+- D8 (run 6): ADDRESSED (PR #48, engine/console-honesty, Oct 14, not
+  merged): console contradictions (two rule-coverage totals, a stale
   first-pass Critic paragraph, the repair budget printed as a ceiling stop,
   a wrong no-discovered-page warning, the repair decision line cut by the
-  240-character cap); documented, not yet fixed, after the report.
-  docs/audit/run-44cb3d-diagnosis.md section 3, D8.
+  240-character cap). docs/audit/run-44cb3d-diagnosis.md section 3, D8.
+  Invariant 72; locked by smoke-console-honesty and smoke-repair-block.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report
@@ -305,7 +312,7 @@ using the qa-core-heal evaluation report as the template.
 - Run Detail keys rows by exact name; a replay or stability drop whose
   recorded name differs from the plan name shows as two rows (found in the
   #43 review).
-- ADDRESSED (engine/state-dependent-pages, Oct 14, not merged): Design
+- ADDRESSED (PR #47, merged Oct 14): Design
   item, state-dependent page: on practicesoftwaretesting.com the cart link
   renders only after an add-to-cart, so no crawl of a fresh session finds
   it. Now the state probe reveals such a page by the action, plans its
@@ -325,9 +332,11 @@ using the qa-core-heal evaluation report as the template.
   entry is filed under the planned name with recordedName kept, and a drop
   with no planned match is a loud line; scripts/dropped-traces-check.ts maps
   27 of 27 drops of runs 3, 5 and 6.
-- runtime passes the critique client seam through, so the repair block can
-  be driven with a fixture Critic (found in #32; today the seam is
-  unreachable from the pipeline and only repairOutcome is locked).
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged):
+  runtime passes the critique client seam through, so the repair block can
+  be driven with a fixture Critic (found in #32). Now ExploreOptions.critique
+  (and explorerClient) reach the first review and the repair review;
+  smoke-repair-block drives the whole block at $0.
 - testid hints recorded as css because the site uses data-test; emit
   getByTestId with testIdAttribute in the config instead.
 - Explorer start-up waste: an orientation load of the entry page before the
@@ -355,12 +364,18 @@ using the qa-core-heal evaluation report as the template.
   item 4).
 - RULE 7 refused the "Products" page title (.title) as catalogue data, a
   heading false positive (phase item 6, D9).
-- The console printed 'Feature "login" has 4 rules and no discovered page'
-  on saucedemo, then 4 of 4 covered (phase item 5).
-- The skip reason "test credentials not provided" is wrong when credentials
-  were set but no login page was found (phase item 5).
-- The console line "Run the framework: cd <run dir> && npm install" is
-  misleading: the run folder holds only the zip (phase item 5).
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
+  console printed 'Feature "login" has 4 rules and no discovered page' on
+  saucedemo, then 4 of 4 covered. Now the line prints after planning and
+  only when the plan does not carry the feature either.
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
+  skip reason "test credentials not provided" is wrong when credentials
+  were set but no login page was found. Now "no login page found; test
+  credentials were set", at plan time and at a marked fill.
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
+  console line "Run the framework: cd <run dir> && npm install" is
+  misleading: the run folder holds only the zip. Now the steps unzip the
+  real zip and cd into the extracted folder first.
 - CI only type-checks; the smoke suite in CI is backlog.
 - Run 7c78fc (saucedemo, Oct 1): its zip holds a playwright/.auth session
   file from the public demo account, made before the PR #45 guard. Keep the
@@ -369,11 +384,15 @@ using the qa-core-heal evaluation report as the template.
   (says no .git, 7 smokes, an old repo URL).
 - recheck-run.ts spends one wrong-password submit against the account's cap
   per recheck.
-- Run 5 R9: ruleCoverage reads planned-but-dropped with no detail while the
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): Run
+  5 R9: ruleCoverage reads planned-but-dropped with no detail while the
   scenario is in reconciliation.incomplete (cost ceiling mid-scenario); a
-  ceiling cut must never read as a drop (standing rule 2).
-- The page-fit rejection line carries no rule ids, so a rejected scenario's
-  citations cannot be traced from the artifact.
+  ceiling cut must never read as a drop (standing rule 2). Now
+  planned-not-explored with "cost ceiling hit mid-scenario".
+- ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
+  page-fit rejection line carries no rule ids, so a rejected scenario's
+  citations cannot be traced from the artifact. Now it ends with
+  "(cited R4, R5)" or "(cited no rule)".
 - Exemption for signed-out gated-URL negatives (from PR #46): not planned
   today; revisit after the confirmation run if a client needs it.
 

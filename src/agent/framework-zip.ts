@@ -80,13 +80,30 @@ export function zipResultLines(outcome: FrameworkZipOutcome, opts: { outDirRel: 
   return ['', `✗ zip not written: ${outcome.failed ?? 'unknown error'}`];
 }
 
-/** The "Run the framework" steps: only when there is a zip to run. */
+/** A path for a printed shell step: quoted only when it holds a character the shell would split or expand. */
+function shellArg(p: string): string {
+  return /^[A-Za-z0-9_./@:+-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The "Run the framework" steps: only when there is a zip to run, and
+ * runnable as printed (invariant 72). The run directory holds the zip, not
+ * the framework files, so the steps unzip it first (the real zip filename),
+ * then cd into the folder it extracts to (the zip is rooted at
+ * `<brand>-automation-framework/`, the zip's own basename, invariant 49),
+ * then install and test. The old steps said "cd <run dir> && npm install",
+ * which found no package.json there.
+ */
 export function runFrameworkLines(outcome: FrameworkZipOutcome, opts: { outDirRel: string; zipRel?: string }): string[] {
   if (!outcome.written) return [];
+  const zipName = path.basename(outcome.written.zipPath);
+  const rootName = zipName.replace(/\.zip$/, '');
   return [
     '',
     'Run the framework:',
-    '  cd ' + opts.outDirRel,
+    '  cd ' + shellArg(opts.outDirRel),
+    '  unzip -o ' + shellArg(zipName),
+    '  cd ' + shellArg(rootName),
     '  npm install',
     '  npx playwright test',
     '',
