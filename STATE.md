@@ -393,6 +393,9 @@ using the qa-core-heal evaluation report as the template.
 - A product name literal on css .inventory_item_name (saucedemo) is allowed
   by RULE 7 today: the selector carries no catalogue marker (found in
   PR #49).
+- Known gap: a product clicked by a nameless css, then another click (add
+  to cart), then a literal product name on the heading is allowed; (b) only
+  reads the most recent click.
 - Whole-run hard ceiling (planner, map and Critic inside the stated
   ceiling), after the confirmation run.
 - Rule citation not exercised by the recording (run 6: the eco-friendly

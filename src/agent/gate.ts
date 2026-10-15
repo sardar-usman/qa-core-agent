@@ -572,6 +572,64 @@ function strongCatalogueLocator(t: SelectorRecord): boolean {
   return STRONG_CATALOGUE_RE.test(String(t.arg));
 }
 
+/** Minimum trimmed length of a heading literal before it is matched against a clicked element's name (a 3-letter word is too common to mean the item). */
+export const ITEM_NAME_MIN_CHARS = 4;
+
+/**
+ * The accessible name or text a recorded locator names: a role's name, or a
+ * text, label, placeholder, alt or title argument. A css, test id or xpath
+ * names no text and yields null.
+ */
+function locatorNameText(t: SelectorRecord): string | null {
+  if (t.level === 'role') return (t.arg as { name?: string }).name ?? null;
+  if (t.level === 'css' || t.level === 'testid' || t.level === 'xpath') return null;
+  return typeof t.arg === 'string' ? t.arg : null;
+}
+
+/**
+ * True when a locator's STRUCTURE marks a catalogue item: a strong marker, or
+ * a CATALOGUE_TARGET_RE word in the css, test id or xpath, or the role itself
+ * (listitem, gridcell, row). Never the intent, never a role name or text.
+ */
+function catalogueItemLocator(t: SelectorRecord): boolean {
+  if (strongCatalogueLocator(t)) return true;
+  if (t.level === 'role') return CATALOGUE_TARGET_RE.test((t.arg as { role: string }).role);
+  if (t.level !== 'css' && t.level !== 'testid' && t.level !== 'xpath') return false;
+  return CATALOGUE_TARGET_RE.test(String(t.arg));
+}
+
+/**
+ * Why a heading literal is item content by the trace, or null (invariant 73).
+ * Two signals, both read off the prior steps only, so the end gate and the
+ * in-run check agree, and never off the intent or any model-written text:
+ *   (a) the literal (trimmed, case-insensitive, at least ITEM_NAME_MIN_CHARS)
+ *       equals or is contained in the accessible name or text of an element
+ *       an earlier step clicked (the card link "Bolt Cutters ABCDE$48.41",
+ *       then the detail heading "Bolt Cutters");
+ *   (b) the most recent click, with no navigate after it, was on a catalogue
+ *       item by its locator (a[data-test^="product-"], then the detail
+ *       page's h1). A navigate resets it.
+ * A product's detail heading is the product's name: catalogue data, however
+ * it is located (run 6's R5 shape: the detail page shows the listing's name).
+ */
+export function headingItemContentReason(literal: string, priorSteps: TraceStep[]): string | null {
+  const lit = literal.trim().toLowerCase();
+  if (lit.length >= ITEM_NAME_MIN_CHARS) {
+    for (const s of priorSteps) {
+      if (s.kind !== 'click') continue;
+      const name = locatorNameText(s.target);
+      if (name && name.toLowerCase().includes(lit)) return `the literal names the item an earlier step clicked (${JSON.stringify(name)})`;
+    }
+  }
+  for (let i = priorSteps.length - 1; i >= 0; i--) {
+    const s = priorSteps[i]!;
+    if (s.kind === 'navigate') return null;
+    if (s.kind !== 'click') continue;
+    return catalogueItemLocator(s.target) ? `the most recent click opened a catalogue item (${selectorText(s.target).trim()})` : null;
+  }
+  return null;
+}
+
 /* ─────────────── Counters: a badge, a quantity, a count ─────────────── */
 
 /**
@@ -680,6 +738,13 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], kn
     // A value the model filled itself is test data, not catalogue data.
     const filled = priorSteps.some((s) => s.kind === 'fill' && sameElement(s.target, a.target));
     if (filled) return null;
+  }
+  // A heading the trace shows is item content (a clicked item's name, or
+  // the heading reached by clicking a catalogue item) is catalogue data: the
+  // heading exemption does not apply (invariant 73 (a) and (b)).
+  if (a.type !== 'toHaveValue' && isHeadingLocator(a.target)) {
+    const item = headingItemContentReason(literal, priorSteps);
+    if (item) return `${JSON.stringify(literal)} on ${words.trim()} is catalogue data: ${item}; ${steer}`;
   }
   // A product-card marker on the LOCATOR wins over an incidental heading
   // word: the h5 inside a product card is the product name, not a page
