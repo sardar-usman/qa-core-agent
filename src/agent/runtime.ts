@@ -14,7 +14,7 @@ import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
-import { totalCost } from './cost-total.js';
+import { totalCost, COST_CLOSEOUT_GRACE_USD } from './cost-total.js';
 import { discoverPages, fetchRobots, writeDiscoveryJson } from './discovery.js';
 import { detectStateFeatures, runStateProbes } from './state-probe.js';
 import type { PlannedPageEntry } from './planned-page.js';
@@ -60,7 +60,7 @@ export const EXPLORER_SYSTEM_PROMPT = `You are QA-Core, an autonomous QA agent t
 
 You will be given a URL. Your job:
 
-1. Navigate to the URL.
+1. Navigate to the URL. When the plan names a page for each scenario, skip steps 1 and 2: call begin_scenario for scenario 1, then navigate to its page.
 2. Use get_dom to understand what's on the page.
 3. For each meaningful flow, call begin_scenario, then drive Playwright through the steps you would take to verify it, then call assert at least once, then end_scenario.
 4. Cover happy paths AND at least one negative case AND one accessibility-friendly check (e.g. that landmark elements have the right roles or that error states are announced).
@@ -322,7 +322,7 @@ export function splitCeiling(
  * every action tool are refused throughout, so the grace can never start new
  * work. Applies to the repair pass too, since it runs the same loop.
  */
-export const COST_CLOSEOUT_GRACE_USD = 0.10;
+export { COST_CLOSEOUT_GRACE_USD };
 
 /** cacheReadTokens over every prompt token (input + cache read + cache creation); 0 when nothing was billed. */
 export function cachedInputShare(cost: Pick<RunReport['cost'], 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'>): number {
@@ -1214,6 +1214,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
   // discarded, and which planned scenarios were never started. Flows into the
   // reconciliation funnel (as incomplete entries) and rule coverage.
   let ceilingSalvage: CostCeilingSalvage | undefined;
+  // Tool calls before the first begin_scenario (invariant 73); set when the Explorer loop ran.
+  let orientationCalls: number | undefined;
   // Carried into the repair pass so its re-recorded negatives get the same credential rule.
   let explorerCredentialContext: ExplorerCredentialContext | undefined;
   // Planned scenarios skipped before the Explorer because they need the test
@@ -1295,6 +1297,14 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           },
         });
     const explorerCost = explorerLoop.cost;
+    // Orientation calls (invariant 73): recorded whenever the loop ran, and
+    // one console line when any call came before the first begin_scenario.
+    const orientationTools = 'orientationTools' in explorerLoop ? explorerLoop.orientationTools : null;
+    if (orientationTools) {
+      orientationCalls = orientationTools.length;
+      const line = orientationLine(orientationTools);
+      if (line) opts.onEvent?.({ type: 'message', text: line });
+    }
 
     // The agent must call finish; if it didn't, decide what to do with the
     // scenario left in progress. Two distinct cases:
@@ -1859,9 +1869,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     language: opts.language,
     ...(stopped ? { stopped } : {}),
     ...(discoveryInfo ? { discovery: discoveryInfo } : {}),
+    ...(orientationCalls !== undefined ? { orientationCalls } : {}),
     scenarios: emittedScenarios,
     cascadeStats,
-    cost,
+    // The stated ceiling travels on the report so the final cost line can
+    // say when, and why, the total went past it (invariant 73).
+    cost: { ...cost, ceilingUsd: maxUsd },
     steps,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -2157,6 +2170,8 @@ export async function runAgentLoop(args: {
   stop?: StopClassification;
   /** Set when the cost closeout grace was used: the scenario, what the grace cost, and whether it closed. */
   closeout?: { scenario: string; usd: number; closed: boolean };
+  /** The tool calls made before the first begin_scenario, in order (invariant 73). */
+  orientationTools: string[];
 }> {
   const { client, model, maxUsd, price, maxSteps, ctx, url, onEvent } = args;
 
@@ -2227,8 +2242,13 @@ export async function runAgentLoop(args: {
   }
 
   const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: `Explore the following URL and produce a Playwright test plan: ${url}` },
+    { role: 'user', content: firstExplorerMessage(args.plan, url) },
   ];
+  // Orientation (invariant 73): the tool calls made before the first
+  // begin_scenario. A multi-page plan names each scenario's page, so a load
+  // of the entry page before scenario 1 is paid and then repeated.
+  const orientationTools: string[] = [];
+  let sawBegin = false;
 
   // The conversation-turn cap must sit ABOVE the step budget, never below it.
   // The model emits roughly one tool call per turn, so a turn cap under the
@@ -2345,6 +2365,10 @@ export async function runAgentLoop(args: {
     let finished = false;
     for (const block of assistantContent) {
       if (block.type !== 'tool_use') continue;
+      if (!sawBegin) {
+        if (block.name === 'begin_scenario') sawBegin = true;
+        else orientationTools.push(block.name);
+      }
       onEvent?.({ type: 'tool_call', name: block.name, input: block.input });
       const result = await runTool(ctx, {
         name: block.name,
@@ -2399,5 +2423,33 @@ export async function runAgentLoop(args: {
   const closeoutOut = closeoutResult();
   if (closeoutOut) cost.closeoutGraceUsd = closeoutOut.usd;
 
-  return { cost, endedReason, ...(stop ? { stop } : {}), ...(closeoutOut ? { closeout: closeoutOut } : {}) };
+  return { cost, endedReason, orientationTools, ...(stop ? { stop } : {}), ...(closeoutOut ? { closeout: closeoutOut } : {}) };
+}
+
+/**
+ * The Explorer's first user message. A plan that carries page URLs starts at
+ * scenario 1 (invariant 73): begin_scenario, then navigate to that
+ * scenario's page, with no navigate or get_dom before it (run 591732
+ * finding 8: an entry-page load and get_dom before scenario 1 cost $0.14,
+ * and every scenario navigated to its own page again). A volatile first page
+ * is reached from the entry URL by clicking through, never by its URL.
+ * A single-page plan keeps the original text byte for byte.
+ */
+export function firstExplorerMessage(plan: PlannedScenario[], url: string): string {
+  const original = `Explore the following URL and produce a Playwright test plan: ${url}`;
+  if (!plan.some((p) => p.pageUrl)) return original;
+  const first = plan[0]!;
+  const page = first.pageUrl && !first.volatilePage ? first.pageUrl : url;
+  const how = first.pageUrl && first.volatilePage
+    ? `then navigate to ${url} and click through to its page by the item's visible name`
+    : `then navigate to its page ${page}`;
+  return `${original}\n` +
+    `Every planned scenario names its own page, so start at scenario 1, "${first.name}": call begin_scenario first, ${how}. ` +
+    'Do not call navigate or get_dom before the first begin_scenario.';
+}
+
+/** The console line for orientation calls (invariant 73), or null when there were none. */
+export function orientationLine(tools: string[]): string | null {
+  if (tools.length === 0) return null;
+  return `Orientation: ${tools.length} tool call(s) before the first begin_scenario (${tools.join(', ')})`;
 }

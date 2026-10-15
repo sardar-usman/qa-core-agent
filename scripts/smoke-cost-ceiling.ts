@@ -21,6 +21,9 @@ import { runAgentLoop, salvageOnCostCeiling, splitCeiling, DEFAULT_REPAIR_RESERV
 import { decideRepairPass, type ScenarioVerdict } from '../src/agent/critic.js';
 import { createContext } from '../src/agent/tools.js';
 import { computeRuleCoverage } from '../src/agent/rule-coverage.js';
+import { costLine, overCeilingText, COST_CLOSEOUT_GRACE_USD as GRACE_IN_COST_TOTAL } from '../src/agent/cost-total.js';
+import { summarize } from '../src/server/run-explore.js';
+import type { RunReport } from '../src/agent/trace.js';
 import type { Scenario } from '../src/agent/trace.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -414,6 +417,32 @@ check('I0. the default grace is $0.10', COST_CLOSEOUT_GRACE_USD === 0.1);
   check('I5. grace 0: the old behaviour, stop at once and discard', r.calls === 1 && r.loop.closeout === undefined && r.ctx.current?.name === 'closing scenario');
 }
 
+/* ─── K. ceiling honesty: the final cost line says when and why it went over (invariant 73) ── */
+{
+  // Run 6 (44cb3d), the map reused: planner 0.0336, explorer 5.9386, critic
+  // 0.1189 = $6.0911 against the $6.00 ceiling. The planner and the Critic
+  // run outside the explorer budget, and the closeout grace may run $0.10
+  // past it.
+  const run6 = { cost: { usd: 5.9386, plannerUsd: 0.0336, criticUsd: 0.1189, requirementsUsd: 0 }, stability: { stabilizerCostUsd: 0 } };
+  const before = costLine(run6);
+  const over = costLine({ ...run6, cost: { ...run6.cost, ceilingUsd: 6 } });
+  const under = costLine({ ...run6, cost: { ...run6.cost, ceilingUsd: 6.5 } });
+  console.log(`  K lock (no ceiling recorded): ${before}`);
+  console.log(`  K lock (over a $6.00 ceiling): ${over}`);
+  console.log(`  K lock (under a $6.50 ceiling): ${under}`);
+  check('K1. over the ceiling the line names the overrun, the terms outside it and the grace, in two decimals',
+    over === 'Cost: $6.09 total, $0.09 over the $6.00 ceiling (planner $0.03 and Critic $0.12 run outside it; closeout grace up to $0.10)', over);
+  check('K2. under the ceiling the line is unchanged', under === before && under === 'Cost: $6.0911 total (planner $0.0336, explorer $5.9386, critic $0.1189, map $0.0000)', under);
+  check('K3. a report with no recorded ceiling keeps the old line', overCeilingText(run6) === null);
+  const withMap = costLine({ cost: { ...run6.cost, requirementsUsd: 0.0123, ceilingUsd: 6 }, stability: { stabilizerCostUsd: 0.25 } });
+  check('K4. a built map and a Stabilizer that spent are named outside the ceiling too', withMap === 'Cost: $6.35 total, $0.35 over the $6.00 ceiling (planner $0.03, map $0.01, Stabilizer $0.25 and Critic $0.12 run outside it; closeout grace up to $0.10)', withMap);
+  const halfCent = costLine({ cost: { usd: 5.9, plannerUsd: 0.05, criticUsd: 0.0538, requirementsUsd: 0, ceilingUsd: 6 }, stability: { stabilizerCostUsd: 0 } });
+  check('K5. a total that rounds to the ceiling ($6.0038) is not called over', !halfCent.includes('over the'), halfCent);
+  check('K6. the grace the line names is the runtime\'s own constant', GRACE_IN_COST_TOTAL === COST_CLOSEOUT_GRACE_USD && COST_CLOSEOUT_GRACE_USD === 0.1);
+  const gatewayLine = summarize({ ...run6, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, ...run6.cost, ceilingUsd: 6 }, scenarios: [], url: 'https://x.example/', language: 'ts', cascadeStats: {} as never, steps: 0, startedAt: '', finishedAt: '' } as unknown as RunReport)[0];
+  check('K7. the gateway summary prints the same over-ceiling line', gatewayLine === over, gatewayLine);
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the cost ceiling stops the Explorer cleanly, keeps completed scenarios, accounts for never-explored ones, and rule coverage reports them honestly.');
+console.log('OK: the cost ceiling stops the Explorer cleanly, keeps completed scenarios, accounts for never-explored ones, and rule coverage reports them honestly; the final cost line says when and why the total went over the ceiling.');

@@ -16,7 +16,7 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, isCounterSelector, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, isCounterSelector, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER, isHeadingLocator } from '../src/agent/gate.js';
 import { currencyAmountIn } from '../src/agent/parse-number.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
@@ -542,6 +542,36 @@ check('R7A6. a name-shaped pattern on the user menu is allowed',
   catalogueLiteralReason({ type: 'toHaveText', target: navMenu, text: '', pattern: '^\\S+ \\S+$' }, loginFills) === null);
 check('R7A7. runGate passes known names through to RULE 7',
   runGate(makeScenario([NAV, ...loginFills, { kind: 'assert', name: 'g', assertion: { type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'Admin User' } }]), { knownNames: ['Admin User'] }).violations.some((v) => v.rule === 7 && /SRS names/.test(v.detail)));
+
+/* ─── RULE 7: a heading locator is exempt; the strong marker is read off the locator only (invariant 73) ── */
+// Run 7c78fc (saucedemo): toHaveText "Products" on css .title with intent
+// "products header" was refused as catalogue data, because the word
+// "product" in the intent overrode the heading locator.
+const productsLiteral = (target: SelectorRecord): string | null => catalogueLiteralReason({ type: 'toHaveText', target, text: 'Products' }, []);
+const h1Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'Products page title' });
+const h2Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'page title' });
+const h3Reason = productsLiteral({ level: 'role', arg: { role: 'heading', name: 'Products' }, intent: 'products heading' });
+const h4Reason = productsLiteral({ level: 'css', arg: '.card-title', intent: 'product name on card' });
+const h5Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'products header' });
+console.log(`  R7H lock: intent "Products page title", css .title -> ${h1Reason === null ? 'allowed' : `refused: ${h1Reason}`}`);
+console.log(`  R7H lock: intent "page title", css .title -> ${h2Reason === null ? 'allowed' : `refused: ${h2Reason}`}`);
+console.log(`  R7H lock: intent "products heading", role heading name "Products" -> ${h3Reason === null ? 'allowed' : `refused: ${h3Reason}`}`);
+console.log(`  R7H lock: intent "product name on card", css .card-title -> ${h4Reason === null ? 'allowed' : `refused: ${h4Reason}`}`);
+console.log(`  R7H lock: intent "products header", css .title (the run 7c78fc call) -> ${h5Reason === null ? 'allowed' : `refused: ${h5Reason}`}`);
+check('R7H1. "Products" on css .title with intent "Products page title" is allowed (a heading locator; the intent\'s "product" is not read)', h1Reason === null, String(h1Reason));
+check('R7H2. "Products" on css .title with intent "page title" is allowed', h2Reason === null, String(h2Reason));
+check('R7H3. "Products" on role heading name "Products" with intent "products heading" is allowed', h3Reason === null, String(h3Reason));
+check('R7H4. "Products" on css .card-title with intent "product name on card" is refused (the locator carries the card marker)', /catalogue data/.test(h4Reason ?? ''), String(h4Reason));
+check('R7H5. the run 7c78fc call (intent "products header", css .title) is allowed', h5Reason === null, String(h5Reason));
+check('R7H6. isHeadingLocator reads the locator: role heading, h1, .page-title, testid header yes; .name, role link no',
+  isHeadingLocator({ level: 'role', arg: { role: 'heading', name: 'x' }, intent: 'x' })
+  && isHeadingLocator({ level: 'css', arg: 'main h1', intent: 'x' })
+  && isHeadingLocator({ level: 'css', arg: '.page-title', intent: 'x' })
+  && isHeadingLocator({ level: 'testid', arg: 'header', intent: 'x' })
+  && !isHeadingLocator({ level: 'css', arg: '.name', intent: 'page title heading' })
+  && !isHeadingLocator({ level: 'role', arg: { role: 'link', name: 'Title' }, intent: 'heading' }));
+check('R7H7. a product word in the intent alone still makes a non-heading target catalogue data (css span.name, intent "product name")',
+  /catalogue data/.test(productsLiteral({ level: 'css', arg: 'span.name', intent: 'product name' }) ?? ''));
 
 /* ─── Counters: a literal count on a badge (RULE 7) and a count capture (RULE 9) ── */
 // Run 44cb3d: "cart badge shows 1" asserted three times and reworked three

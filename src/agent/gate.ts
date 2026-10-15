@@ -539,6 +539,39 @@ function targetWords(t: SelectorRecord): string {
   return `${selectorText(t)} ${t.intent}`;
 }
 
+// Locator words that name a page heading: a class, id or test id such as
+// .title, .page-title, #header or data-test="heading".
+const HEADING_WORD_RE = /^(?:title|heading|header|h[1-6])$/;
+
+/**
+ * True when the LOCATOR is a heading: role heading, an h1 to h6 tag, or a css
+ * or test id whose words are title, heading, page-title or header. The intent
+ * is never read. Run 7c78fc: toHaveText "Products" on css .title (saucedemo's
+ * page heading) was refused because the intent said "Products page title".
+ */
+export function isHeadingLocator(t: SelectorRecord): boolean {
+  if (t.level === 'role') return (t.arg as { role: string }).role === 'heading';
+  if (t.level !== 'css' && t.level !== 'testid') return false;
+  return String(t.arg)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((w) => HEADING_WORD_RE.test(w));
+}
+
+/**
+ * True when the LOCATOR's structure carries a strong catalogue marker (a
+ * product, a card, a listing): the css, test id or xpath, or the role itself.
+ * The intent is never read, and neither is a role name or a text, label,
+ * placeholder, alt or title argument: that is the element's visible text
+ * (a heading named "Products"), not where it sits on the page.
+ */
+function strongCatalogueLocator(t: SelectorRecord): boolean {
+  if (t.level === 'role') return STRONG_CATALOGUE_RE.test((t.arg as { role: string }).role);
+  if (t.level !== 'css' && t.level !== 'testid' && t.level !== 'xpath') return false;
+  return STRONG_CATALOGUE_RE.test(String(t.arg));
+}
+
 /* ─────────────── Counters: a badge, a quantity, a count ─────────────── */
 
 /**
@@ -625,7 +658,7 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], kn
     // A count of form controls, messages or headings is structural, not
     // catalogue data (three checkboxes in a form); a count of cards or rows is.
     const countWords = targetWords(a.target);
-    const countExempt = NON_CATALOGUE_RE.test(countWords) && !STRONG_CATALOGUE_RE.test(countWords);
+    const countExempt = (NON_CATALOGUE_RE.test(countWords) || isHeadingLocator(a.target)) && !strongCatalogueLocator(a.target);
     if (a.count > 1 && !countExempt) return `count=${a.count} on ${countWords} is a literal catalogue count that changes when the data reseeds; ${steer}`;
     return null;
   }
@@ -648,10 +681,11 @@ export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], kn
     const filled = priorSteps.some((s) => s.kind === 'fill' && sameElement(s.target, a.target));
     if (filled) return null;
   }
-  // A product-card marker wins over an incidental heading word: the h5 inside
-  // a product card is the product name, not a page heading.
-  const strongCatalogue = STRONG_CATALOGUE_RE.test(words);
-  const exempt = NON_CATALOGUE_RE.test(words) && !strongCatalogue;
+  // A product-card marker on the LOCATOR wins over an incidental heading
+  // word: the h5 inside a product card is the product name, not a page
+  // heading. The marker is never read off the intent: "Products page title"
+  // on css .title is saucedemo's page heading (run 7c78fc, D9).
+  const exempt = (NON_CATALOGUE_RE.test(words) || isHeadingLocator(a.target)) && !strongCatalogueLocator(a.target);
   if (!exempt && PRICE_LITERAL_RE.test(literal)) return `${JSON.stringify(literal)} is a price literal, catalogue data that changes when the data reseeds; ${steer}`;
   if (!exempt && CATALOGUE_TARGET_RE.test(words)) return `${JSON.stringify(literal)} on ${words.trim()} is catalogue data that changes when the data reseeds; ${steer}`;
   return null;

@@ -395,8 +395,19 @@ export interface RunReport {
      * COST_CLOSEOUT_GRACE_USD (explorer plus repair pass). Included in `usd`.
      */
     closeoutGraceUsd?: number;
+    /**
+     * The run's stated cost ceiling (QA_CORE_COST_CEILING or the option), so
+     * the final cost line can say when the total went past it and why
+     * (invariant 73). Absent on reports written before the field.
+     */
+    ceilingUsd?: number;
   };
   steps: number;
+  /**
+   * Explorer tool calls made before the first begin_scenario (invariant 73).
+   * Absent when the Explorer loop did not run (a resume with nothing left).
+   */
+  orientationCalls?: number;
   startedAt: string;
   finishedAt: string;
   /** Scenarios proposed by the Planner before the Explorer ran. */
