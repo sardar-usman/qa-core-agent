@@ -16,7 +16,10 @@
  *
  * Also covers isStableCssSelector / isFragileCssSelector directly.
  */
-import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, isCounterSelector, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER } from '../src/agent/gate.js';
+import { runGate, isStableCssSelector, isFragileCssSelector, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, priceInNameReason, PRICE_IN_NAME_STEER, ASYNC_TIMEOUT_CEILING, ASYNC_TIMEOUT_FLOOR_AFTER_ACTION, rule2Timeout, isCounterTarget, isCounterSelector, counterLiteralReason, counterCountCaptureReason, COUNTER_TARGET_RE, COUNTER_LITERAL_STEER, COUNTER_COUNT_CAPTURE_STEER, isHeadingLocator, ITEM_NAME_MIN_CHARS } from '../src/agent/gate.js';
+import { chromium } from 'playwright';
+import { createContext, runTool } from '../src/agent/tools.js';
+import { installEvalShim } from '../src/agent/eval-shim.js';
 import { currencyAmountIn } from '../src/agent/parse-number.js';
 import { generatedIdFragment } from '../src/agent/volatile-id.js';
 import type { Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
@@ -542,6 +545,100 @@ check('R7A6. a name-shaped pattern on the user menu is allowed',
   catalogueLiteralReason({ type: 'toHaveText', target: navMenu, text: '', pattern: '^\\S+ \\S+$' }, loginFills) === null);
 check('R7A7. runGate passes known names through to RULE 7',
   runGate(makeScenario([NAV, ...loginFills, { kind: 'assert', name: 'g', assertion: { type: 'toHaveText', target: { level: 'css', arg: '#greeting', intent: 'greeting' }, text: 'Admin User' } }]), { knownNames: ['Admin User'] }).violations.some((v) => v.rule === 7 && /SRS names/.test(v.detail)));
+
+/* ─── RULE 7: a heading locator is exempt; the strong marker is read off the locator only (invariant 73) ── */
+// Run 7c78fc (saucedemo): toHaveText "Products" on css .title with intent
+// "products header" was refused as catalogue data, because the word
+// "product" in the intent overrode the heading locator.
+const productsLiteral = (target: SelectorRecord): string | null => catalogueLiteralReason({ type: 'toHaveText', target, text: 'Products' }, []);
+const h1Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'Products page title' });
+const h2Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'page title' });
+const h3Reason = productsLiteral({ level: 'role', arg: { role: 'heading', name: 'Products' }, intent: 'products heading' });
+const h4Reason = productsLiteral({ level: 'css', arg: '.card-title', intent: 'product name on card' });
+const h5Reason = productsLiteral({ level: 'css', arg: '.title', intent: 'products header' });
+console.log(`  R7H lock: intent "Products page title", css .title -> ${h1Reason === null ? 'allowed' : `refused: ${h1Reason}`}`);
+console.log(`  R7H lock: intent "page title", css .title -> ${h2Reason === null ? 'allowed' : `refused: ${h2Reason}`}`);
+console.log(`  R7H lock: intent "products heading", role heading name "Products" -> ${h3Reason === null ? 'allowed' : `refused: ${h3Reason}`}`);
+console.log(`  R7H lock: intent "product name on card", css .card-title -> ${h4Reason === null ? 'allowed' : `refused: ${h4Reason}`}`);
+console.log(`  R7H lock: intent "products header", css .title (the run 7c78fc call) -> ${h5Reason === null ? 'allowed' : `refused: ${h5Reason}`}`);
+check('R7H1. "Products" on css .title with intent "Products page title" is allowed (a heading locator; the intent\'s "product" is not read)', h1Reason === null, String(h1Reason));
+check('R7H2. "Products" on css .title with intent "page title" is allowed', h2Reason === null, String(h2Reason));
+check('R7H3. "Products" on role heading name "Products" with intent "products heading" is allowed', h3Reason === null, String(h3Reason));
+check('R7H4. "Products" on css .card-title with intent "product name on card" is refused (the locator carries the card marker)', /catalogue data/.test(h4Reason ?? ''), String(h4Reason));
+check('R7H5. the run 7c78fc call (intent "products header", css .title) is allowed', h5Reason === null, String(h5Reason));
+check('R7H6. isHeadingLocator reads the locator: role heading, h1, .page-title, testid header yes; .name, role link no',
+  isHeadingLocator({ level: 'role', arg: { role: 'heading', name: 'x' }, intent: 'x' })
+  && isHeadingLocator({ level: 'css', arg: 'main h1', intent: 'x' })
+  && isHeadingLocator({ level: 'css', arg: '.page-title', intent: 'x' })
+  && isHeadingLocator({ level: 'testid', arg: 'header', intent: 'x' })
+  && !isHeadingLocator({ level: 'css', arg: '.name', intent: 'page title heading' })
+  && !isHeadingLocator({ level: 'role', arg: { role: 'link', name: 'Title' }, intent: 'heading' }));
+check('R7H7. a product word in the intent alone still makes a non-heading target catalogue data (css span.name, intent "product name")',
+  /catalogue data/.test(productsLiteral({ level: 'css', arg: 'span.name', intent: 'product name' }) ?? ''));
+
+/* ─── RULE 7: a heading the trace shows is item content stays catalogue data (invariant 73 (a), (b)) ── */
+// The heading exemption above allowed a product's own name on its detail
+// heading: role heading "Combination Pliers" and css h1 were refused on main
+// and allowed by the locator-only rule. Two trace signals deny the exemption,
+// read off the prior steps only: (a) the literal is in a clicked element's
+// name, (b) the most recent click (no navigate after it) opened a catalogue
+// item. Each case runs through the gate AND the in-run check in tools.ts.
+type ItemCase = { label: string; prior: TraceStep[]; target: SelectorRecord; literal: string; tool: Record<string, unknown>; html: string; expect: 'refused' | 'allowed' };
+const productCard: SelectorRecord = { level: 'css', arg: 'a[data-test^="product-"]', intent: 'first card' };
+const itemCases: ItemCase[] = [
+  { label: '(a) click role link "Bolt Cutters ABCDE$48.41", then "Bolt Cutters" on role heading "Bolt Cutters"',
+    prior: [{ kind: 'click', target: { level: 'role', arg: { role: 'link', name: 'Bolt Cutters ABCDE$48.41' }, intent: 'first card' } }],
+    target: { level: 'role', arg: { role: 'heading', name: 'Bolt Cutters' }, intent: 'detail heading' }, literal: 'Bolt Cutters',
+    tool: { role: 'heading', label: 'Bolt Cutters', intent: 'detail heading' }, html: '<h1>Bolt Cutters</h1>', expect: 'refused' },
+  { label: '(b) click css a[data-test^="product-"], then "Combination Pliers" on role heading',
+    prior: [{ kind: 'click', target: productCard }],
+    target: { level: 'role', arg: { role: 'heading' }, intent: 'detail heading' }, literal: 'Combination Pliers',
+    tool: { role: 'heading', intent: 'detail heading' }, html: '<h1>Combination Pliers</h1>', expect: 'refused' },
+  { label: '(b) click css a[data-test^="product-"], then "Combination Pliers" on css h1',
+    prior: [{ kind: 'click', target: productCard }],
+    target: { level: 'css', arg: 'h1', intent: 'detail heading' }, literal: 'Combination Pliers',
+    tool: { css: 'h1', intent: 'detail heading' }, html: '<h1>Combination Pliers</h1>', expect: 'refused' },
+  { label: 'click role button "Login", then "Products" on css .title (the run 7c78fc case)',
+    prior: [{ kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Login' }, intent: 'login button' } }],
+    target: { level: 'css', arg: '.title', intent: 'products header' }, literal: 'Products',
+    tool: { css: '.title', intent: 'products header' }, html: '<span class="title">Products</span>', expect: 'allowed' },
+  { label: 'click css [data-test="nav-cart"], then "Cart" on role heading "Cart" (a nav link is not a catalogue item)',
+    prior: [{ kind: 'click', target: { level: 'css', arg: '[data-test="nav-cart"]', intent: 'cart link' } }],
+    target: { level: 'role', arg: { role: 'heading', name: 'Cart' }, intent: 'cart heading' }, literal: 'Cart',
+    tool: { role: 'heading', label: 'Cart', intent: 'cart heading' }, html: '<h1>Cart</h1>', expect: 'allowed' },
+  { label: 'click css a[data-test^="product-"], navigate /category/x, then "Hand Tools" on role heading (a navigate resets (b))',
+    prior: [{ kind: 'click', target: productCard }, { kind: 'navigate', url: 'https://s.example/category/x' }],
+    target: { level: 'role', arg: { role: 'heading' }, intent: 'category heading' }, literal: 'Hand Tools',
+    tool: { role: 'heading', intent: 'category heading' }, html: '<h1>Hand Tools</h1>', expect: 'allowed' },
+  { label: 'click role link "Red Hat Collection", then the 3-character "Hat" on role heading "Hat" (below the minimum)',
+    prior: [{ kind: 'click', target: { level: 'role', arg: { role: 'link', name: 'Red Hat Collection' }, intent: 'collection link' } }],
+    target: { level: 'role', arg: { role: 'heading', name: 'Hat' }, intent: 'collection heading' }, literal: 'Hat',
+    tool: { role: 'heading', label: 'Hat', intent: 'collection heading' }, html: '<h1>Hat</h1>', expect: 'allowed' },
+];
+check('R7I0. the name match needs at least 4 characters', ITEM_NAME_MIN_CHARS === 4);
+{
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const bctx = await browser.newContext();
+    await installEvalShim(bctx);
+    const page = await bctx.newPage();
+    for (const [i, c] of itemCases.entries()) {
+      const gateReason = catalogueLiteralReason({ type: 'toHaveText', target: c.target, text: c.literal }, c.prior);
+      const gateVerdict = gateReason === null ? 'allowed' : 'refused';
+      console.log(`  R7I lock (gate): ${c.label} -> ${gateReason === null ? 'allowed' : `refused: ${gateReason}`}`);
+      await page.setContent(`<!doctype html><html><body><main>${c.html}</main></body></html>`, { waitUntil: 'load' });
+      const tctx = createContext(page, 200);
+      const begun = await runTool(tctx, { name: 'begin_scenario', input: { name: `item content case ${i + 1}`, category: 'happy' } });
+      tctx.current!.steps.push(...c.prior);
+      const r = await runTool(tctx, { name: 'assert', input: { type: 'toHaveText', text: c.literal, timeout: 5000, ...c.tool } });
+      const inRunVerdict = r.ok ? 'allowed' : /^RULE 7 /.test(r.error ?? '') ? 'refused' : `failed for another reason: ${r.error}`;
+      console.log(`  R7I lock (in-run): ${c.label} -> ${r.ok ? 'allowed (the probe passed)' : r.error}`);
+      check(`R7I${i + 1}. ${c.label} -> ${c.expect}, the gate and the in-run check agree`, begun.ok && gateVerdict === c.expect && inRunVerdict === c.expect, JSON.stringify({ gateReason, inRun: r }));
+    }
+  } finally {
+    await browser.close();
+  }
+}
 
 /* ─── Counters: a literal count on a badge (RULE 7) and a count capture (RULE 9) ── */
 // Run 44cb3d: "cart badge shows 1" asserted three times and reworked three

@@ -39,6 +39,8 @@ import {
   normalizeWords,
   formNamePhrases,
   dedupeAcrossPages,
+  nameOverlap,
+  crossPageBasisText,
   uniqueScenarioNames,
   unreachableFeatures,
   unreachableFeatureLine,
@@ -309,6 +311,37 @@ const pageFeature = (map: Record<string, string | undefined>) => (url: string | 
   check('F6. that genuinely different scenario keeps the rename path', renamed.renames.length === 1 && renamed.scenarios[0]?.name === 'rejected wrong password and stayed on login page (registration)', JSON.stringify(renamed));
   const byCategory = dedupeAcrossPages(first, [sc('rejected wrong password and stayed on login page', 'edge', 'login', entryUrl)], { url: entryUrl, feature: 'login' }, pageFeature({ [loginUrl]: 'login', [entryUrl]: 'login' }));
   check('F7. the same name under a different category is not a cross-page duplicate', byCategory.dropped.length === 0);
+}
+
+/* ─── F8. cross-page dedup on meaning, not exact name (invariant 73) ─────── */
+{
+  // Run 44cb3d D9: two reworded duplicate-email negatives on /auth/login and
+  // /auth/register, both account, negative, R11; the exact-name key missed them.
+  const registerUrl = 'https://s.example/auth/register';
+  const withRules = (name: string, pageUrl: string, ruleIds: string[]): PlannedScenario => ({ ...sc(name, 'negative', 'account', pageUrl), ruleIds });
+  const usedA = 'rejected registration with an already-used email address and showed an error';
+  const usedB = 'rejected registration with an already-used email address and error displayed';
+  const emptyEmail = 'rejected registration with empty email';
+  const malformedEmail = 'rejected registration with malformed email';
+  const features = pageFeature({ [loginUrl]: 'login', [registerUrl]: 'account' });
+  const reworded = dedupeAcrossPages([withRules(usedA, loginUrl, ['R11'])], [withRules(usedB, registerUrl, ['R11'])], { url: registerUrl, feature: 'account' }, features);
+  const apart = dedupeAcrossPages([withRules(emptyEmail, loginUrl, ['R11'])], [withRules(malformedEmail, registerUrl, ['R11'])], { url: registerUrl, feature: 'account' }, features);
+  const otherRule = dedupeAcrossPages([withRules(usedA, loginUrl, ['R11'])], [withRules(usedB, registerUrl, ['R12'])], { url: registerUrl, feature: 'account' }, features);
+  const noRules = dedupeAcrossPages([withRules(usedA, loginUrl, [])], [withRules(usedB, registerUrl, [])], { url: registerUrl, feature: 'account' }, features);
+  const show = (label: string, r: ReturnType<typeof dedupeAcrossPages>, overlap: number): void =>
+    console.log(`  F8 lock: ${label}: overlap ${overlap.toFixed(2)} -> ${r.dropped.length ? `duplicate (${crossPageBasisText(r.dropped[0]!.basis)})` : 'kept apart'}`);
+  show('already-used email, showed an error vs error displayed, both R11', reworded, nameOverlap(usedA, usedB));
+  show('empty email vs malformed email, both R11', apart, nameOverlap(emptyEmail, malformedEmail));
+  show('already-used email pair, R11 vs R12', otherRule, nameOverlap(usedA, usedB));
+  show('already-used email pair, no rule ids', noRules, nameOverlap(usedA, usedB));
+  check('F8a. the reworded pair overlaps by 0.78 (7 shared words of 9)', Math.abs(nameOverlap(usedA, usedB) - 7 / 9) < 1e-9 && nameOverlap(usedA, usedB).toFixed(2) === '0.78');
+  check('F8b. the reworded pair with the same feature, category and rule R11 is one scenario; the copy on the account page is kept',
+    reworded.dropped.length === 1 && reworded.dropped[0]!.scenario.name === usedA && reworded.incoming.length === 1 && reworded.incoming[0]!.name === usedB
+    && crossPageBasisText(reworded.dropped[0]!.basis) === 'same feature, category and rules R11, names overlap 0.78', JSON.stringify(reworded.dropped));
+  check('F8c. empty email vs malformed email (overlap 0.60) are kept apart', apart.dropped.length === 0 && nameOverlap(emptyEmail, malformedEmail).toFixed(2) === '0.60', JSON.stringify(apart.dropped));
+  check('F8d. the reworded pair citing different rule ids is kept apart', otherRule.dropped.length === 0, JSON.stringify(otherRule.dropped));
+  check('F8e. the reworded pair citing no rule ids is kept apart (the set must be non-empty)', noRules.dropped.length === 0, JSON.stringify(noRules.dropped));
+  check('F8f. an exact-name duplicate still reads the original reason', crossPageBasisText({ kind: 'name' }) === 'same feature, category and intent');
 }
 
 /* ─── G. the funnel identity holds after the drops ────────────────────────── */

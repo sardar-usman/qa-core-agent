@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-14. Update this file at the end of every working day.
+Updated: 2026-10-15. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -20,8 +20,8 @@ served at http://127.0.0.1:18789/, MCP server. All three build runs through
 src/agent/explore-request.ts.
 
 Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
-from scripts/, 95 smokes, 2 of them live and skipped unless
-QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "95 smokes, 93 passed, 0
+from scripts/, 96 smokes, 2 of them live and skipped unless
+QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "96 smokes, 94 passed, 0
 failed, 2 skipped (live)").
 Before any live run: npx tsx scripts/preflight-site.ts <url> --login (every run now makes the same login preflight itself before any spend, invariant 70).
 
@@ -99,7 +99,7 @@ Oct 6.
    recorded as reached by action, the never-navigate refusal, not-revealed
    coverage; $0, proven on a fixture site, no live run).
 5. Console honesty: D8 plus the critique seam reaching the repair block
-   (item 9). Built, PR #48 (invariant 72: one rule-coverage print
+   (item 9). DONE, PR #48 merged Oct 15 (main 666d49e) (invariant 72: one rule-coverage print
    after the emitted-spec check, the closing Critic paragraph from the
    final verdicts, the repair budget named and rounded, the no-page
    warning only when true, no console message dropped, the real skip
@@ -107,7 +107,16 @@ Oct 6.
    page-fit rule ids, the critique seam; $0, locked by
    smoke-console-honesty and smoke-repair-block, no live run).
 6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
-   orientation load waste (item 11).
+   orientation load waste (item 11). Built, PR #49 (invariant 73: RULE 7
+   judges a heading by its locator, never the intent; an all-data-test
+   recording ships getByTestId with testIdAttribute in the config; a
+   multi-page plan starts at scenario 1 with orientationCalls recorded and
+   printed; toHaveAttribute, toBeChecked and toHaveValue probes fail at
+   10 s; reworded cross-page duplicates citing the same rules collapse at a
+   0.75 name overlap; the cost line says when and why the total went over
+   the ceiling; $0, locked by smoke-gate, smoke-emitted-run,
+   smoke-orientation, smoke-compare-poll, smoke-plan-page-fit and
+   smoke-cost-ceiling, no live run).
 7. Model pricing honesty ($0): one price table keyed by model id; every
    stage (Planner, Explorer, Critic, Stabilizer, requirements map, page
    filter, feature parser) priced by the model it actually called; an
@@ -337,10 +346,17 @@ using the qa-core-heal evaluation report as the template.
   be driven with a fixture Critic (found in #32). Now ExploreOptions.critique
   (and explorerClient) reach the first review and the repair review;
   smoke-repair-block drives the whole block at $0.
-- testid hints recorded as css because the site uses data-test; emit
-  getByTestId with testIdAttribute in the config instead.
-- Explorer start-up waste: an orientation load of the entry page before the
-  first planned scenario although the plan names each page.
+- ADDRESSED (PR #49, engine/small-items, Oct 15, not merged): testid hints
+  recorded as css because the site uses data-test; emit getByTestId with
+  testIdAttribute in the config instead. Now an all-data-test recording
+  (no step at level testid) emits getByTestId and the config line; mixed
+  attributes emit as before; a prefix selector stays css (invariant 73).
+- ADDRESSED (PR #49, engine/small-items, Oct 15, not merged): Explorer
+  start-up waste: an orientation load of the entry page before the first
+  planned scenario although the plan names each page. Now the first message
+  of a multi-page plan starts at scenario 1, and report.orientationCalls
+  plus one console line make the waste measurable (invariant 73). Untested
+  live until the confirmation run.
 - The dashboard's rule table shows not-reachable and not-revealed as not
   planned (no index column); the report and console carry the precise
   reason.
@@ -362,8 +378,30 @@ using the qa-core-heal evaluation report as the template.
   logs in through its own recorded steps. Owner decision A (Oct 9): no new
   tag in PR #45; design it with the action-first discovery rung (phase
   item 4).
-- RULE 7 refused the "Products" page title (.title) as catalogue data, a
-  heading false positive (phase item 6, D9).
+- ADDRESSED (PR #49, engine/small-items, Oct 15, not merged): RULE 7
+  refused the "Products" page title (.title) as catalogue data, a heading
+  false positive (phase item 6, D9). Now the strong catalogue marker is read
+  off the locator only and a heading locator is exempt unless the locator
+  carries it (invariant 73).
+- ADDRESSED (PR #49, engine/small-items, Oct 15, not merged): the other D9
+  items (run 6): cross-page dedup missed two reworded duplicate-email
+  negatives (now one scenario at a 0.75 name overlap with the same feature,
+  category and rule ids); a toHaveAttribute probe waited 60 s (now the 10 s
+  live cap); the total ran over the ceiling with nothing on the cost line
+  to say why (now the line names the overrun, the terms outside the
+  explorer budget and the closeout grace). Invariant 73.
+- A product name literal on css .inventory_item_name (saucedemo) is allowed
+  by RULE 7 today: the selector carries no catalogue marker (found in
+  PR #49).
+- Known gap: a product clicked by a nameless css, then another click (add
+  to cart), then a literal product name on the heading is allowed; (b) only
+  reads the most recent click.
+- Whole-run hard ceiling (planner, map and Critic inside the stated
+  ceiling), after the confirmation run.
+- Rule citation not exercised by the recording (run 6: the eco-friendly
+  filter scenario cited R3, the category filter). Deferred until after the
+  confirmation run, because the fix changes the Critic's duties and would
+  confound the rework rate measurement. Checked by hand when grading run 7.
 - ADDRESSED (PR #48, engine/console-honesty, Oct 14, not merged): The
   console printed 'Feature "login" has 4 rules and no discovered page' on
   saucedemo, then 4 of 4 covered. Now the line prints after planning and

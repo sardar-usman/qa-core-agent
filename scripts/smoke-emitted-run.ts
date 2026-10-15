@@ -52,7 +52,7 @@ const indexHtml = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Toolshop fixture</title></head>
 <body>
 <main>
-  <h1 data-testid="page-title">Hand Tools</h1>
+  <h1 data-test="page-title">Hand Tools</h1>
   <form id="contact" aria-label="Contact form">
     <label for="name">Name</label> <input id="name" name="name">
     <label for="subject">Subject</label>
@@ -175,10 +175,10 @@ const itemHtml = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Combination Pliers</title></head>
 <body><header><span id="cart-slot"></span></header><main>
   <h1>Combination Pliers</h1>
-  <button type="button" data-testid="add-to-cart">Add to cart</button>
+  <button type="button" data-test="add-to-cart">Add to cart</button>
 </main>${cartLinkScript}
 <script>
-  document.querySelector('[data-testid="add-to-cart"]').addEventListener('click', function () {
+  document.querySelector('[data-test="add-to-cart"]').addEventListener('click', function () {
     var items = JSON.parse(localStorage.getItem('cart') || '[]');
     items.push({ name: 'Combination Pliers', qty: 1 });
     localStorage.setItem('cart', JSON.stringify(items));
@@ -196,6 +196,21 @@ const checkoutHtml = `<!doctype html>
   });
 </script></body></html>`;
 
+// Mixed attributes (invariant 73): one control carries data-test, the other
+// Playwright's default data-testid, so the framework keeps css for the first
+// and the default getByTestId for the second, with no testIdAttribute.
+const mixedHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mixed ids</title></head>
+<body><main><h1>Mixed</h1>
+  <button type="button" data-test="go">Go</button>
+  <span data-testid="status"></span>
+</main>
+<script>
+  document.querySelector('[data-test="go"]').addEventListener('click', function () {
+    document.querySelector('[data-testid="status"]').textContent = 'Done';
+  });
+</script></body></html>`;
+
 const sanderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#888"/></svg>`;
 
 const routes: Record<string, { body: string; type: string }> = {
@@ -209,6 +224,7 @@ const routes: Record<string, { body: string; type: string }> = {
   '/shop.html': { body: shopHtml, type: 'text/html; charset=utf-8' },
   '/item.html': { body: itemHtml, type: 'text/html; charset=utf-8' },
   '/checkout': { body: checkoutHtml, type: 'text/html; charset=utf-8' },
+  '/mixed.html': { body: mixedHtml, type: 'text/html; charset=utf-8' },
 };
 
 const server = http.createServer((req, res) => {
@@ -225,7 +241,12 @@ console.log(`fixture site served in-process from ${base}/ (node:http, in memory)
 
 /* ─── 2. the fixture run-report: every emitted shape ────────────────────── */
 
-const pageTitle: SelectorRecord = { level: 'testid', arg: 'page-title', intent: 'page title' };
+// Every exact test-id selector the main fixture records uses data-test and
+// none sits at level testid, so the framework emits getByTestId with
+// testIdAttribute: 'data-test' (invariant 73). The resolver records a
+// data-test match as css (selectors.ts step 7), which is what these are.
+const pageTitle: SelectorRecord = { level: 'css', arg: '[data-test="page-title"]', intent: 'page title' };
+const productCardsByPrefix: SelectorRecord = { level: 'css', arg: 'a[data-test^="product-"]', intent: 'product cards by test id prefix' };
 const cards: SelectorRecord = { level: 'css', arg: '.card', intent: 'product cards' };
 const cardPrice: SelectorRecord = { level: 'css', arg: '.card .card-footer', intent: 'first card price', ambiguous: true };
 const cardName: SelectorRecord = { level: 'css', arg: '.card h5', intent: 'first card name', ambiguous: true };
@@ -255,7 +276,7 @@ const addButton: SelectorRecord = { level: 'role', arg: { role: 'button', name: 
 const cartBadge: SelectorRecord = { level: 'css', arg: '#badge', intent: 'cart badge' };
 const sendNoIntent: SelectorRecord = { level: 'css', arg: '#send', intent: 'element' };
 const itemLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Combination Pliers' }, intent: 'product link' };
-const addToCart: SelectorRecord = { level: 'testid', arg: 'add-to-cart', intent: 'add to cart button' };
+const addToCart: SelectorRecord = { level: 'css', arg: '[data-test="add-to-cart"]', intent: 'add to cart button' };
 const navCart: SelectorRecord = { level: 'css', arg: '[data-test="nav-cart"]', intent: 'cart link in header' };
 const quantityInput: SelectorRecord = { level: 'label', arg: 'Quantity', intent: 'quantity input' };
 // The cart page is revealed by an add (invariant 71) and is reached by these
@@ -271,6 +292,7 @@ function scenarios(): Scenario[] {
       { kind: 'assert', name: 'p', assertion: { type: 'toHaveText', target: cardPrice, text: '', pattern: '^\\$\\d+\\.\\d{2}$', timeout: 5000 } },
       { kind: 'assert', name: 'i', assertion: { type: 'toHaveAttribute', target: cardImage, attribute: 'src', value: '', pattern: 'products/', timeout: 5000 } },
       { kind: 'assert', name: 'z', assertion: { type: 'toHaveCount', target: noSuch, count: 0, timeout: 5000 } },
+      { kind: 'assert', name: 'pc', assertion: { type: 'toHaveCount', target: productCardsByPrefix, count: 1, atLeast: true, timeout: 5000 } },
     ] },
     { name: 'sorting by price high to low raises the first price', category: 'happy', feature: 'catalogue', steps: [
       { kind: 'navigate', url: `${base}/` },
@@ -406,6 +428,24 @@ function buildReport(language: 'ts' | 'js'): RunReport {
   };
 }
 
+/** Mixed attributes: one data-test step and one step recorded at level testid (Playwright's default data-testid). */
+function buildMixedReport(language: 'ts' | 'js'): RunReport {
+  return {
+    url: `${base}/mixed.html`, language,
+    scenarios: [{ name: 'clicking go shows done in the status', category: 'happy', feature: 'mixed', steps: [
+      { kind: 'navigate', url: `${base}/mixed.html` },
+      { kind: 'click', target: { level: 'css', arg: '[data-test="go"]', intent: 'go button' } },
+      { kind: 'assert', name: 'st', assertion: { type: 'toHaveText', target: { level: 'testid', arg: 'status', intent: 'status text' }, text: 'Done', timeout: 5000 } },
+    ] }],
+    cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
+    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
+    steps: 0, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+  };
+}
+
+/** The lines of a file that name a test id, trimmed, for the lock's printed output. */
+const testIdLines = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => /testIdAttribute|getByTestId|data-test/.test(l));
+
 /* ─── 3. install and run ────────────────────────────────────────────────── */
 
 interface RunResult { status: number | null; stdout: string; stderr: string }
@@ -508,6 +548,20 @@ for (const language of ['ts', 'js'] as const) {
       && fs.existsSync(path.join(outDir, `tests/a11y/landing.a11y.spec.${language}`))
       && fs.existsSync(path.join(outDir, `helpers/parse-number.${language}`)));
 
+    // Test ids (invariant 73): every exact test-id selector in the main
+    // fixture uses data-test, so the config sets the attribute and the page
+    // objects call getByTestId; the prefix selector stays css.
+    const config = fs.readFileSync(path.join(outDir, `playwright.config.${language}`), 'utf8');
+    const cartPageText = fs.readFileSync(path.join(outDir, `pages/cart-page.${language}`), 'utf8');
+    const cataloguePageText = fs.readFileSync(path.join(outDir, `pages/catalogue-page.${language}`), 'utf8');
+    console.log(`  ${language} test-id lock (all data-test): playwright.config: ${testIdLines(config).join(' | ') || '(no test-id line)'}`);
+    console.log(`  ${language} test-id lock (all data-test): pages/cart-page: ${testIdLines(cartPageText).join(' | ')}`);
+    console.log(`  ${language} test-id lock (all data-test): pages/catalogue-page: ${testIdLines(cataloguePageText).join(' | ')}`);
+    check(`${language}: an all-data-test recording sets testIdAttribute: 'data-test' in the config use block`, /use: \{[^}]*testIdAttribute: 'data-test',/.test(config), config);
+    check(`${language}: the add-to-cart button is emitted as getByTestId("add-to-cart"), never the data-test css`, cartPageText.includes('page.getByTestId("add-to-cart")') && !cartPageText.includes('[data-test=\\"add-to-cart\\"]'), cartPageText);
+    check(`${language}: the page title and the absent banner are emitted as getByTestId`, cataloguePageText.includes('page.getByTestId("page-title")') && cataloguePageText.includes('page.getByTestId("no-such")'), cataloguePageText);
+    check(`${language}: the prefix selector a[data-test^="product-"] stays css`, cataloguePageText.includes('page.locator("a[data-test^=\\"product-\\"]")') && !/getByTestId\("product-/.test(cataloguePageText), cataloguePageText);
+
     const install = await npmInstall(outDir);
     installModes[language] = install.mode;
     check(`${language}: npm install succeeded via ${install.mode}`, install.ok, install.detail);
@@ -533,6 +587,43 @@ for (const language of ['ts', 'js'] as const) {
     check(`${language}: every scenario plus the a11y check passed (${SCENARIO_COUNT + 1} expected)`, json.stats.expected === SCENARIO_COUNT + 1 && json.stats.skipped === 0, JSON.stringify({ stats: json.stats, specs: specs.map((s) => `${s.status}:${s.title}`) }));
     check(`${language}: the a11y spec ran and passed`, a11y.length === 1 && a11y[0]!.ok && a11y[0]!.status === 'expected', JSON.stringify(a11y));
     check(`${language}: no spec is reported as failed`, specs.every((s) => s.ok && s.status === 'expected'), specs.filter((s) => !s.ok).map((s) => `${s.file}: ${s.title}`).join(' | '));
+
+    // Mixed attributes (invariant 73): one data-test step, one data-testid
+    // step. No testIdAttribute, the data-test selector stays css, the testid
+    // step keeps the default getByTestId, and the framework runs green.
+    // node_modules is the main framework's, linked in.
+    const mixedDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-emitted-mixed-${language}-`));
+    const singleRunDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-emitted-single-run-${language}-`));
+    try {
+      scaffold({ report: buildMixedReport(language), outDir: mixedDir, siteName: 'mixed-fixture' });
+      const mixedConfig = fs.readFileSync(path.join(mixedDir, `playwright.config.${language}`), 'utf8');
+      const mixedPage = fs.readFileSync(path.join(mixedDir, `pages/mixed-page.${language}`), 'utf8');
+      console.log(`  ${language} test-id lock (mixed): playwright.config: ${testIdLines(mixedConfig).join(' | ') || '(no test-id line)'}`);
+      console.log(`  ${language} test-id lock (mixed): pages/mixed-page: ${testIdLines(mixedPage).join(' | ')}`);
+      check(`${language}: a mixed recording emits no testIdAttribute`, !mixedConfig.includes('testIdAttribute'), mixedConfig);
+      check(`${language}: a mixed recording keeps the data-test css and the default getByTestId`, mixedPage.includes('page.locator("[data-test=\\"go\\"]")') && mixedPage.includes('page.getByTestId("status")'), mixedPage);
+      fs.symlinkSync(path.join(outDir, 'node_modules'), path.join(mixedDir, 'node_modules'), 'dir');
+      const mixedEnv = { ...env, PLAYWRIGHT_JSON_OUTPUT_NAME: 'results.json' } as NodeJS.ProcessEnv;
+      const mixedRun = await run('npx', ['playwright', 'test', '--reporter=list,json'], mixedDir, 300_000, mixedEnv);
+      const mixedJson = fs.existsSync(path.join(mixedDir, 'results.json')) ? JSON.parse(fs.readFileSync(path.join(mixedDir, 'results.json'), 'utf8')) as PwJson : null;
+      console.log(`${language} mixed: playwright exit ${String(mixedRun.status)}: ${mixedJson ? JSON.stringify(mixedJson.stats) : '(no JSON report)'}`);
+      check(`${language}: the mixed framework runs green (the scenario and the a11y spec)`, mixedRun.status === 0 && mixedJson !== null && mixedJson.stats.expected === 2 && mixedJson.stats.unexpected === 0, (mixedRun.stdout + '\n' + mixedRun.stderr).trim().split('\n').slice(-25).join('\n'));
+
+      // The single-file spec of the all-data-test report sets the attribute
+      // with test.use and runs green with no config file.
+      const singleRun = transcribe({ report, outDir: singleRunDir, name: 'toolshop-fixture' });
+      const singleText = fs.readFileSync(singleRun.specPath, 'utf8');
+      console.log(`  ${language} test-id lock (single file): ${testIdLines(singleText).filter((l) => /testIdAttribute|add-to-cart|page-title/.test(l)).join(' | ')}`);
+      check(`${language}: the single-file spec sets test.use({ testIdAttribute: "data-test" }) and calls getByTestId`, singleText.includes('test.use({ testIdAttribute: "data-test" });') && singleText.includes('getByTestId("add-to-cart")'), singleText.split('\n').slice(0, 30).join('\n'));
+      fs.symlinkSync(path.join(outDir, 'node_modules'), path.join(singleRunDir, 'node_modules'), 'dir');
+      const singleRes = await run('npx', ['playwright', 'test', '--reporter=list,json'], singleRunDir, 600_000, mixedEnv);
+      const singleJson = fs.existsSync(path.join(singleRunDir, 'results.json')) ? JSON.parse(fs.readFileSync(path.join(singleRunDir, 'results.json'), 'utf8')) as PwJson : null;
+      console.log(`${language} single file: playwright exit ${String(singleRes.status)}: ${singleJson ? JSON.stringify(singleJson.stats) : '(no JSON report)'}`);
+      check(`${language}: the single-file spec runs green with no config file`, singleRes.status === 0 && singleJson !== null && singleJson.stats.unexpected === 0 && singleJson.stats.flaky === 0, (singleRes.stdout + '\n' + singleRes.stderr).trim().split('\n').slice(-25).join('\n'));
+    } finally {
+      fs.rmSync(mixedDir, { recursive: true, force: true });
+      fs.rmSync(singleRunDir, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(outDir, { recursive: true, force: true });
   }

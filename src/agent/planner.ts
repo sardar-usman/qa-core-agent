@@ -1584,6 +1584,64 @@ function crossPageKey(s: PlannedScenario): string {
   return `${(s.feature ?? '').toLowerCase()}|${s.category}|${scenarioNameKey(s.name)}`;
 }
 
+/** Words that carry no meaning in a scenario name, dropped before the overlap is measured. */
+const OVERLAP_STOP_WORDS = new Set(['a', 'an', 'and', 'the', 'with', 'of', 'on', 'to', 'in']);
+
+/** The lower-cased words of a name, split on anything that is not a letter or digit, stop words removed. */
+function overlapWords(name: string): Set<string> {
+  return new Set(name.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !OVERLAP_STOP_WORDS.has(w)));
+}
+
+/** The minimum name overlap (Jaccard on overlapWords) for two scenarios citing the same rules to be one. */
+export const CROSS_PAGE_NAME_OVERLAP = 0.75;
+
+/**
+ * Jaccard overlap of two scenario names on their normalized words (lower
+ * case, split on non-alphanumerics so "already-used" is two words, stop words
+ * a, an, and, the, with, of, on, to, in removed). Never an exact string
+ * (standing rule 1). Exported for the smoke.
+ */
+export function nameOverlap(a: string, b: string): number {
+  const wa = overlapWords(a);
+  const wb = overlapWords(b);
+  const union = new Set([...wa, ...wb]);
+  if (union.size === 0) return 0;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / union.size;
+}
+
+function sameRuleSet(a: PlannedScenario, b: PlannedScenario): string[] | null {
+  const ra = [...new Set(a.ruleIds ?? [])].sort();
+  const rb = [...new Set(b.ruleIds ?? [])].sort();
+  if (ra.length === 0 || ra.join(',') !== rb.join(',')) return null;
+  return ra;
+}
+
+/** Why two planned scenarios are one across pages, or null (invariant 61 b, invariant 73). */
+export type CrossPageBasis = { kind: 'name' } | { kind: 'overlap'; overlap: number; ruleIds: string[] };
+
+function crossPageDuplicate(s: PlannedScenario, e: PlannedScenario): CrossPageBasis | null {
+  if (crossPageKey(s) === crossPageKey(e)) return { kind: 'name' };
+  // Meaning, not exact text: the same feature, category and an identical
+  // non-empty set of cited rules, with names that overlap by at least 0.75.
+  // Run 44cb3d planned "rejected registration with an already-used email
+  // address and showed an error" on /auth/login and "... and error
+  // displayed" on /auth/register, both account, negative, R11 (D9).
+  if ((s.feature ?? '').toLowerCase() !== (e.feature ?? '').toLowerCase() || s.category !== e.category) return null;
+  const ruleIds = sameRuleSet(s, e);
+  if (!ruleIds) return null;
+  const overlap = nameOverlap(s.name, e.name);
+  return overlap >= CROSS_PAGE_NAME_OVERLAP ? { kind: 'overlap', overlap, ruleIds } : null;
+}
+
+/** The parenthetical a cross-page drop line ends with: why the two are one scenario. */
+export function crossPageBasisText(basis: CrossPageBasis): string {
+  return basis.kind === 'name'
+    ? 'same feature, category and intent'
+    : `same feature, category and rules ${basis.ruleIds.join(', ')}, names overlap ${basis.overlap.toFixed(2)}`;
+}
+
 /**
  * The same feature + category + intent planned on two pages is one scenario,
  * not two. Run 591732 planned "logged in with valid credentials" on the login
@@ -1591,21 +1649,26 @@ function crossPageKey(s: PlannedScenario): string {
  * copy on the page whose feature tag names the scenario's feature wins; when
  * neither or both do, the first in ladder order wins. A name shared by
  * scenarios of a DIFFERENT feature or category is not a duplicate and still
- * goes through the rename in uniqueScenarioNames. Exported for the smoke.
+ * goes through the rename in uniqueScenarioNames. Two reworded names are one
+ * scenario when they share feature, category and an identical non-empty set
+ * of cited rule ids and their names overlap by at least 0.75 (nameOverlap,
+ * invariant 73). Exported for the smoke.
  */
 export function dedupeAcrossPages(
   existing: PlannedScenario[],
   incoming: PlannedScenario[],
   page: { url: string; feature?: string },
   pageFeatureOf: (url: string | undefined) => string | undefined,
-): { existing: PlannedScenario[]; incoming: PlannedScenario[]; dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> } {
+): { existing: PlannedScenario[]; incoming: PlannedScenario[]; dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario; basis: CrossPageBasis }> } {
   const all: PlannedScenario[] = [...existing];
   const fromIncoming = new Set<PlannedScenario>();
-  const dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario }> = [];
+  const dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario; basis: CrossPageBasis }> = [];
   for (const s of incoming) {
-    const key = crossPageKey(s);
-    const idx = all.findIndex((e) => crossPageKey(e) === key);
-    if (idx < 0) {
+    // An exact-name match first (the original rule), then the overlap rule.
+    let idx = all.findIndex((e) => crossPageKey(e) === crossPageKey(s));
+    if (idx < 0) idx = all.findIndex((e) => crossPageDuplicate(s, e) !== null);
+    const basis = idx < 0 ? null : crossPageDuplicate(s, all[idx]!);
+    if (idx < 0 || !basis) {
       all.push(s);
       fromIncoming.add(s);
       continue;
@@ -1616,12 +1679,12 @@ export function dedupeAcrossPages(
     // page evidence (invariant 71); its pageUrl is only the origin.
     const existingOnItsPage = !!e.feature && pageFeatureOf(e.reachedBy?.pageUrl ?? e.pageUrl) === e.feature;
     if (incomingOnItsPage && !existingOnItsPage) {
-      dropped.push({ scenario: e, duplicateOf: s });
+      dropped.push({ scenario: e, duplicateOf: s, basis });
       all.splice(idx, 1);
       all.push(s);
       fromIncoming.add(s);
     } else {
-      dropped.push({ scenario: s, duplicateOf: e });
+      dropped.push({ scenario: s, duplicateOf: e, basis });
     }
   }
   return {

@@ -217,6 +217,14 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
     const neverHidden = await runTool(tctx, { name: 'assert', input: { type: 'toBeHidden', intent: 'go button', css: '#go', timeout: 30000 } });
     const tookMs = Date.now() - t0;
     check(`K3. the live probe is unchanged: a toBeHidden on a visible element with a 30 s model timeout fails in about ${LIVE_PROBE_TIMEOUT_MS} ms (took ${tookMs} ms)`, LIVE_PROBE_TIMEOUT_MS === 10000 && neverHidden.ok === false && tookMs >= LIVE_PROBE_TIMEOUT_MS - 500 && tookMs < LIVE_PROBE_TIMEOUT_MS + 6000, neverHidden.error);
+    // Quick state probes take the same cap (invariant 73). Run 44cb3d D9: a
+    // toHaveAttribute "required" probe with regex ".*" on an element without
+    // the attribute waited 60 s (the adaptive ceiling) before it failed.
+    const t1 = Date.now();
+    const noAttr = await runTool(tctx, { name: 'assert', input: { type: 'toHaveAttribute', intent: 'go button', css: '#go', attribute: 'required', regex: '.*' } });
+    const attrMs = Date.now() - t1;
+    console.log(`  K4 lock: toHaveAttribute "required" on an element without it: ok ${String(noAttr.ok)} after ${attrMs} ms`);
+    check(`K4. a toHaveAttribute probe on an element without the attribute fails in under 12 s, not 60 s (took ${attrMs} ms)`, noAttr.ok === false && attrMs < 12000 && attrMs >= LIVE_PROBE_TIMEOUT_MS - 500, noAttr.error);
   } finally {
     await browser.close();
   }
@@ -224,4 +232,4 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read; recorded assertions ship floored at 10000 ms after an action and untouched before one, capped at 15000, while the live probe still gives up at 10 s.');
+console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read; recorded assertions ship floored at 10000 ms after an action and untouched before one, capped at 15000, while the live probe still gives up at 10 s, quick state probes (toHaveAttribute) included.');

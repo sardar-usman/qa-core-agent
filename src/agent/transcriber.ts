@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { emitLocatorCall } from './selectors.js';
+import { applyTestIdAttribute } from './test-id-emit.js';
 import { uniqueCallExpr, inlineUniqueDataFns } from './unique-data.js';
 import { inlineParseNumberFn } from './parse-number.js';
 // How long the emitted assert_compare poll waits for an async state change (a
@@ -31,7 +32,10 @@ export interface TranscribeResult {
 }
 
 export function transcribe(opts: TranscribeOptions): TranscribeResult {
-  const { report, outDir, name } = opts;
+  const { outDir, name } = opts;
+  // Test ids (invariant 73): an all-data-test recording emits getByTestId and
+  // sets the attribute with test.use, since a single-file spec has no config.
+  const { report, testIdAttribute } = applyTestIdAttribute(opts.report);
   fs.mkdirSync(outDir, { recursive: true });
   const ext = report.language;
   const file = `${name}.spec.${ext}`;
@@ -73,6 +77,10 @@ export function transcribe(opts: TranscribeOptions): TranscribeResult {
   });
   if (usesCaptureWait) {
     lines.push(inlineAwaitCaptureReadyFn());
+    lines.push('');
+  }
+  if (testIdAttribute) {
+    lines.push(`test.use({ testIdAttribute: ${q(testIdAttribute)} });`);
     lines.push('');
   }
   lines.push(`test.describe(${q(titleFromUrl(report.url))}, () => {`);

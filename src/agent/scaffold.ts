@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { RunReport, Scenario } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
+import { applyTestIdAttribute, type EmittedTestIdAttribute } from './test-id-emit.js';
 import { renderUniqueDataHelper } from './unique-data.js';
 import { renderParseNumberHelper } from './parse-number.js';
 import { renderAwaitCaptureReadyTs, renderAwaitCaptureReadyJs } from './capture-ready.js';
@@ -101,11 +102,16 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   // storageState auth activates ONLY when the run recorded a successful
   // happy-path login. Without one, every rendered file below is byte-identical
   // to the pre-auth emitter (the emitter-only guarantee).
-  const authLogin = findHappyLoginScenario(opts.report);
+  // Test ids (invariant 73): when every exact test-id css selector the
+  // shipped scenarios recorded uses data-test and none sits at level testid,
+  // the emitters write getByTestId and the config sets testIdAttribute. The
+  // README and the run-report copy below keep reading the recorded report.
+  const { report: emitReport, testIdAttribute } = applyTestIdAttribute(opts.report);
+  const authLogin = findHappyLoginScenario(emitReport);
 
   const specName = slugify(opts.siteName);
   const pomResult = transcribePOM({
-    report: opts.report,
+    report: emitReport,
     outDir: opts.outDir,
     name: specName,
     ...(opts.requirements ? { requirements: opts.requirements } : {}),
@@ -123,7 +129,7 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   };
 
   writeFile('package.json', renderPackageJson(opts, lang));
-  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang, authLogin !== null, loginFeatureOf(authLogin)));
+  writeFile(`playwright.config.${ext}`, renderPlaywrightConfig(opts, lang, authLogin !== null, loginFeatureOf(authLogin), testIdAttribute));
   if (lang === 'ts') {
     writeFile('tsconfig.json', renderTsConfig());
   }
@@ -296,8 +302,11 @@ function renderPackageJson(opts: ScaffoldOptions, lang: 'ts' | 'js'): string {
   return JSON.stringify(obj, null, 2) + '\n';
 }
 
-function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false, loginFeature = 'login'): string {
+function renderPlaywrightConfig(opts: ScaffoldOptions, lang: 'ts' | 'js', auth = false, loginFeature = 'login', testIdAttribute: EmittedTestIdAttribute | null = null): string {
   const baseUrl = opts.report.url;
+  // One line in the use block, only when the emitted specs call getByTestId
+  // against data-test (invariant 73); otherwise the config is byte-identical.
+  const testIdLine = testIdAttribute ? `\n    testIdAttribute: '${testIdAttribute}',` : '';
   if (auth) {
     // storageState flow: the setup project logs in once and saves the session;
     // authenticated tests depend on it and reuse the saved state; login tests
@@ -336,7 +345,7 @@ module.exports = defineConfig({
     baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'retain-on-failure',${testIdLine}
   },
 ${projects}
 });
@@ -361,7 +370,7 @@ export default defineConfig({
     baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'retain-on-failure',${testIdLine}
   },
 ${projects}
 });
@@ -389,7 +398,7 @@ module.exports = defineConfig({
     baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'retain-on-failure',${testIdLine}
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
@@ -419,7 +428,7 @@ export default defineConfig({
     baseURL: process.env.BASE_URL || ${JSON.stringify(baseUrl)},
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'retain-on-failure',${testIdLine}
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

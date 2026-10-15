@@ -61,7 +61,9 @@ const RECOVERY_CAP = 2;
 
 /**
  * The live wait of an Explorer count or absence probe (toHaveCount with count
- * or atLeast, toHaveCount 0, toBeHidden). During exploration a selector that
+ * or atLeast, toHaveCount 0, toBeHidden) and of a quick state probe
+ * (toHaveAttribute, toBeChecked, toHaveValue; invariant 73, run 44cb3d D9:
+ * a toHaveAttribute probe waited 60 s). During exploration a selector that
  * matches nothing used to wait the full adaptive ceiling (run 51d535: two 59 s
  * waits on `a[data-testid^="product-"]` against a data-test site). A count
  * that has not settled in 10 s is a wrong selector, not a slow page. Only the
@@ -2362,10 +2364,14 @@ async function executeAssertion(
   // adaptive timeout from that observation, never a constant. The live probe
   // uses the ceiling so even a slow but real settle is fully observable.
   const probe = { timeout: ADAPTIVE_CEILING_MS };
-  // Count and absence probes fail fast: a selector that matches nothing is a
-  // wrong selector, not a slow page (run 51d535 waited 59 s twice on a
-  // data-testid css against a data-test site). The recorded timeout is
-  // unchanged: the model's value or the adaptive observation.
+  // Count, absence and quick probes fail fast: a selector that matches
+  // nothing is a wrong selector, not a slow page (run 51d535 waited 59 s
+  // twice on a data-testid css against a data-test site; run 44cb3d waited
+  // 60 s on a toHaveAttribute "required" probe, D9). toHaveAttribute,
+  // toBeChecked and toHaveValue read a state that is there or not, so they
+  // take the same cap (invariant 73); text and visibility probes keep the
+  // ceiling to observe a slow settle. The recorded timeout is unchanged: the
+  // model's value or the adaptive observation.
   const countProbe = { timeout: Math.min(input.timeout && input.timeout > 0 ? input.timeout : LIVE_PROBE_TIMEOUT_MS, LIVE_PROBE_TIMEOUT_MS) };
   switch (input.type) {
     case 'toBeVisible': {
@@ -2417,7 +2423,7 @@ async function executeAssertion(
       const checked = input.checked !== false;
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       const t0 = Date.now();
-      await expect(loc).toBeChecked({ checked, ...probe });
+      await expect(loc).toBeChecked({ checked, ...countProbe });
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
@@ -2519,8 +2525,8 @@ async function executeAssertion(
       if (input.value == null && !pattern) return { ok: false, error: 'toHaveAttribute needs value, or regex for a format.' };
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
       const t0 = Date.now();
-      if (pattern) await expect(loc).toHaveAttribute(input.attribute, new RegExp(pattern), probe);
-      else await expect(loc).toHaveAttribute(input.attribute, input.value!, probe);
+      if (pattern) await expect(loc).toHaveAttribute(input.attribute, new RegExp(pattern), countProbe);
+      else await expect(loc).toHaveAttribute(input.attribute, input.value!, countProbe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
@@ -2553,7 +2559,7 @@ async function executeAssertion(
       if (credMarker) {
         if (!ctx.testCredentials) return { ok: false, error: `${CREDENTIALS_NOT_PROVIDED}: this field holds the test account.` };
         const t0c = Date.now();
-        await expect(loc).toHaveValue(credentialValue(ctx.testCredentials, credMarker), probe);
+        await expect(loc).toHaveValue(credentialValue(ctx.testCredentials, credMarker), countProbe);
         const observedC = recordedTimeout(ctx, input.timeout, t0c);
         pushStep(ctx, {
           kind: 'assert',
@@ -2566,7 +2572,7 @@ async function executeAssertion(
       const expected = filled ?? input.value;
       if (expected == null) return { ok: false, error: 'toHaveValue needs value.' };
       const t0 = Date.now();
-      await expect(loc).toHaveValue(expected, probe);
+      await expect(loc).toHaveValue(expected, countProbe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',

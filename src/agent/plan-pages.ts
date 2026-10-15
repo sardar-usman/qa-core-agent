@@ -1,5 +1,5 @@
 import type { DiscoveredPage, ReachAction } from './discovery.js';
-import { dedupeAcrossPages, pageFitRejectionLine, uniqueScenarioNames, type PageSnapshot, type PlannedScenario, type PlanResult, type RuleRetry } from './planner.js';
+import { crossPageBasisText, dedupeAcrossPages, pageFitRejectionLine, uniqueScenarioNames, type PageSnapshot, type PlannedScenario, type PlanResult, type RuleRetry } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
 import type { RevealedFeature } from './state-probe.js';
 
@@ -243,7 +243,7 @@ export async function planAcrossPages(opts: {
     for (const d of cross.dropped) {
       const keptOn = d.duplicateOf.reachedBy?.pageUrl ?? d.duplicateOf.pageUrl ?? pg.url;
       const droppedOn = d.scenario.reachedBy?.pageUrl ?? d.scenario.pageUrl ?? pg.url;
-      onMessage(`Rejected cross-page duplicate: "${d.scenario.name}" on ${droppedOn} (same feature, category and intent as the scenario kept on ${keptOn})`);
+      onMessage(`Rejected cross-page duplicate: "${d.scenario.name}" on ${droppedOn} (${crossPageBasisText(d.basis)} as the scenario kept on ${keptOn})`);
     }
     combined = cross.existing;
     scen = cross.incoming;
