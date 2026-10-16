@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-15. Update this file at the end of every working day.
+Updated: 2026-10-16. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -20,8 +20,8 @@ served at http://127.0.0.1:18789/, MCP server. All three build runs through
 src/agent/explore-request.ts.
 
 Verification: npx tsc --noEmit, then npm run smoke (the suite is discovered
-from scripts/, 96 smokes, 2 of them live and skipped unless
-QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "96 smokes, 94 passed, 0
+from scripts/, 97 smokes, 2 of them live and skipped unless
+QA_CORE_LIVE_SMOKES=1 is set; smoke-all reports "97 smokes, 95 passed, 0
 failed, 2 skipped (live)").
 Before any live run: npx tsx scripts/preflight-site.ts <url> --login (every run now makes the same login preflight itself before any spend, invariant 70).
 
@@ -107,7 +107,8 @@ Oct 6.
    page-fit rule ids, the critique seam; $0, locked by
    smoke-console-honesty and smoke-repair-block, no live run).
 6. Small engine items: D9, getByTestId with testIdAttribute (item 10),
-   orientation load waste (item 11). Built, PR #49 (invariant 73: RULE 7
+   orientation load waste (item 11). DONE, PR #49 merged Oct 16 (main
+   b131acd) (invariant 73: RULE 7
    judges a heading by its locator, never the intent; an all-data-test
    recording ships getByTestId with testIdAttribute in the config; a
    multi-page plan starts at scenario 1 with orientationCalls recorded and
@@ -122,7 +123,13 @@ Oct 6.
    filter, feature parser) priced by the model it actually called; an
    unknown model id refuses to start. Found Oct 8: priceFor falls back to
    Opus 4.7 prices, the Critic and Planner prices are fixed constants, the
-   Stabilizer prices Opus at 15/75.
+   Stabilizer prices Opus at 15/75. Built, PR #50 (invariant 74: one price
+   table in src/agent/pricing.ts keyed by exact model id, costOf prices all
+   four usage fields; every stage priced by the model it called and
+   resolved in stage-models.ts; an unknown id refuses the run on the CLI,
+   the gateway and MCP before any call; cost.models on the report;
+   scripts/pricing-history.ts for the erratum decision; $0, locked by
+   smoke-pricing, no live run).
 8. Live confirmation run (Toolshop, same SRS, $6 ceiling, about $6) on the
    current models (Haiku 4.5, Opus 4.7, Sonnet 4.6), logged in with a
    dedicated account the owner registered by hand (values in .env only),
@@ -431,6 +438,12 @@ using the qa-core-heal evaluation report as the template.
   page-fit rejection line carries no rule ids, so a rejected scenario's
   citations cannot be traced from the artifact. Now it ends with
   "(cited R4, R5)" or "(cited no rule)".
+- RULE 7 false positives (PR #49 review): click role link Contact then
+  heading Contact is refused by (a); a clicked css with li or row words is
+  read as a catalogue item by (b). The fix needs the page URL after a click
+  (urlAfter on click steps). After the confirmation run.
+- Haiku 5.5 is priced by prompt size; add it to pricing.ts with its tiers
+  before any stage uses it.
 - Exemption for signed-out gated-URL negatives (from PR #46): not planned
   today; revisit after the confirmation run if a client needs it.
 

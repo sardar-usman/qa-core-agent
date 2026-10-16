@@ -66,7 +66,6 @@ async function loopThatThrows(err: unknown): Promise<{ result?: Awaited<ReturnTy
   try {
     const result = await runAgentLoop({
       client, model: 'claude-opus-4-7', maxUsd: 10,
-      price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
       maxSteps: 40, ctx, url: 'https://shop.example/', plan: [],
     });
     return { result, completed: ctx.scenarios.length };

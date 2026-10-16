@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
+import { costOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 import { scenarioNameKey } from './rule-coverage.js';
 import { emitLocatorCall } from './selectors.js';
 import { ASSERTION_DOCTRINE } from './doctrine.js';
@@ -144,8 +146,6 @@ Rules for this review:
 - A new complaint the first review did not make goes in "observations", never in "fixes" and never as the ground for a rework verdict: the scenario is kept when every listed fix is applied.
 - "verdict" is "pass" when every listed fix is applied, "rework" when one is not.`;
 
-const CRITIC_PRICE = { in: 3.0, out: 15.0 }; // Sonnet 4.6
-
 export async function critique(opts: {
   scenarios: Scenario[];
   url: string;
@@ -166,9 +166,9 @@ export async function critique(opts: {
 
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey && !opts.client) throw new Error('ANTHROPIC_API_KEY is not set.');
-  // Both env names are honored: QA_CORE_CRITIC_MODEL (documented) and the
-  // older QA_CORE_MODEL_CRITIC. Default unchanged.
-  const model = opts.model ?? process.env.QA_CORE_CRITIC_MODEL ?? process.env.QA_CORE_MODEL_CRITIC ?? 'claude-sonnet-4-6';
+  // QA_CORE_CRITIC_MODEL (documented), then the older QA_CORE_MODEL_CRITIC,
+  // then the default (stage-models.ts); priced by that model (invariant 74).
+  const model = stageModel('critic', opts.model);
   const client: CriticClient = opts.client ?? new Anthropic({ apiKey });
 
   const repairFixes = opts.repairFixes;
@@ -199,8 +199,9 @@ export async function critique(opts: {
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('\n');
-    const u = response.usage;
-    return { text, costUsd: (u.input_tokens * CRITIC_PRICE.in + u.output_tokens * CRITIC_PRICE.out) / 1_000_000 };
+    // All four usage fields: the system block is cached, so cache read and
+    // write tokens are billed too.
+    return { text, costUsd: costOf(model, response.usage) };
   };
 
   // Repair review: a verdict with no per-fix judgement for a scenario that

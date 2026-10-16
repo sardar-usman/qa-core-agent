@@ -91,7 +91,6 @@ const loop = await runAgentLoop({
   client: fakeClient,
   model: 'claude-opus-4-7',
   maxUsd: 10,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 40,
   ctx,
   url: 'https://shop.example/',

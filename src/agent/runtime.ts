@@ -15,6 +15,8 @@ import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
 import { attachRuleIds, computeDerivation, computeRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { totalCost, COST_CLOSEOUT_GRACE_USD } from './cost-total.js';
+import { costOf } from './pricing.js';
+import { exploreStageModels, unknownModelRefusal } from './stage-models.js';
 import { discoverPages, fetchRobots, writeDiscoveryJson } from './discovery.js';
 import { detectStateFeatures, runStateProbes } from './state-probe.js';
 import type { PlannedPageEntry } from './planned-page.js';
@@ -498,7 +500,6 @@ export function repairPlanFor(
 async function repairPass(args: {
   client: Anthropic;
   model: string;
-  price: (typeof PRICE)[ModelId];
   remainingUsd: number;
   url: string;
   rework: Scenario[];
@@ -572,7 +573,6 @@ async function repairPass(args: {
       client: args.client,
       model: args.model,
       maxUsd: args.remainingUsd,
-      price: args.price,
       maxSteps,
       ctx,
       url: args.url,
@@ -678,20 +678,6 @@ export type AgentEvent =
   | RepairDoneEvent
   | { type: 'done'; scenarios: number };
 
-const PRICE = {
-  // USD per million tokens.
-  'claude-opus-4-7':   { in: 5.0,  out: 25.0, cacheRead: 0.5,  cacheWrite: 6.25 },
-  'claude-sonnet-4-6': { in: 3.0,  out: 15.0, cacheRead: 0.3,  cacheWrite: 3.75 },
-  'claude-haiku-4-5':  { in: 1.0,  out: 5.0,  cacheRead: 0.1,  cacheWrite: 1.25 },
-} as const;
-
-type ModelId = keyof typeof PRICE;
-
-function priceFor(model: string): (typeof PRICE)[ModelId] {
-  if (model in PRICE) return PRICE[model as ModelId];
-  return PRICE['claude-opus-4-7'];
-}
-
 /** Orientation calls (navigate + get_dom) before any scenario starts. */
 const ORIENTATION_STEPS = 6;
 /**
@@ -741,6 +727,15 @@ export function stepBudgetFor(planCount: number, fillableFields = 0): number {
 }
 
 export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewPaused> {
+  // Every stage's model must be in the price table before anything runs
+  // (invariant 74). The surfaces refuse first (explore-request.ts); a direct
+  // caller is refused here, before the preflight, discovery or any API call.
+  const modelOverrides = { explorer: opts.model, stabilizer: opts.stabilizerModel };
+  const modelRefusal = unknownModelRefusal(process.env, modelOverrides);
+  if (modelRefusal) throw new Error(modelRefusal);
+  // The model each stage calls this run, recorded on the report (cost.models)
+  // and passed to each stage so the record and the call cannot differ.
+  const stageModels = exploreStageModels(process.env, modelOverrides);
   const retiredAuth = retiredAuthEnvLine(process.env);
   if (retiredAuth) opts.onEvent?.({ type: 'message', text: retiredAuth });
   // The dedicated test account (invariant 70). A surface ran the login
@@ -807,10 +802,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       ? `Cost ceiling: $${maxUsd.toFixed(2)} total — explorer $${explorerUsd.toFixed(2)}, repair reserve $${reserveUsd.toFixed(2)} (QA_CORE_REPAIR_RESERVE)`
       : `Cost ceiling: $${maxUsd.toFixed(2)} (no repair reserve)`,
   });
-  // Both env names are honored: QA_CORE_EXPLORER_MODEL (documented) and the
-  // older QA_CORE_MODEL_EXPLORE. Default unchanged.
-  const model = opts.model ?? process.env.QA_CORE_EXPLORER_MODEL ?? process.env.QA_CORE_MODEL_EXPLORE ?? 'claude-opus-4-7';
-  const price = priceFor(model);
+  // QA_CORE_EXPLORER_MODEL (documented), then the older QA_CORE_MODEL_EXPLORE,
+  // then the default (stage-models.ts); priced by that model (invariant 74).
+  const model = stageModels.explorer;
 
   const client = opts.explorerClient ?? new Anthropic({ apiKey });
   // The Critic: the seam when given (first pass and repair review), else the real one.
@@ -951,7 +945,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
       const featureNames = opts.requirements
         ? opts.requirements.features.map((f) => f.name)
         : opts.features;
-      const filtered = await filterPages({ pages, features: featureNames, apiKey, ...(opts.requirements ? { featureTokens: featureTokenMap(opts.requirements) } : {}) });
+      const filtered = await filterPages({ pages, features: featureNames, apiKey, model: stageModels.pageFilter, ...(opts.requirements ? { featureTokens: featureTokenMap(opts.requirements) } : {}) });
       plannerUsd += filtered.costUsd;
       // One plan per path template: the other members are recorded on the
       // candidates (discovery.json, the Discovery panel) and never planned.
@@ -1282,7 +1276,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const explorerLoop = toExplore.length === 0
       ? { cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, endedReason: 'finished' as const }
       : await runAgentLoop({
-          client, model, maxUsd: loopBudgetUsd, price, maxSteps,
+          client, model, maxUsd: loopBudgetUsd, maxSteps,
           ctx, url: opts.url,
           plan: toExplore,
           reachedPages: reachedPagesOf(discoveryInfo),
@@ -1469,7 +1463,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         review = { verdicts: carriedVerdicts, summary: 'All verdicts carried from the checkpoint; no new scenarios to review.' };
         opts.onEvent?.({ type: 'critic_done', verdicts: carriedVerdicts, usd: 0 });
       } else {
-        const c = await critic({ scenarios: toReview, url: opts.url, apiKey });
+        const c = await critic({ scenarios: toReview, url: opts.url, apiKey, model: stageModels.critic });
         // Verdicts keyed by the recorded scenario name they match, so drops,
         // coverage and the run page all use one name per scenario.
         review = { verdicts: [...carriedVerdicts, ...alignVerdictNames(toReview.map((s) => s.name), c.verdicts)], summary: c.summary };
@@ -1570,7 +1564,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         opts.onEvent?.({ type: 'repair_started', count: decision.rework.length, budgetUsd: decision.budgetUsd });
         try {
           const repair = await repairPass({
-            client, model, price, remainingUsd: decision.budgetUsd,
+            client, model, remainingUsd: decision.budgetUsd,
             url: opts.url,
             rework: decision.rework,
             verdicts: review.verdicts,
@@ -1609,7 +1603,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
             // not the scenario afresh (invariant 32).
             const firstVerdicts = review?.verdicts ?? [];
             const repairFixes = new Map(decision.rework.map((s) => [s.name, verdictFor(firstVerdicts, s.name)?.required_fixes ?? []] as const));
-            const c2 = await critic({ scenarios: repair.scenarios, url: opts.url, apiKey, repairFixes });
+            const c2 = await critic({ scenarios: repair.scenarios, url: opts.url, apiKey, model: stageModels.critic, repairFixes });
             cost.criticUsd = (cost.criticUsd ?? 0) + c2.costUsd;
             secondVerdicts = alignVerdictNames(repair.scenarios.map((s) => s.name), c2.verdicts);
             secondSummary = c2.summary;
@@ -1739,7 +1733,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         iterations: opts.stabilityIterations,
         timeoutMs: opts.replayTimeoutMs,
         stabilize: opts.stabilize,
-        stabilizerModel: opts.stabilizerModel,
+        stabilizerModel: stageModels.stabilizer,
         maxStabilizeAttempts: opts.maxStabilizeAttempts,
         onEvent: (ev: StabilityEvent) => {
           switch (ev.type) {
@@ -1874,7 +1868,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     cascadeStats,
     // The stated ceiling travels on the report so the final cost line can
     // say when, and why, the total went past it (invariant 73).
-    cost: { ...cost, ceilingUsd: maxUsd },
+    cost: { ...cost, ceilingUsd: maxUsd, models: stageModels },
     steps,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -2129,7 +2123,6 @@ export async function runAgentLoop(args: {
   client: Anthropic;
   model: string;
   maxUsd: number;
-  price: (typeof PRICE)[ModelId];
   maxSteps: number;
   ctx: ToolContext;
   url: string;
@@ -2173,7 +2166,7 @@ export async function runAgentLoop(args: {
   /** The tool calls made before the first begin_scenario, in order (invariant 73). */
   orientationTools: string[];
 }> {
-  const { client, model, maxUsd, price, maxSteps, ctx, url, onEvent } = args;
+  const { client, model, maxUsd, maxSteps, ctx, url, onEvent } = args;
 
   // Plan enforcement: finish() consults this list and is rejected while any
   // planned scenario is neither explored nor skipped via skip_scenario.
@@ -2338,10 +2331,8 @@ export async function runAgentLoop(args: {
     cost.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
     cost.calls!.push({ input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheCreation: u.cache_creation_input_tokens ?? 0 });
     cost.usd =
-      (cost.inputTokens * price.in +
-        cost.outputTokens * price.out +
-        cost.cacheReadTokens * price.cacheRead +
-        cost.cacheCreationTokens * price.cacheWrite) / 1_000_000;
+      // Priced by the model this loop called, all four token fields (invariant 74).
+      costOf(model, { input_tokens: cost.inputTokens, output_tokens: cost.outputTokens, cache_creation_input_tokens: cost.cacheCreationTokens, cache_read_input_tokens: cost.cacheReadTokens });
     onEvent?.({ type: 'usage', usd: cost.usd, tokens: cost.inputTokens + cost.outputTokens });
 
     // Surface any narration the model emits.

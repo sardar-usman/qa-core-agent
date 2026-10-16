@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { DiscoveredPage } from './discovery.js';
+import { costOf, UnknownModelError } from './pricing.js';
+import { stageModel } from './stage-models.js';
 
 /**
  * Page relevance filter — trims a discovered page set to what is worth
@@ -217,8 +219,6 @@ export function pagesCarryingFeature(pages: DiscoveredPage[], feature: string, f
   return pages.filter((p) => (pathSegments(p.url) ?? []).some((seg) => segmentMatchesTokens(seg, tokens)));
 }
 
-const HAIKU_MODEL = 'claude-haiku-4-5';
-const PRICE = { in: 1.0, out: 5.0 };
 
 export interface FilterPagesOptions {
   pages: DiscoveredPage[];
@@ -228,6 +228,8 @@ export interface FilterPagesOptions {
   featureTokens?: Record<string, string[]>;
   apiKey?: string;
   model?: string;
+  /** Test seam: a fake model client. Production callers leave it unset. */
+  client?: { messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> } };
 }
 
 export interface FilterPagesResult {
@@ -315,14 +317,15 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
     return { pages: capVolatile(kept), method: 'fallback', costUsd: 0, sameTemplate };
   }
 
+  const model = stageModel('pageFilter', opts.model);
   try {
-    const client = new Anthropic({ apiKey });
+    const client = opts.client ?? new Anthropic({ apiKey });
     const features = (opts.features ?? []).filter((f) => f.trim().length > 0);
     const featureBlock = features.length > 0
       ? `FEATURES (pick the most relevant page per feature, cap ${room} total):\n${features.map((f) => `- ${f}`).join('\n')}`
       : `No feature list. Pick up to ${room} pages that look like distinct features.`;
     const response = await client.messages.create({
-      model: opts.model ?? HAIKU_MODEL,
+      model,
       max_tokens: 1024,
       system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam],
       messages: [
@@ -337,15 +340,17 @@ export async function filterPages(opts: FilterPagesOptions): Promise<FilterPages
       .map((b) => b.text)
       .join('')
       .trim();
-    const u = response.usage;
-    const costUsd = (u.input_tokens * PRICE.in + u.output_tokens * PRICE.out) / 1_000_000;
+    // Priced by the model it called, all four usage fields (invariant 74).
+    const costUsd = costOf(model, response.usage);
 
     const picked = parsePickResponse(text, rest, room);
     if (picked.length === 0) {
       return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd, sameTemplate };
     }
     return { pages: capVolatile([...kept, ...picked]), method: 'llm', costUsd, sameTemplate };
-  } catch {
+  } catch (err) {
+    // A model the price table does not know is never a silent $0 fallback.
+    if (err instanceof UnknownModelError) throw err;
     return { pages: capVolatile([...kept, ...fallbackFilter(rest, room)]), method: 'fallback', costUsd: 0, sameTemplate };
   }
 }

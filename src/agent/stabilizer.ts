@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { costOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 import type { Scenario, TraceStep, SelectorRecord } from './trace.js';
 
 /**
@@ -30,7 +32,6 @@ import type { Scenario, TraceStep, SelectorRecord } from './trace.js';
  * alive by a hard sleep MUST NOT be reported as stable.
  */
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 700;
 
 export interface FailureContext {
@@ -151,7 +152,8 @@ export async function proposeStabilityFix(opts: StabilizerOptions): Promise<Stab
   }
 
   const client = opts.client ?? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const model = opts.model ?? process.env.QA_CORE_MODEL_STABILIZER ?? DEFAULT_MODEL;
+  // QA_CORE_MODEL_STABILIZER, then the default (stage-models.ts).
+  const model = stageModel('stabilizer', opts.model);
 
   const stepDescription = describeStep(step);
   const history = (opts.previousAttempts ?? []).map((a, i) =>
@@ -170,7 +172,7 @@ export async function proposeStabilityFix(opts: StabilizerOptions): Promise<Stab
     `Propose one fix using the remediation hierarchy.`;
 
   let raw = '';
-  let costUsd = 0;
+  let usage: Anthropic.Usage | undefined;
   try {
     const response = await client.messages.create({
       model,
@@ -182,11 +184,17 @@ export async function proposeStabilityFix(opts: StabilizerOptions): Promise<Stab
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('\n');
-    costUsd = estimateCost(model, response.usage?.input_tokens ?? 0, response.usage?.output_tokens ?? 0);
+    usage = response.usage;
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown LLM error';
     return { proposal: { kind: 'none', reason: `LLM call failed: ${reason}` }, costUsd: 0 };
   }
+  // Priced by the model it called, all four usage fields: the system block is
+  // cached, so cache read and write are billed (invariant 74). Outside the
+  // try, so a model the price table does not know throws instead of reading
+  // as a failed call at $0. The old estimate priced any Opus at 15/75 and
+  // ignored the cache tokens.
+  const costUsd = usage ? costOf(model, usage) : 0;
 
   return { proposal: parseProposal(raw), costUsd };
 }
@@ -353,10 +361,3 @@ function isCascadeLevel(s: string): s is SelectorRecord['level'] {
     s === 'alt' || s === 'title' || s === 'testid' || s === 'css' || s === 'xpath';
 }
 
-function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
-  const isOpus = /opus/i.test(model);
-  const isHaiku = /haiku/i.test(model);
-  const inputPerM = isOpus ? 15 : isHaiku ? 1 : 3;
-  const outputPerM = isOpus ? 75 : isHaiku ? 5 : 15;
-  return (inputTokens * inputPerM + outputTokens * outputPerM) / 1_000_000;
-}

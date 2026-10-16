@@ -85,7 +85,7 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-console-honesty-'
     const ctx = createContext({ on: () => {}, off: () => {} } as unknown as Page, 40);
     const messages: string[] = [];
     const r = await runAgentLoop({
-      client, model: 'claude-opus-4-7', maxUsd, price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 }, maxSteps: 40,
+      client, model: 'claude-opus-4-7', maxUsd, maxSteps: 40,
       ctx, url: 'https://shop.example/', plan: [], ...(budget ? { budget } : {}),
       onEvent: (e) => { if (e.type === 'message') messages.push(e.text); },
     });

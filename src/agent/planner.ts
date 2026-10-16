@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { chromium, type Frame, type Page } from 'playwright';
+import { costOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 import { installEvalShim } from './eval-shim.js';
 import { renderRequirementsBlock, type RequirementsMap, type RequirementRule, type RequirementFeature } from './requirements.js';
 import { citationMismatchReason, scenarioNameKey, REJECTION_RULE_RE } from './rule-coverage.js';
@@ -279,7 +281,6 @@ Derivation checklist — walk this per feature when its rules or the page's form
 5. State transitions: when the rules name a state change (login to locked-out, cart to empty, session to expired), one scenario that drives the transition and asserts the resulting state.
 When the scenario budget forces choices, prefer: one representative per equivalence class over exhaustive values, boundary values over mid-range invalids, and rules typed validation over rules typed navigation. Every derived scenario still obeys the falsifiability doctrine and cites its rule ids.`;
 
-const PLANNER_PRICE = { in: 1.0, out: 5.0 }; // Haiku 4.5 default
 
 /** Poll interval for the snapshot settle — same cadence as pollRelation in tools.ts. */
 const SETTLE_POLL_MS = 200;
@@ -742,9 +743,9 @@ export async function plan(opts: {
 }): Promise<PlanResult> {
   const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey && !opts.client) throw new Error('ANTHROPIC_API_KEY is not set.');
-  // Both env names are honored: QA_CORE_PLANNER_MODEL (documented) and the
-  // older QA_CORE_MODEL_PLANNER. Default unchanged.
-  const model = opts.model ?? process.env.QA_CORE_PLANNER_MODEL ?? process.env.QA_CORE_MODEL_PLANNER ?? 'claude-haiku-4-5';
+  // QA_CORE_PLANNER_MODEL (documented), then the older QA_CORE_MODEL_PLANNER,
+  // then the default (stage-models.ts); priced by that model (invariant 74).
+  const model = stageModel('planner', opts.model);
   const client: PlannerClient = opts.client ?? (new Anthropic({ apiKey }) as unknown as PlannerClient);
 
   // A given snapshot is planned as is; no browser.
@@ -877,10 +878,9 @@ async function planFromSnapshot(
           system: systemBlocks,
           messages: [{ role: 'user', content: `URL: ${opts.url}\n\nPage snapshot:\n${JSON.stringify(snapshot, null, 2)}${credentialBlock}\n\n${ruleRetryAsk(rule, feature, opts.url)}` }],
         });
-        const u = r.usage;
         return {
           text: r.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n'),
-          costUsd: (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000,
+          costUsd: costOf(model, r.usage),
         };
       },
       accept: (sc) => circularUnchangedReason(sc) ?? vacuousAbsenceReason(sc) ?? pageFitReason(sc, snapshot)?.reason ?? contradictionReason(sc, map),
@@ -901,8 +901,7 @@ async function planFromSnapshot(
   // A citation is a claim that the scenario verifies the rule; drop the ones
   // the category makes impossible, so coverage never counts them.
   const { scenarios: cited, citationDrops } = applyCitationChecks(covered, opts.requirements);
-  const u = response.usage;
-  const costUsd = (u.input_tokens * PLANNER_PRICE.in + u.output_tokens * PLANNER_PRICE.out) / 1_000_000
+  const costUsd = costOf(model, response.usage)
     + ruleRetries.reduce((n, r) => n + r.costUsd, 0);
 
   return { scenarios: cited, pageTitle: snapshot.title, costUsd, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, ruleRetries, fillableFields: snapshot.fillableCount };

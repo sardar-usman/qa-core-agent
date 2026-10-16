@@ -424,3 +424,6 @@ export function tokenizeCommand(body: string): string[] {
   if (has || cur) out.push(cur);
   return out;
 }
+
+/** The startup refusal every surface runs before any spend (invariant 74); see stage-models.ts. */
+export { unknownModelRefusal } from './stage-models.js';
