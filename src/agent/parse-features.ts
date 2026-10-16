@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { costOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 
 /**
  * Feature-list parser.
@@ -17,10 +19,6 @@ import Anthropic from '@anthropic-ai/sdk';
  */
 
 const MAX_FEATURES = 8;
-const HAIKU_MODEL = 'claude-haiku-4-5';
-
-// Haiku pricing per million tokens.
-const PRICE = { in: 1.0, out: 5.0 };
 
 export interface ParseFeaturesOptions {
   /** Value from a --features flag, e.g. "login,cart,checkout". */
@@ -112,10 +110,12 @@ Rules:
 export async function parseNaturalLanguage(
   input: string,
   apiKey: string,
-  model: string = HAIKU_MODEL,
+  modelOverride?: string,
+  /** Test seam: a fake model client. Production callers leave it unset. */
+  client: { messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> } } = new Anthropic({ apiKey }),
 ): Promise<{ features: string[]; costUsd: number }> {
   if (!input.trim()) return { features: [], costUsd: 0 };
-  const client = new Anthropic({ apiKey });
+  const model = stageModel('featureParser', modelOverride);
   const response = await client.messages.create({
     model,
     max_tokens: 256,
@@ -127,6 +127,9 @@ export async function parseNaturalLanguage(
     .map((b) => b.text)
     .join('')
     .trim();
+  // The call is paid whether or not the reply parses (invariant 74): an
+  // unparseable reply used to report $0.
+  const costUsd = costOf(model, response.usage);
   // Find the first JSON array in the response. Be tolerant — Haiku
   // occasionally adds prose despite the instruction.
   const match = text.match(/\[[\s\S]*?\]/);
@@ -134,12 +137,10 @@ export async function parseNaturalLanguage(
   try {
     raw = JSON.parse(match ? match[0] : text);
   } catch {
-    return { features: [], costUsd: 0 };
+    return { features: [], costUsd };
   }
-  if (!Array.isArray(raw)) return { features: [], costUsd: 0 };
+  if (!Array.isArray(raw)) return { features: [], costUsd };
   const cleaned = tidy(raw.filter((x): x is string => typeof x === 'string'));
-  const u = response.usage;
-  const costUsd = (u.input_tokens * PRICE.in + u.output_tokens * PRICE.out) / 1_000_000;
   return { features: cleaned, costUsd };
 }
 

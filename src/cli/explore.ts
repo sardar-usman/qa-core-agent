@@ -14,7 +14,7 @@ import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import type { PlannedScenario } from '../agent/planner.js';
 import {
-  applyCheckpointFlags, buildExploreOptions, outDirForRequest, parseExploreArgv, resumeConflicts, slugUrl,
+  applyCheckpointFlags, buildExploreOptions, outDirForRequest, parseExploreArgv, resumeConflicts, slugUrl, unknownModelRefusal,
   type ExploreRequest,
 } from '../agent/explore-request.js';
 import os from 'node:os';
@@ -121,6 +121,14 @@ async function main(): Promise<void> {
   // Per-run setting overrides (--ceiling, --planner-model, --env ...) are
   // applied through the same env names the runtime reads.
   for (const [name, value] of Object.entries(args.env)) process.env[name] = value;
+  // Every stage's model must be in the price table (invariant 74): refused
+  // here, before the resume load, the output directory, the preflight,
+  // discovery or any API call.
+  const modelRefusal = unknownModelRefusal(process.env);
+  if (modelRefusal) {
+    console.error(modelRefusal);
+    process.exit(1);
+  }
 
   // Checkpoint resume (--resume): load, check conflicts, restore flags.
   let resumeCp: Checkpoint | undefined;

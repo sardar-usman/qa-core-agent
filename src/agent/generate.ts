@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { costOf, priceOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 import { renderRequirementsBlock, type RequirementsMap } from './requirements.js';
 
 /**
@@ -21,12 +23,17 @@ export interface GenerateOptions {
    * the documented constraints, not just the story text.
    */
   requirements?: RequirementsMap;
+  /** Test seam: a fake model client. Production callers leave it unset. */
+  client?: { messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> } };
 }
 
 export interface GenerateResult {
   feature: string;
   scenarios: number;
   spec: string;
+  /** The model the call went to, and what it cost by that model's price (invariant 74). */
+  model: string;
+  costUsd: number;
 }
 
 const SYSTEM_PROMPT = `You are QA-Core. Convert a user story into a runnable Playwright spec file.
@@ -49,10 +56,12 @@ Nothing outside these tags.`;
 
 export async function generateFromStory(opts: GenerateOptions): Promise<GenerateResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
+  if (!apiKey && !opts.client) throw new Error('ANTHROPIC_API_KEY is not set.');
 
-  const model = opts.model ?? process.env.QA_CORE_MODEL_TRANSCRIBE ?? 'claude-sonnet-4-6';
-  const client = new Anthropic({ apiKey });
+  const model = stageModel('generate', opts.model);
+  // An unpriced model is refused before the call, never spent (invariant 74).
+  priceOf(model);
+  const client = opts.client ?? new Anthropic({ apiKey });
 
   const langNote = opts.language === 'js'
     ? `Emit JavaScript using CommonJS: const { test, expect } = require('@playwright/test'); const AxeBuilder = require('@axe-core/playwright').default;`
@@ -84,7 +93,7 @@ export async function generateFromStory(opts: GenerateOptions): Promise<Generate
   const scenarios = Number(extract(text, 'scenarios') ?? '0') || 0;
   const spec = extract(text, 'spec');
   if (!spec) throw new Error('Model did not return a <spec> block. Raw output:\n' + text.slice(0, 600));
-  return { feature: feature.trim(), scenarios, spec: spec.trim() };
+  return { feature: feature.trim(), scenarios, spec: spec.trim(), model, costUsd: costOf(model, response.usage) };
 }
 
 function extract(text: string, tag: string): string | null {

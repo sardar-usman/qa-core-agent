@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     console.log(`  SRS: ${requirements.features.length} feature(s), ${countRules(requirements)} rule(s) · $${built.costUsd.toFixed(4)}${requirements.truncated ? ' · truncated at cap' : ''}\n`);
   }
 
-  const { feature, scenarios, spec } = await generateFromStory({ story, language: lang, baseUrl, requirements });
+  const { feature, scenarios, spec, model, costUsd } = await generateFromStory({ story, language: lang, baseUrl, requirements });
   const file = `${slug(feature)}.spec.${lang}`;
   const specPath = path.join(outDir, file);
 
@@ -83,6 +83,7 @@ async function main(): Promise<void> {
 
   fs.writeFileSync(specPath, header + spec + (spec.endsWith('\n') ? '' : '\n'));
   console.log(`✓ ${scenarios} scenario(s) — wrote ${path.relative(process.cwd(), specPath)}`);
+  console.log(`  ${model} · $${costUsd.toFixed(4)}`);
   console.log(`\nRun: npx playwright test ${path.relative(process.cwd(), specPath)}`);
 }
 

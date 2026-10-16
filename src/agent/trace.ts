@@ -1,4 +1,5 @@
 import type { CascadeLevel, ResolvedLocator } from './selectors.js';
+import type { StageModels } from './stage-models.js';
 import type { ReachAction, ReachedBy } from './discovery.js';
 import type { StateProbe } from './state-probe.js';
 
@@ -401,6 +402,13 @@ export interface RunReport {
      * (invariant 73). Absent on reports written before the field.
      */
     ceilingUsd?: number;
+    /**
+     * The model id each stage called this run, resolved before discovery
+     * (invariant 74): planner, explorer, critic, stabilizer, requirements,
+     * pageFilter and featureParser. A stage that made no call spent $0 under
+     * that model. Absent on reports written before the field.
+     */
+    models?: StageModels;
   };
   steps: number;
   /**

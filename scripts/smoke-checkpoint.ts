@@ -114,7 +114,6 @@ const dClient = {
 const hookSnapshots: number[] = [];
 await runAgentLoop({
   client: dClient, model: 'claude-opus-4-7', maxUsd: 10,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 60, ctx: dCtx, url: 'https://shop.example/', plan: PLAN,
   onScenarioComplete: () => {
     hookSnapshots.push(dCtx.scenarios.length);
@@ -150,7 +149,6 @@ const f1Client = {
 } as unknown as Anthropic;
 const run1 = await runAgentLoop({
   client: f1Client, model: 'claude-opus-4-7', maxUsd: 10,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 60, ctx: f1Ctx, url: 'https://shop.example/', plan: PLAN,
   onScenarioComplete: (usd) => {
     writeCheckpoint(dir, baseCp({ completedScenarios: [...f1Ctx.scenarios], spentUsd: { planner: 0.01, explorer: usd, critic: 0, repair: 0 }, phase: 'exploring' }));
@@ -187,7 +185,6 @@ const f2Client = {
 } as unknown as Anthropic;
 const run2 = await runAgentLoop({
   client: f2Client, model: 'claude-opus-4-7', maxUsd: 10,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 60, ctx: f2Ctx, url: cp.url, plan: toGo,
 });
 check('F4. the resumed loop finishes scenarios 3 and 4 and accepts finish()',
@@ -225,7 +222,6 @@ check('G1. the stop message carries reason, state note, and the resume command',
   } as unknown as Anthropic;
   const hRun = await runAgentLoop({
     client: hClient, model: 'claude-opus-4-7', maxUsd: 1,
-    price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
     maxSteps: 40, ctx: hCtx, url: 'https://shop.example/', plan: [],
   });
   writeCheckpoint(dir, baseCp({ completedScenarios: [...hCtx.scenarios], phase: 'explored' }));

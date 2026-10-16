@@ -70,7 +70,6 @@ try {
     client: fakeClient,
     model: 'claude-opus-4-7',
     maxUsd: 1,
-    price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
     maxSteps: 40,
     ctx,
     url: 'https://shop.example/',
@@ -213,7 +212,6 @@ const gLoop = await runAgentLoop({
   client: reserved.client,
   model: 'claude-opus-4-7',
   maxUsd: gSplit.explorerUsd,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 200,
   ctx: gCtx,
   url: 'https://shop.example/',
@@ -235,7 +233,6 @@ const g2Loop = await runAgentLoop({
   client: unreserved.client,
   model: 'claude-opus-4-7',
   maxUsd: CEILING,
-  price: { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
   maxSteps: 200,
   ctx: g2Ctx,
   url: 'https://shop.example/',
@@ -351,7 +348,6 @@ const withAssert = (name: string): Scenario => ({
   name, category: 'happy', feature: 'login',
   steps: [{ kind: 'navigate', url: 'https://shop.example/' }, { kind: 'assert', name: 'URL contains "/x"', assertion: { type: 'toHaveURL', pattern: '/x' } }],
 } as unknown as Scenario);
-const PRICE = { in: 5.0, out: 25.0, cacheRead: 0.5, cacheWrite: 6.25 } as const;
 type LoopEvent = Parameters<NonNullable<Parameters<typeof runAgentLoop>[0]['onEvent']>>[0];
 async function closeoutRun(opts: { current: Scenario; script: Array<Array<{ name: string; input?: object }>>; graceUsd?: number }) {
   const c = scriptedClient(opts.script);
@@ -359,7 +355,7 @@ async function closeoutRun(opts: { current: Scenario; script: Array<Array<{ name
   cctx.current = opts.current;
   const events: LoopEvent[] = [];
   const loop = await runAgentLoop({
-    client: c.client, model: 'claude-opus-4-7', maxUsd: 0.25, price: PRICE, maxSteps: 40,
+    client: c.client, model: 'claude-opus-4-7', maxUsd: 0.25, maxSteps: 40,
     ctx: cctx, url: 'https://shop.example/', plan: [],
     ...(opts.graceUsd !== undefined ? { closeoutGraceUsd: opts.graceUsd } : {}),
     onEvent: (e) => { events.push(e); },

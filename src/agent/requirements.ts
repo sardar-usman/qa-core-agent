@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { costOf } from './pricing.js';
+import { stageModel } from './stage-models.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -51,9 +53,6 @@ export const SRS_TEXT_CAP = 60_000;
 
 const SUPPORTED_EXTENSIONS = ['.md', '.txt', '.pdf', '.docx'];
 
-const HAIKU_MODEL = 'claude-haiku-4-5';
-// Haiku pricing per million tokens, same constants pattern as parse-features.ts.
-const PRICE = { in: 1.0, out: 5.0 };
 
 /**
  * Read an SRS document into plain text. .md and .txt read directly; .pdf via
@@ -210,6 +209,8 @@ export interface BuildRequirementsMapOptions {
   model?: string;
   /** Set when loadSrsText already cut the document at the cap. */
   truncated?: boolean;
+  /** Test seam: a fake model client. Production callers leave it unset. */
+  client?: { messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> } };
 }
 
 /**
@@ -220,8 +221,8 @@ export interface BuildRequirementsMapOptions {
 export async function buildRequirementsMap(
   opts: BuildRequirementsMapOptions,
 ): Promise<{ map: RequirementsMap; costUsd: number }> {
-  const model = opts.model ?? HAIKU_MODEL;
-  const client = new Anthropic({ apiKey: opts.apiKey });
+  const model = stageModel('requirements', opts.model);
+  const client = opts.client ?? new Anthropic({ apiKey: opts.apiKey });
   // Apply the cap here too, so a caller that skipped loadSrsText cannot send
   // an unbounded document to the model.
   const overCap = opts.srsText.length > SRS_TEXT_CAP;
@@ -238,8 +239,8 @@ export async function buildRequirementsMap(
         { role: 'user', content: `${reminder ? reminder + '\n\n' : ''}SRS document:\n\n${srsText}` },
       ],
     });
-    const u = response.usage;
-    costUsd += (u.input_tokens * PRICE.in + u.output_tokens * PRICE.out) / 1_000_000;
+    // Priced by the model it called, all four usage fields (invariant 74).
+    costUsd += costOf(model, response.usage);
     return response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)

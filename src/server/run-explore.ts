@@ -13,7 +13,7 @@ import { costLine, totalCost } from '../agent/cost-total.js';
 import { deleteCheckpoint, loadCheckpoint, markCheckpointPhase, resumeHintForRun, type Checkpoint } from '../agent/checkpoint.js';
 import { emittedCheckStage, writeReportFiles } from '../agent/emitted-check.js';
 import {
-  applyCheckpointFlags, buildExploreOptions, outDirForRequest, resumeConflicts,
+  applyCheckpointFlags, buildExploreOptions, outDirForRequest, resumeConflicts, unknownModelRefusal,
   type ExploreRequest,
 } from '../agent/explore-request.js';
 import { finalizeRunDir, newRunId, projectSlug, writeRunMeta } from '../agent/output-layout.js';
@@ -306,6 +306,12 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
   const root = input.projectRoot;
   const note = input.onNote ?? (() => {});
   return withEnvOverrides(input.request.env, async () => {
+    // Every stage's model must be in the price table (invariant 74): refused
+    // with the per-run overrides applied, before the URL check, the output
+    // directory, the preflight, discovery or any API call. The gateway and
+    // MCP both arrive here.
+    const modelRefusal = unknownModelRefusal(process.env, { explorer: input.model });
+    if (modelRefusal) throw new Error(modelRefusal);
     const prepared = await prepareExploreRun(input);
     const { request: req, url, outDir } = prepared;
     // run-meta.json is written the moment the run directory is known (source
