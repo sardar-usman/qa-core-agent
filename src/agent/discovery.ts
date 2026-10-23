@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Page } from 'playwright';
-import type { RequirementsMap } from './requirements.js';
+import { featureTokenMap, type RequirementsMap } from './requirements.js';
+import { pagesCarryingFeature } from './page-filter.js';
 import type { PageControl, StateProbe } from './state-probe.js';
 import { isVolatilePath } from './volatile-id.js';
 
@@ -13,11 +14,15 @@ import { isVolatilePath } from './volatile-id.js';
  *
  *   1. SRS map    — features in the requirements map that state URLs
  *   2. User list  — an explicit --urls flag value
- *   3. Sitemap    — robots.txt Sitemap directive, then sitemap.xml
+ *   3. Sitemap    — robots.txt Sitemap directive, then sitemap.xml. A seed,
+ *       not a ceiling: the ladder continues to the crawl and merges, unless
+ *       a feature list exists and every feature is carried by a sitemap page
+ *       by page evidence (run 59540f stopped at a 3-URL sitemap)
  *   4. Polite crawl — same-origin links from the entry page, depth 2
  *   4b. Browser crawl — same walk, links read off the RENDERED DOM. Only
  *       when the fetch crawl found nothing (client-rendered SPAs serve a
- *       shell with no anchors); static sites keep the cheap path
+ *       shell with no anchors), or added nothing beyond the sitemap set;
+ *       static sites keep the cheap path
  *   5. Entry only — the entry URL, with a warning naming why 1-4 failed
  *
  * Note on rung order: the written spec listed the user list AFTER sitemap and
@@ -117,6 +122,31 @@ function tagVolatile(pages: DiscoveredPage[]): DiscoveredPage[] {
  */
 export type RenderedLinkCollector = (url: string) => Promise<string[] | { hrefs: string[]; anchorPolls: number[]; controls?: PageControl[] } | null>;
 
+/**
+ * The rung, or rungs, that yielded the page set. A result from one rung
+ * names it; a sitemap seed merged with a crawl reads "sitemap+crawl" or
+ * "sitemap+browser-crawl" (invariant 75).
+ */
+export type DiscoveryMethod = 'srs' | 'user' | 'sitemap' | 'crawl' | 'browser-crawl' | 'sitemap+crawl' | 'sitemap+browser-crawl' | 'entry';
+
+/** A path a remote rung did not load because robots.txt disallows it, with the Disallow rule that matched. */
+export interface RobotsSkip {
+  path: string;
+  rule: string;
+}
+
+/**
+ * A requirements feature no candidate carries by page evidence while a
+ * robots-skipped path does: the paths, the rules that matched them, and the
+ * one line the console prints and the warnings keep.
+ */
+export interface RobotsBlockedFeature {
+  feature: string;
+  paths: string[];
+  rules: string[];
+  line: string;
+}
+
 export interface DiscoveryResult {
   pages: DiscoveredPage[];
   /**
@@ -126,9 +156,17 @@ export interface DiscoveryResult {
    * other 12 were recorded nowhere).
    */
   candidates?: DiscoveredPage[];
-  /** The rung that yielded the pages: srs | user | sitemap | crawl | entry. */
-  method: string;
+  /** The rung, or merged rungs, that yielded the pages. */
+  method: DiscoveryMethod;
   warnings: string[];
+  /**
+   * Every path a remote rung (the sitemap and both crawls) skipped because
+   * robots.txt disallows it, with the matching rule, deduped by path, none
+   * dropped. [] when a remote rung read robots.txt and skipped nothing;
+   * absent when no remote rung ran (an SRS or user rung won, or robots.txt
+   * disallows everything, which the warnings say).
+   */
+  robotsSkipped?: RobotsSkip[];
   /** One record per state-dependent feature the probe ran on (invariant 71). Written to discovery.json and the report. */
   stateProbes?: StateProbe[];
   /**
@@ -255,17 +293,27 @@ export function parseRobotsTxt(text: string, agent: string = DISCOVERY_UA): Omit
 
 /** Does robots.txt allow this pathname for our agent? Prefix rules, basic `*` and `$`. */
 export function robotsAllows(robots: Pick<RobotsInfo, 'disallow'>, pathname: string): boolean {
+  return robotsRuleFor(robots, pathname) === null;
+}
+
+/** The first Disallow rule that refuses this pathname, or null when robots.txt allows it. */
+export function robotsRuleFor(robots: Pick<RobotsInfo, 'disallow'>, pathname: string): string | null {
   for (const rule of robots.disallow) {
     if (rule.includes('*') || rule.endsWith('$')) {
       const rx = new RegExp(
         '^' + rule.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\$$/, '$').replace(/\*/g, '.*'),
       );
-      if (rx.test(pathname)) return false;
+      if (rx.test(pathname)) return rule;
     } else if (pathname.startsWith(rule)) {
-      return false;
+      return rule;
     }
   }
-  return true;
+  return null;
+}
+
+/** Record a robots skip once per path (the first rule seen for it wins). */
+function noteRobotsSkip(skipped: Map<string, string>, pathname: string, rule: string): void {
+  if (!skipped.has(pathname)) skipped.set(pathname, rule);
 }
 
 /** Resolve a candidate href/loc to a same-origin page URL, or null. */
@@ -329,6 +377,12 @@ export interface DiscoverOptions {
   entryUrl: string;
   /** Rung 1: requirements map whose features may state URLs. */
   requirements?: RequirementsMap;
+  /**
+   * The --features list. With no requirements map it is the feature list the
+   * sitemap seed is judged against; a map's features win when both are set,
+   * the same choice the page filter makes.
+   */
+  features?: string[];
   /** Rung 2: explicit page list from --urls. */
   userUrls?: string[];
   /** Injectable fetch for offline tests. Defaults to global fetch + UA + timeout. */
@@ -396,27 +450,46 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
 
   // robots.txt — fetched once, honored by BOTH the sitemap and crawl rungs.
   const robots = await fetchRobots(entry, fetchFn, warnings);
+  // Every path a remote rung skipped for robots, with the rule that matched:
+  // reported, never silent (run 59540f: /auth/login was skipped and nothing
+  // said so). Honoring is unchanged; only the record is new.
+  const skipped = new Map<string, string>();
+  const robotsSkipped = (): RobotsSkip[] => [...skipped].map(([p, rule]) => ({ path: p, rule }));
 
   if (robots.disallowAll) {
     warnings.push('robots.txt disallows all paths for our agent; sitemap and crawl rungs skipped out of politeness.');
   } else {
-    // Rung 3 — sitemap.
-    const sitemapPages = await sitemapRung(entry, robots, fetchFn, warnings);
+    // Rung 3 — sitemap. A seed, not a ceiling: unless every feature of a
+    // feature list is carried by a sitemap page by page evidence, the ladder
+    // continues to the crawl and merges (run 59540f planned 3 pages off a
+    // 3-URL sitemap and never saw a category or product page).
+    const sitemapPages = await sitemapRung(entry, robots, fetchFn, warnings, skipped);
     if (sitemapPages.length > 0) {
-      return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings, robots };
+      const seed = sitemapSeedDecision(sitemapPages, discoveryFeatureList(opts.requirements, opts.features), opts.requirements ? featureTokenMap(opts.requirements) : undefined);
+      warnings.push(seed.line);
+      if (!seed.crawl) {
+        return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings, robots, robotsSkipped: robotsSkipped() };
+      }
     }
 
     // Rung 4 — polite crawl (plain fetch).
-    const crawlPages = await crawlRung(entry, robots, fetchFn, opts.crawlDelayMs ?? CRAWL_DELAY_MS, warnings);
-    if (crawlPages.length > 0) {
-      return { pages: tagVolatile(crawlPages), method: 'crawl', warnings, robots };
+    const crawlPages = await crawlRung(entry, robots, fetchFn, opts.crawlDelayMs ?? CRAWL_DELAY_MS, warnings, skipped);
+    if (sitemapPages.length === 0) {
+      if (crawlPages.length > 0) {
+        return { pages: tagVolatile(crawlPages), method: 'crawl', warnings, robots, robotsSkipped: robotsSkipped() };
+      }
+    } else if (pagesBeyondSeed(crawlPages, sitemapPages, entry).length > 0) {
+      return { pages: tagVolatile(mergeSeedPages(sitemapPages, crawlPages)), method: 'sitemap+crawl', warnings, robots, robotsSkipped: robotsSkipped() };
+    } else if (crawlPages.length > 0) {
+      warnings.push(`crawl: found ${crawlPages.length} page(s), none beyond the sitemap set and the entry; trying the browser crawl.`);
     }
 
     // Rung 4b — browser-assisted crawl. Only when the fetch crawl yielded
-    // nothing: a client-rendered SPA serves a shell with no anchors to plain
-    // fetch (practicesoftwaretesting.com found zero links on the live run),
-    // so the links must be read off the RENDERED DOM. Static sites never pay
-    // the browser cost. Same robots rules, caps, delay, and dedupe.
+    // nothing (or nothing beyond the sitemap seed): a client-rendered SPA
+    // serves a shell with no anchors to plain fetch
+    // (practicesoftwaretesting.com found zero links on the live run), so the
+    // links must be read off the RENDERED DOM. Static sites never pay the
+    // browser cost. Same robots rules, caps, delay, and dedupe.
     let collect = opts.collectRendered;
     let closeCollector: (() => Promise<void>) | undefined;
     if (!collect) {
@@ -426,6 +499,7 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
         closeCollector = d.close;
       }
     }
+    let pageControls: Record<string, PageControl[]> | undefined;
     if (collect) {
       try {
         const controls = new Map<string, PageControl[]>();
@@ -438,13 +512,25 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
           label: 'browser crawl',
           source: 'browser-crawl',
           controlsOut: controls,
+          skippedOut: skipped,
         });
-        if (rendered.length > 0) {
-          return { pages: tagVolatile(rendered), method: 'browser-crawl', warnings, robots, pageControls: Object.fromEntries(controls) };
+        pageControls = Object.fromEntries(controls);
+        if (sitemapPages.length === 0) {
+          if (rendered.length > 0) {
+            return { pages: tagVolatile(rendered), method: 'browser-crawl', warnings, robots, robotsSkipped: robotsSkipped(), pageControls };
+          }
+        } else if (pagesBeyondSeed(rendered, sitemapPages, entry).length > 0) {
+          return { pages: tagVolatile(mergeSeedPages(sitemapPages, rendered)), method: 'sitemap+browser-crawl', warnings, robots, robotsSkipped: robotsSkipped(), pageControls };
+        } else {
+          warnings.push(`browser crawl: added no page beyond the sitemap set and the entry; the sitemap pages stand alone.`);
         }
       } finally {
         await closeCollector?.();
       }
+    }
+    // Neither crawl added a page: the sitemap seed is the page set, from one rung.
+    if (sitemapPages.length > 0) {
+      return { pages: tagVolatile(sitemapPages), method: 'sitemap', warnings, robots, robotsSkipped: robotsSkipped(), ...(pageControls ? { pageControls } : {}) };
     }
   }
 
@@ -457,7 +543,162 @@ export async function discoverPages(opts: DiscoverOptions): Promise<DiscoveryRes
     method: 'entry',
     warnings,
     robots,
+    // No remote rung examined a link under a disallow-all robots.txt; the
+    // warning above says so, and no empty list stands in for that.
+    ...(robots.disallowAll ? {} : { robotsSkipped: robotsSkipped() }),
   };
+}
+
+/**
+ * The feature list discovery judges pages against: the requirements map's
+ * features when a map is given (the page filter makes the same choice), else
+ * the --features list, else none. Exported for the runtime and the script.
+ */
+export function discoveryFeatureList(requirements: RequirementsMap | undefined, features: string[] | undefined): string[] {
+  const fromMap = (requirements?.features ?? []).map((f) => f.name.trim()).filter((f) => f.length > 0);
+  if (fromMap.length > 0) return fromMap;
+  return (features ?? []).map((f) => f.trim()).filter((f) => f.length > 0);
+}
+
+/**
+ * Whether a non-empty sitemap is enough on its own, and the one warning line
+ * that says why. The sitemap ends the ladder only when a feature list exists
+ * and every feature is carried by at least one sitemap page by page evidence
+ * (pagesCarryingFeature: path segments only, never a model-written tag).
+ * With no feature list the crawl always runs. Exported for the smoke.
+ */
+export function sitemapSeedDecision(
+  pages: DiscoveredPage[],
+  features: string[],
+  featureTokens?: Record<string, string[]>,
+): { crawl: boolean; uncarried: string[]; line: string } {
+  const n = pages.length;
+  if (features.length === 0) {
+    return { crawl: true, uncarried: [], line: `sitemap: ${n} page(s); no feature list, so the crawl runs and merges.` };
+  }
+  const uncarried = features.filter((f) => pagesCarryingFeature(pages, f, featureTokens).length === 0);
+  if (uncarried.length === 0) {
+    return { crawl: false, uncarried, line: `sitemap: ${n} page(s) carry every feature (${features.join(', ')}); crawl skipped.` };
+  }
+  return { crawl: true, uncarried, line: `sitemap: ${n} page(s); no sitemap page carries feature(s) ${uncarried.join(', ')}; continuing to the crawl and merging.` };
+}
+
+/** origin + pathname: the merge's dedupe key. */
+function originPathKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/** The crawl pages that are neither in the sitemap seed nor the entry, by origin plus pathname. */
+function pagesBeyondSeed(crawl: DiscoveredPage[], seed: DiscoveredPage[], entry: URL): DiscoveredPage[] {
+  const known = new Set([...seed.map((p) => originPathKey(p.url)), originPathKey(entry.toString())]);
+  return crawl.filter((p) => !known.has(originPathKey(p.url)));
+}
+
+/**
+ * Sitemap seed merged with a crawl: deduped by origin plus pathname, sitemap
+ * entries first, every page keeping its own source. A sitemap page the crawl
+ * also reached keeps source 'sitemap' and gains the crawl's linkedFrom and
+ * anchorPolls when it has none (the state probe and the template grouping
+ * read them). Exported for the smoke.
+ */
+export function mergeSeedPages(seed: DiscoveredPage[], crawl: DiscoveredPage[]): DiscoveredPage[] {
+  const byKey = new Map<string, DiscoveredPage>();
+  for (const p of seed) {
+    const k = originPathKey(p.url);
+    if (!byKey.has(k)) byKey.set(k, p);
+  }
+  for (const p of crawl) {
+    const k = originPathKey(p.url);
+    const have = byKey.get(k);
+    if (!have) {
+      byKey.set(k, p);
+      continue;
+    }
+    byKey.set(k, {
+      ...have,
+      ...(have.linkedFrom === undefined && p.linkedFrom !== undefined ? { linkedFrom: p.linkedFrom } : {}),
+      ...(have.anchorPolls === undefined && p.anchorPolls !== undefined ? { anchorPolls: p.anchorPolls } : {}),
+    });
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * The requirements features no candidate carries by page evidence while a
+ * robots-skipped path does (the same pagesCarryingFeature test, run on the
+ * skipped paths): each with its paths, the rules that matched and the one
+ * line the console prints and the discovery warnings keep. Robots honoring
+ * is unchanged; this only says what it cost. Exported for the runtime, the
+ * coverage rebuild and scripts/discover-site.ts.
+ */
+export function robotsBlockedFeatures(opts: {
+  entryUrl: string;
+  features: string[];
+  candidates: Array<{ url: string }>;
+  robotsSkipped: RobotsSkip[] | undefined;
+  featureTokens?: Record<string, string[]>;
+}): RobotsBlockedFeature[] {
+  // No skipped path means no evidence either way: nothing is reported.
+  const skippedList = opts.robotsSkipped ?? [];
+  if (skippedList.length === 0) return [];
+  // Every caller passes the run's validated entry URL; a bad one throws.
+  const origin = new URL(opts.entryUrl).origin;
+  const asPages = (urls: string[]): DiscoveredPage[] => urls.map((url) => ({ url, source: 'crawl' }));
+  const candidatePages = asPages(opts.candidates.map((c) => c.url));
+  const skippedPages = asPages(skippedList.map((s) => `${origin}${s.path}`));
+  const ruleByUrl = new Map(skippedList.map((s) => [`${origin}${s.path}`, s.rule]));
+  const out: RobotsBlockedFeature[] = [];
+  for (const feature of opts.features) {
+    if (pagesCarryingFeature(candidatePages, feature, opts.featureTokens).length > 0) continue;
+    const carrying = pagesCarryingFeature(skippedPages, feature, opts.featureTokens);
+    if (carrying.length === 0) continue;
+    const paths = carrying.map((p) => new URL(p.url).pathname);
+    const rules = [...new Set(carrying.map((p) => ruleByUrl.get(p.url)!))];
+    out.push({ feature, paths, rules, line: robotsBlockedLine(feature, paths, rules) });
+  }
+  return out;
+}
+
+/**
+ * The robots-blocked features of a recorded discovery, by feature name, with
+ * the detail rule coverage carries (robots-disallowed). Read from the
+ * report's own discovery block (the candidates and robotsSkipped) and the
+ * requirements map, so the runtime and the emitted-spec check's coverage
+ * rebuild classify the same rules. A feature whose state probe revealed a
+ * page has a page, so it is left out. {} with no map or no discovery.
+ */
+export function robotsDisallowedDetails(
+  map: RequirementsMap | undefined,
+  discovery: { candidates?: Array<{ url: string }>; pages: Array<{ url: string; source: string }>; robotsSkipped?: RobotsSkip[]; stateProbes?: Array<{ feature: string; outcome: string }> } | undefined,
+  entryUrl: string,
+): Record<string, string> {
+  if (!map || !discovery) return {};
+  const revealed = new Set((discovery.stateProbes ?? []).filter((p) => p.outcome === 'revealed').map((p) => p.feature));
+  const blocked = robotsBlockedFeatures({
+    entryUrl,
+    features: discoveryFeatureList(map, undefined),
+    candidates: discovery.candidates ?? discovery.pages.filter((p) => p.source !== 'action'),
+    robotsSkipped: discovery.robotsSkipped,
+    featureTokens: featureTokenMap(map),
+  });
+  const out: Record<string, string> = {};
+  for (const b of blocked) if (!revealed.has(b.feature)) out[b.feature] = robotsBlockedDetail(b.paths, b.rules);
+  return out;
+}
+
+/** The text after 'Feature "<name>": ', which rule coverage keeps as the detail. */
+export function robotsBlockedDetail(paths: string[], rules: string[]): string {
+  return `robots.txt disallows its matching path(s) ${paths.join(', ')} (rule${rules.length === 1 ? '' : 's'} ${rules.map((r) => `Disallow: ${r}`).join(', ')}); not loaded`;
+}
+
+/** The one console line and discovery warning for a feature robots.txt keeps out of reach. */
+export function robotsBlockedLine(feature: string, paths: string[], rules: string[]): string {
+  return `Feature "${feature}": ${robotsBlockedDetail(paths, rules)}.`;
 }
 
 /**
@@ -507,7 +748,16 @@ async function sitemapRung(
   robots: RobotsInfo,
   fetchFn: FetchLike,
   warnings: string[],
+  skippedOut: Map<string, string>,
 ): Promise<DiscoveredPage[]> {
+  // A listed path robots.txt disallows is dropped, as before, and recorded.
+  const allowed = (u: URL | null): u is URL => {
+    if (!u) return false;
+    const rule = robotsRuleFor(robots, u.pathname);
+    if (rule === null) return true;
+    noteRobotsSkip(skippedOut, u.pathname, rule);
+    return false;
+  };
   const candidates = robots.sitemaps.length > 0
     ? robots.sitemaps
     : [`${entry.origin}/sitemap.xml`];
@@ -539,7 +789,7 @@ async function sitemapRung(
           if (!res.ok) continue;
           for (const loc of sitemapLocs(await res.text())) {
             const u = toPageUrl(loc, entry);
-            if (u && robotsAllows(robots, u.pathname)) collected.push(u);
+            if (allowed(u)) collected.push(u);
           }
         } catch {
           // A broken child sitemap is skipped; the others still count.
@@ -548,7 +798,7 @@ async function sitemapRung(
     } else {
       for (const loc of locs) {
         const u = toPageUrl(loc, entry);
-        if (u && robotsAllows(robots, u.pathname)) collected.push(u);
+        if (allowed(u)) collected.push(u);
       }
     }
   }
@@ -591,9 +841,13 @@ async function walkCrawl(opts: {
   source: DiscoveredPage['source'];
   /** When given, the controls a collector returned are kept here by page URL (browser crawl only). */
   controlsOut?: Map<string, PageControl[]>;
+  /** Every path skipped for robots, with the rule that matched, by path. */
+  skippedOut: Map<string, string>;
 }): Promise<DiscoveredPage[]> {
-  const { entry, robots, getLinks, delayMs, warnings, label, source, controlsOut } = opts;
-  if (!robotsAllows(robots, entry.pathname)) {
+  const { entry, robots, getLinks, delayMs, warnings, label, source, controlsOut, skippedOut } = opts;
+  const entryRule = robotsRuleFor(robots, entry.pathname);
+  if (entryRule !== null) {
+    noteRobotsSkip(skippedOut, entry.pathname, entryRule);
     warnings.push(`${label}: robots.txt disallows the entry path ${entry.pathname}; ${label} skipped.`);
     return [];
   }
@@ -645,7 +899,12 @@ async function walkCrawl(opts: {
       const link = toPageUrl(href, u);
       if (!link) continue;
       if (visited.has(link.pathname)) continue;
-      if (!robotsAllows(robots, link.pathname)) continue;
+      // Never loaded (invariant 29), and recorded with the rule that matched.
+      const rule = robotsRuleFor(robots, link.pathname);
+      if (rule !== null) {
+        noteRobotsSkip(skippedOut, link.pathname, rule);
+        continue;
+      }
       visited.add(link.pathname);
       queue.push({ u: link, depth: depth + 1, parent: u.toString() });
       if (visited.size > CRAWL_PAGE_CAP * 4) break; // frontier guard
@@ -674,10 +933,12 @@ async function crawlRung(
   fetchFn: FetchLike,
   delayMs: number,
   warnings: string[],
+  skippedOut: Map<string, string>,
 ): Promise<DiscoveredPage[]> {
   return walkCrawl({
     entry,
     robots,
+    skippedOut,
     getLinks: async (url) => {
       try {
         const res = await fetchFn(url, { headers: { 'user-agent': DISCOVERY_UA } });
@@ -787,7 +1048,7 @@ export async function waitForAnchors(page: Pick<Page, 'evaluate'>, capMs = ANCHO
  * warnings) to discovery.json in the run directory, so the candidate set a
  * run saw is a file, not a lost console line.
  */
-export function writeDiscoveryJson(outDir: string, info: { method: string; pages: DiscoveredPage[]; candidates?: DiscoveredPage[]; warnings: string[]; stateProbes?: StateProbe[] }): string {
+export function writeDiscoveryJson(outDir: string, info: { method: string; pages: DiscoveredPage[]; candidates?: DiscoveredPage[]; warnings: string[]; stateProbes?: StateProbe[]; robotsSkipped?: RobotsSkip[] }): string {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, 'discovery.json');
   // A page found by an action is a page, never a crawled candidate: the
@@ -797,6 +1058,8 @@ export function writeDiscoveryJson(outDir: string, info: { method: string; pages
     candidates: info.candidates ?? info.pages.filter((p) => p.source !== 'action'),
     pages: info.pages,
     warnings: info.warnings,
+    // Every path a remote rung skipped for robots (invariant 75); absent when no remote rung ran.
+    ...(info.robotsSkipped ? { robotsSkipped: info.robotsSkipped } : {}),
     ...(info.stateProbes && info.stateProbes.length > 0 ? { stateProbes: info.stateProbes } : {}),
   };
   fs.writeFileSync(file, JSON.stringify(record, null, 2));

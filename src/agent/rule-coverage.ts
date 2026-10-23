@@ -17,13 +17,25 @@ import type { RequirementsMap } from './requirements.js';
  *   not-revealed       : no planned scenario cited the rule, and the
  *                         feature's state probe revealed no page (invariant
  *                         71); the detail names every page the probe tried
+ *   robots-disallowed  : no planned scenario cited the rule, no discovered
+ *                         page carries its feature, and a path robots.txt
+ *                         kept the crawl from loading does (invariant 75);
+ *                         the detail names the paths and the rule
+ *   cut-by-page-cap    : the rule's only planned scenarios were cut by the
+ *                         per-page cap before the plan was final (invariant
+ *                         75); the detail names them
  *
  * A run with a map ends with "X of Y rules covered" plus the named uncovered
  * rules, so a rule that was considered but not automated is reported, never
  * silently absent.
  */
 
-export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable' | 'not-revealed';
+export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable' | 'not-revealed' | 'robots-disallowed' | 'cut-by-page-cap';
+
+/** The detail a cut-by-page-cap rule carries: the cut scenarios, by name. */
+export function cutByPageCapDetail(names: string[]): string {
+  return `cut by the per-page cap: ${names.map((n) => JSON.stringify(n)).join(', ')}`;
+}
 
 /** The detail every not-reachable rule carries, so the report says why. */
 export const NOT_REACHABLE_DETAIL = 'no discovered page carries this feature';
@@ -174,6 +186,20 @@ export function computeRuleCoverage(opts: {
    * when one of them was cut mid-scenario, never planned-but-dropped.
    */
   incomplete?: Array<{ name: string; reason: string }>;
+  /**
+   * Features robots.txt kept out of reach, with the detail (feature name to
+   * "robots.txt disallows its matching path(s) ..."; robotsDisallowedDetails).
+   * A rule of such a feature that no planned scenario cited classifies
+   * robots-disallowed with that detail, instead of not-reachable,
+   * not-revealed or not-planned. A cited rule is classified as before.
+   */
+  robotsDisallowed?: Record<string, string>;
+  /**
+   * The scenarios the per-page cap cut (report.planTrimmed). A rule that no
+   * planned scenario cites and a cut scenario did classifies cut-by-page-cap,
+   * with the cut names as the detail, never not-planned.
+   */
+  planTrimmed?: Array<{ name: string; ruleIds?: string[] }>;
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
@@ -199,9 +225,18 @@ export function computeRuleCoverage(opts: {
       }
       const citing = opts.planned.filter((p) => (p.ruleIds ?? []).includes(rule.id));
       const notRevealedDetail = opts.notRevealed?.[feature.name];
+      const robotsDetail = opts.robotsDisallowed?.[feature.name];
+      // A scenario planned for the rule and cut by the per-page cap is the
+      // most specific cause; robots.txt keeping the feature's page out of
+      // reach comes next; then the probe and the no-page reasons.
+      const cut = (opts.planTrimmed ?? []).filter((t) => (t.ruleIds ?? []).includes(rule.id));
       const reason: UncoveredReason =
         citing.length === 0
-          ? notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
+          ? cut.length > 0
+            ? 'cut-by-page-cap'
+            : robotsDetail !== undefined
+              ? 'robots-disallowed'
+              : notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
           : citing.every((p) => unexploredKeys.has(nameKey(p.name)) || midScenarioKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
@@ -214,9 +249,13 @@ export function computeRuleCoverage(opts: {
           ? NOT_REACHABLE_DETAIL
           : reason === 'not-revealed'
             ? notRevealedDetail ?? ''
-            : reason === 'planned-not-explored' && citing.some((p) => midScenarioKeys.has(nameKey(p.name)))
-              ? CEILING_MID_SCENARIO_DETAIL
-              : '';
+            : reason === 'robots-disallowed'
+              ? robotsDetail ?? ''
+              : reason === 'cut-by-page-cap'
+                ? cutByPageCapDetail(cut.map((t) => t.name))
+                : reason === 'planned-not-explored' && citing.some((p) => midScenarioKeys.has(nameKey(p.name)))
+                  ? CEILING_MID_SCENARIO_DETAIL
+                  : '';
       uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }

@@ -80,12 +80,20 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'shop.example.json'), JSON
 writeRun('plain-example', q1, { ...mk('https://plain.example/', '2026-09-11T10:00:00.000Z', 2, 2), findings: [], plan: [{ name: 'scenario 1', category: 'happy', rationale: 'r' }, { name: 'scenario 2', category: 'happy', rationale: 'r' }], reconciliation: { planned: 2, generated: 2, dropped: [], incomplete: [], findings: [], skipped: [], accountedFor: 2, added: 0, balanced: true, stable: 2, recovered: 0, flaky: 0, broken: 0 } });
 // flaky.example: four completed runs for the trend charts; the third has no stability block, so its index row carries flake_rate null (standing rule 2: never drawn as 0).
 const fl = [1, 2, 3, 4].map((n) => newRunId(new Date(`2026-09-0${n}T10:00:00Z`), `f${n}`));
+const ROBOTS_DETAIL = 'robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded';
 const flakeRates: Array<number | null> = [0, 0.25, null, 0.5];
 fl.forEach((id, i) => {
   const rate = flakeRates[i];
   const rep = { ...mk('https://flaky.example/', `2026-09-0${i + 1}T10:00:00.000Z`, 2, 2), findings: [], plan: [{ name: 'scenario 1', category: 'happy', rationale: 'r' }, { name: 'scenario 2', category: 'happy', rationale: 'r' }], reconciliation: { planned: 2, generated: 2, dropped: [], incomplete: [], findings: [], skipped: [], accountedFor: 2, added: 0, balanced: true, stable: 2, recovered: 0, flaky: 0, broken: 0 } } as Record<string, unknown>;
   if (rate === null) delete rep.stability; else rep.stability = { iterations: 3, passed: 2, flaked: 0, flakeRate: rate, durationMs: 1, verdicts: [] };
-  writeRun('flaky-example', id, rep);
+  // The last run carries SRS coverage with the precise reasons of invariant 75 (and two older ones) for the rule table check Z5.
+  if (i === 3) rep.ruleCoverage = { covered: [], uncovered: [
+    { ruleId: 'R1', text: 'A registered user can log in.', reason: 'robots-disallowed', detail: ROBOTS_DETAIL },
+    { ruleId: 'R2', text: 'Products sort by name.', reason: 'cut-by-page-cap', detail: 'cut by the per-page cap: "sorted by name"' },
+    { ruleId: 'R3', text: 'The cart lists added items.', reason: 'not-reachable', detail: 'no discovered page carries this feature' },
+    { ruleId: 'R4', text: 'Reset link expires.', reason: 'not-planned' },
+  ] };
+  writeRun('flaky-example', id, rep, i === 3 ? { 'requirements-map.json': JSON.stringify({ features: [{ name: 'account', rules: [{ id: 'R1', text: 'A registered user can log in.', type: 'behavior' }, { id: 'R2', text: 'Products sort by name.', type: 'behavior' }, { id: 'R3', text: 'The cart lists added items.', type: 'behavior' }, { id: 'R4', text: 'Reset link expires.', type: 'behavior' }] }], roles: [] }) } : {});
 });
 // demoqa.com: pre-v2 records only.
 fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'demoqa.com.json'), JSON.stringify({ host: 'demoqa.com', recentRuns: [
@@ -401,6 +409,14 @@ await page.goto(`${base}/coverage#token=${TOKEN}`, { waitUntil: 'networkidle' })
 await page.waitForSelector('[data-testid="coverage-project"]');
 const covPage = await page.evaluate(() => Array.from(document.querySelectorAll('[data-testid="coverage-project"]')).map((s) => ({ id: s.getAttribute('data-project-id'), rules: s.querySelectorAll('[data-testid="rule-row"]').length, noSrs: !!s.querySelector('[data-testid="no-srs"]') })));
 check('Z3. /coverage shows the SRS project\'s rules and the no-SRS message for the others; Unassigned is not listed', covPage.find((c) => c.id === 'shop-example')?.rules === 4 && covPage.find((c) => c.id === 'plain-example')?.noSrs === true && covPage.find((c) => c.id === 'demoqa-com')?.noSrs === true && !covPage.some((c) => c.id === 'unassigned'), JSON.stringify(covPage));
+const flRules = await page.evaluate(() => Array.from(document.querySelectorAll('[data-testid="coverage-project"][data-project-id="flaky-example"] [data-testid="rule-row"]')).map((r) => ({ id: r.getAttribute('data-rule-id'), status: r.getAttribute('data-status'), reason: r.getAttribute('data-reason'), label: r.querySelector('[data-testid="rule-status"]')?.textContent, detail: r.querySelector('[data-testid="rule-detail"]')?.textContent ?? null })));
+check('Z5. the rule table never shows robots-disallowed or cut-by-page-cap as "not planned": each shows its own label and the recorded detail (invariant 75); a plain not-planned rule still reads "not planned"',
+  JSON.stringify(flRules) === JSON.stringify([
+    { id: 'R1', status: 'not_planned', reason: 'robots-disallowed', label: 'blocked by robots.txt', detail: ROBOTS_DETAIL },
+    { id: 'R2', status: 'not_planned', reason: 'cut-by-page-cap', label: 'cut by page cap', detail: 'cut by the per-page cap: "sorted by name"' },
+    { id: 'R3', status: 'not_planned', reason: 'not-reachable', label: 'no page found', detail: 'no discovered page carries this feature' },
+    { id: 'R4', status: 'not_planned', reason: 'not-planned', label: 'not planned', detail: null },
+  ]), JSON.stringify(flRules));
 check('Z4. zero console errors', errors.filter((e) => !/404|WebSocket/.test(e)).length === 0, errors.join(' | '));
 
 await browser.close();

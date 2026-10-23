@@ -12,9 +12,11 @@
  *     staying on the verdict
  *   - D6 (run 44cb3d): the runtime always writes findings ([] when empty) and
  *     every reader treats a missing key on an older report as []
+ *   - D6 (run 59540f, invariant 75): a replay drop carries what the page
+ *     showed, each message cut at 160 characters with a visible ellipsis
  */
 import fs from 'node:fs';
-import { reconcile, renderReconciliation, findingsOf } from '../src/agent/reconcile.js';
+import { reconcile, renderReconciliation, findingsOf, observedMessagesSuffix, OBSERVED_MESSAGE_CAP } from '../src/agent/reconcile.js';
 import type { RunReport } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -345,6 +347,34 @@ check('W. stability skipped: generated counts as stable, none recovered', rsk.st
   const warned: string[] = [];
   const rb = reconcile(both, { onDuplicate: (m) => warned.push(m) });
   check('AJ. a name recorded as both a finding and emitted_failed is counted once, in the earlier bucket', rb.findings.length === 1 && (rb.emitted_failed ?? []).length === 0 && warned.length === 1 && rb.balanced, JSON.stringify({ warned, accountedFor: rb.accountedFor }));
+}
+
+/* ─── run 59540f D6: a replay drop carries what the page showed ─────────────── */
+{
+  const SUCCESS = 'Thanks for your message! We will contact you shortly.';
+  const long = `${'x'.repeat(OBSERVED_MESSAGE_CAP)}TAIL-NEVER-SHOWN`;
+  const withObserved: RunReport = {
+    ...clean,
+    scenarios: [],
+    plan: [{ name: 'empty first name is rejected', category: 'negative', rationale: '' }, { name: 'long message', category: 'negative', rationale: '' }, { name: 'quiet page', category: 'negative', rationale: '' }],
+    stability: undefined,
+    replay: {
+      passed: 0, failed: 3, durationMs: 0,
+      verdicts: [
+        { name: 'empty first name is rejected', passed: false, failedStep: 6, stepKind: 'assert', error: 'locator.waitFor: Timeout 15000ms exceeded.', durationMs: 0, observed: { url: 'https://shop.example/contact', target: null, messages: [SUCCESS, '  '] } },
+        { name: 'long message', passed: false, failedStep: 0, stepKind: 'assert', error: 'boom', durationMs: 0, observed: { url: 'u', target: null, messages: [long, 'second'] } },
+        { name: 'quiet page', passed: false, failedStep: 1, stepKind: 'click', error: 'gone', durationMs: 0, observed: { url: 'u', target: null, messages: [] } },
+      ],
+    } as unknown as RunReport['replay'],
+  };
+  const r = reconcile(withObserved);
+  const reasonOf = (n: string): string => r.dropped.find((d) => d.name === n)?.reason ?? '';
+  check('AK. a replay drop reason appends what the page showed (run 59540f D6: the success message, not a bare locator timeout)',
+    reasonOf('empty first name is rejected') === `replay failed at step 7 (assert): locator.waitFor: Timeout 15000ms exceeded.; the page showed: "${SUCCESS}"`, reasonOf('empty first name is rejected'));
+  check('AL. one suffix per message, each cut at 160 characters with a visible ellipsis',
+    reasonOf('long message') === `replay failed at step 1 (assert): boom; the page showed: "${'x'.repeat(OBSERVED_MESSAGE_CAP)}…"; the page showed: "second"` && !reasonOf('long message').includes('TAIL-NEVER-SHOWN') && OBSERVED_MESSAGE_CAP === 160, reasonOf('long message'));
+  check('AM. no observed message, no suffix: the reason never claims the page said anything', reasonOf('quiet page') === 'replay failed at step 2 (click): gone' && observedMessagesSuffix(undefined) === '' && observedMessagesSuffix(['', '  ']) === '', reasonOf('quiet page'));
+  check('AN. the renderer prints the observed text in the funnel', renderReconciliation(r).some((l) => l.includes(`the page showed: "${SUCCESS}"`)));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

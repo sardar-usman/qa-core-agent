@@ -8,6 +8,7 @@ import { reconcile, unmatchedDropLine } from './reconcile.js';
 import { attachDroppedTraces, recordOf, storeFromDroppedTraces, storeTrace, type TraceRecord } from './dropped-traces.js';
 import { computeRuleCoverage, notRevealedFeatures } from './rule-coverage.js';
 import { unreachableFeatures } from './planner.js';
+import { robotsDisallowedDetails } from './discovery.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, reportUsesTestAccount, type AuthCredentials } from './auth-emit.js';
 import {
   readTestCredentials, recordWrongPassword, refuseWrongPassword, wrongPasswordCapReason,
@@ -315,8 +316,8 @@ function annotateLoginError(t: EmittedTest, frameworkDir: string, credsPassed: b
   return `test credentials not provided to the check (${AUTH_ENV_USER} / ${AUTH_ENV_PASS} were unset, so the test ran with empty values); ${error}`;
 }
 
-/** Rebuild reconciliation and rule coverage after the emitted drops, the same builders the runtime used. */
-function rebuildAccounting(
+/** Rebuild reconciliation and rule coverage after the emitted drops, the same builders the runtime used. Exported for smoke-page-cap. */
+export function rebuildAccounting(
   report: RunReport,
   requirements: RequirementsMap | undefined,
   log: (l: string) => void,
@@ -350,6 +351,9 @@ function rebuildAccounting(
         ...(report.reconciliation ? { incomplete: report.reconciliation.incomplete } : {}),
         ...(report.discovery ? { unreachableFeatures: unreachableFeatures(requirements, report.discovery.pages, report.discovery.stateProbes, report.plan ?? []).map((f) => f.name) } : {}),
         ...(report.discovery?.stateProbes ? { notRevealed: notRevealedFeatures(report.discovery.stateProbes) } : {}),
+        // The same robots and per-page-cap reasons the runtime classified (invariant 75).
+        robotsDisallowed: robotsDisallowedDetails(requirements, report.discovery, report.url),
+        ...(report.planTrimmed ? { planTrimmed: report.planTrimmed } : {}),
       }),
       ...(derivation ? { derivation } : {}),
     };

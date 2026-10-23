@@ -436,13 +436,15 @@ export interface ProjectCoverage {
     rule_id: string; text: string | null; feature: string | null;
     /** The classification from the most recent SRS run that reported this rule. */
     latest_status: RuleStatus; latest_run_id: string; latest_run_at: string | null;
+    /** That run's precise uncovered reason and detail as rule-coverage.json recorded them (robots-disallowed, cut-by-page-cap, ...); null for a covered rule or a row indexed before schema v8. */
+    latest_reason: string | null; latest_detail: string | null;
     /** The most recent run in which the rule was covered, and by which scenarios; null when never covered. */
     last_covered_run_id: string | null; last_covered_at: string | null; last_covered_scenarios: string[];
     /** How many SRS runs reported the rule, and how many of those covered it. */
     runs_reported: number; runs_covered: number;
   }>;
-  /** Rules whose latest classification is not covered, with the reason as recorded. */
-  not_automated: Array<{ rule_id: string; text: string | null; reason: RuleStatus; run_id: string }>;
+  /** Rules whose latest classification is not covered, with the coarse status and the precise reason as recorded. */
+  not_automated: Array<{ rule_id: string; text: string | null; reason: RuleStatus; uncovered_reason: string | null; run_id: string }>;
 }
 
 /** Every rule id seen across a project's SRS runs, read from the rule_coverage rows the indexer copied from rule-coverage.json. */
@@ -457,11 +459,12 @@ export function projectCoverage(db: Database.Database, projectId: string): Proje
     const runId = String(r.run_id);
     const at = (r.started_at as string | null) ?? null;
     const scenarios = (() => { try { return JSON.parse(String(r.scenarios_json ?? '[]')) as string[]; } catch { return []; } })();
-    const cur = byRule.get(id) ?? { rule_id: id, text: null, feature: null, latest_status: status, latest_run_id: runId, latest_run_at: at, last_covered_run_id: null, last_covered_at: null, last_covered_scenarios: [], runs_reported: 0, runs_covered: 0 };
+    const cur = byRule.get(id) ?? { rule_id: id, text: null, feature: null, latest_status: status, latest_run_id: runId, latest_run_at: at, latest_reason: null, latest_detail: null, last_covered_run_id: null, last_covered_at: null, last_covered_scenarios: [], runs_reported: 0, runs_covered: 0 };
     // Rows arrive oldest first, so the last assignment is the latest run.
     cur.text = (r.rule_text as string | null) ?? cur.text;
     cur.feature = (r.feature as string | null) ?? cur.feature;
     cur.latest_status = status; cur.latest_run_id = runId; cur.latest_run_at = at;
+    cur.latest_reason = (r.reason as string | null) ?? null; cur.latest_detail = (r.detail as string | null) ?? null;
     cur.runs_reported++;
     if (status === 'covered') { cur.runs_covered++; cur.last_covered_run_id = runId; cur.last_covered_at = at; cur.last_covered_scenarios = scenarios; }
     byRule.set(id, cur);
@@ -469,7 +472,7 @@ export function projectCoverage(db: Database.Database, projectId: string): Proje
   const rules = [...byRule.values()].sort((a, b) => a.rule_id.localeCompare(b.rule_id, undefined, { numeric: true }));
   return {
     project_id: projectId, srs_runs: srsRuns.size, rules,
-    not_automated: rules.filter((x) => x.latest_status !== 'covered').map((x) => ({ rule_id: x.rule_id, text: x.text, reason: x.latest_status, run_id: x.latest_run_id })),
+    not_automated: rules.filter((x) => x.latest_status !== 'covered').map((x) => ({ rule_id: x.rule_id, text: x.text, reason: x.latest_status, uncovered_reason: x.latest_reason, run_id: x.latest_run_id })),
   };
 }
 

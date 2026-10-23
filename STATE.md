@@ -493,11 +493,33 @@ using the qa-core-heal evaluation report as the template.
   a wrong no-discovered-page warning, the repair decision line cut by the
   240-character cap). docs/audit/run-44cb3d-diagnosis.md section 3, D8.
   Invariant 72; locked by smoke-console-honesty and smoke-repair-block.
-- D1 (run 7): OPEN. Discovery returns at the sitemap rung when it yields
-  any page; Toolshop's new sitemap lists 3 URLs, so the crawl never ran and
-  no category or product page was planned. The site's robots.txt now
-  disallows /auth and /checkout, which no remote rung may load (D7a).
-  docs/audit/run-59540f-diagnosis.md, D1.
+- D1 (run 7): ADDRESSED (PR #53, engine/discovery-seed, not merged).
+  Discovery returned at the sitemap rung when it yielded any page;
+  Toolshop's new sitemap lists 3 URLs, so the crawl never ran and no
+  category or product page was planned. Now the sitemap is a seed: unless
+  every feature is carried by a sitemap page by page evidence, the crawl
+  runs and merges ("sitemap+crawl"), with one warning line naming the case
+  (invariant 75). The site's robots.txt still keeps /auth and /checkout out
+  of every remote rung (D7a, reported now, not changed).
+  docs/audit/run-59540f-diagnosis.md, D1. Locked by smoke-discovery-ladder.
+- D7a (run 7), reporting: ADDRESSED (PR #53, engine/discovery-seed, not
+  merged). Robots skips were silent. Now every skipped path and its rule is
+  on discovery.robotsSkipped (report and discovery.json), a feature only a
+  skipped path carries prints one line and one warning, and its uncited
+  rules read robots-disallowed in coverage, the rule table and the run page
+  (schema v8). Whether to name the /auth pages with --urls stays an owner
+  decision. Locked by smoke-discovery-ladder, smoke-index, smoke-projects,
+  smoke-run-detail and smoke-console-log.
+- D7e (run 7): ADDRESSED (PR #53, engine/discovery-seed, not merged). The
+  per-page cap cut R3's only citer silently. Now a rule's only citer is
+  kept first, the line names every cut with its rules, the cuts are on the
+  report as planTrimmed, and a rule only a cut scenario cited reads
+  cut-by-page-cap. Locked by smoke-page-cap.
+- D7i (run 7): ADDRESSED (PR #53, engine/discovery-seed, not merged). The
+  run folder had no console.log. Now the CLI writes every console line to
+  console.log in the run folder on every end, credential-masked, never in
+  the zip. Gateway and MCP runs still keep events.jsonl only. Locked by
+  smoke-console-log.
 - D2 (run 7): OPEN. The state probe looks for a trigger only on candidate
   pages and never hops from a listing into an item, so "Add to cart" on a
   product page is never found from /. docs/audit/run-59540f-diagnosis.md,
@@ -514,10 +536,14 @@ using the qa-core-heal evaluation report as the template.
 - D5 (run 7): OPEN. A shipped test name claims "only matching" while the
   recording checks the first card only; the Critic passed it.
   docs/audit/run-59540f-diagnosis.md, D5.
-- D6 (run 7): OPEN. The contact first-name negative dropped at replay:
-  the page showed the success message in a fresh context after the
-  Explorer saw the error twice; cause open, and the drop reason reads as a
-  locator timeout. docs/audit/run-59540f-diagnosis.md, D6.
+- D6 (run 7): reporting part ADDRESSED (PR #53, engine/discovery-seed, not
+  merged), cause still OPEN. The contact first-name negative dropped at
+  replay: the page showed the success message in a fresh context after the
+  Explorer saw the error twice. Now the drop reason appends what the page
+  showed ("; the page showed: ..."), so it no longer reads as a bare
+  locator timeout (smoke-reconcile). Why the site accepted the submit is
+  still unknown; the scripted reproduction is an owner decision.
+  docs/audit/run-59540f-diagnosis.md, D6.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report
@@ -561,9 +587,10 @@ using the qa-core-heal evaluation report as the template.
   of a multi-page plan starts at scenario 1, and report.orientationCalls
   plus one console line make the waste measurable (invariant 73). Untested
   live until the confirmation run.
-- The dashboard's rule table shows not-reachable and not-revealed as not
-  planned (no index column); the report and console carry the precise
-  reason.
+- ADDRESSED (PR #53, engine/discovery-seed, not merged): the dashboard's
+  rule table showed not-reachable and not-revealed as not planned (no index
+  column). Now the index keeps the precise reason and detail (schema v8)
+  and the table shows them. Locked by smoke-projects.
 - Enumerate every cap, truncation, filter, and catch in the pipeline; each is
   made loud or proven harmless (eight silent-failure bugs found since Sept).
 - Doctrine decision on absence-as-count-zero assertions.

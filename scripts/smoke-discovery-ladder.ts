@@ -15,13 +15,32 @@
  *   - every crawl candidate records linkedFrom, the page whose anchor led to
  *     it (invariant 71: a volatile trigger page's origin); the crawl caps,
  *     the delay and the robots rules are unchanged by it
+ *   - the sitemap is a seed, not a ceiling (invariant 75, run 59540f D1):
+ *     L a 3-page sitemap whose crawl finds 6 more, with features the sitemap
+ *       does not carry, merges as "sitemap+crawl" with the continuing line;
+ *       L7 to L9 the browser crawl merges the same way, and adds nothing
+ *       when it finds nothing new
+ *     M a sitemap carrying every feature skips the crawl, with its line
+ *     N no feature list: the crawl runs and merges
+ *     O robots Disallow /auth with /auth/login linked from the entry and a
+ *       feature "account": robotsSkipped holds /auth/login with its rule,
+ *       the feature line prints (scripts/discover-site.ts as a child
+ *       process too), and rule coverage reads robots-disallowed
  *
- * Pure in-code fixtures via the injectable fetchFn. No network. No LLM.
+ * In-code fixtures via the injectable fetchFn and rendered-link collector,
+ * plus local servers on 127.0.0.1. No outside network. No LLM.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   discoverPages,
   parseRobotsTxt,
   robotsAllows,
+  robotsBlockedFeatures,
+  robotsDisallowedDetails,
+  discoveryFeatureList,
   DISCOVERY_UA,
   SITEMAP_PAGE_CAP,
   CRAWL_PAGE_CAP,
@@ -34,7 +53,9 @@ import {
 } from '../src/agent/discovery.js';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { RequirementsMap } from '../src/agent/requirements.js';
+import { featureTokenMap, type RequirementsMap } from '../src/agent/requirements.js';
+import { computeRuleCoverage, renderRuleCoverage } from '../src/agent/rule-coverage.js';
+import { unreachableFeatures } from '../src/agent/planner.js';
 
 let pass = 0;
 let fail = 0;
@@ -127,7 +148,10 @@ const map: RequirementsMap = {
     [`${ORIGIN}/robots.txt`]: `User-agent: *\nDisallow: /admin\nSitemap: ${ORIGIN}/deep/sitemap-main.xml\n`,
     [`${ORIGIN}/deep/sitemap-main.xml`]: sitemapXml(locs),
   });
-  const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn, crawlDelayMs: 0 });
+  // No feature list, so the crawl runs after the sitemap (invariant 75); the
+  // entry page is not served here, so neither crawl adds a page and the
+  // sitemap stands alone. The fake collector keeps the browser rung offline.
+  const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn, crawlDelayMs: 0, collectRendered: fakeCollector({}).collect });
   check('D1. sitemap rung fires via the robots Sitemap directive', r.method === 'sitemap', r.method);
   check(`D2. capped at ${SITEMAP_PAGE_CAP} pages`, r.pages.length === SITEMAP_PAGE_CAP, String(r.pages.length));
   check('D3. cross-origin URL excluded', !r.pages.some((p) => p.url.includes('other.example')));
@@ -148,7 +172,7 @@ const map: RequirementsMap = {
     [`${ORIGIN}/sm-1.xml`]: sitemapXml([`${ORIGIN}/a`]),
     [`${ORIGIN}/sm-2.xml`]: sitemapXml([`${ORIGIN}/b`]),
   });
-  const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn, crawlDelayMs: 0 });
+  const r = await discoverPages({ entryUrl: `${ORIGIN}/`, fetchFn, crawlDelayMs: 0, collectRendered: fakeCollector({}).collect });
   check('E1. a sitemap index is followed one level deep', r.method === 'sitemap' && r.pages.length === 2, JSON.stringify(r.pages));
 }
 
@@ -311,6 +335,194 @@ const map: RequirementsMap = {
   }
 }
 
+/* ─── L. the sitemap is a seed: features not carried, the crawl merges ─────── */
+const SEED = 'https://seed.example';
+const seedMap: RequirementsMap = {
+  features: [
+    { name: 'catalogue', description: 'browse products by category', rules: [{ id: 'R1', text: 'Products can be sorted by name.', type: 'behavior' }] },
+    { name: 'account', description: 'sign in and registration', rules: [{ id: 'R2', text: 'A registered user can log in with an email and a password.', type: 'behavior' }, { id: 'R3', text: 'A wrong password shows an error.', type: 'validation' }] },
+    { name: 'cart', description: 'the cart', rules: [{ id: 'R4', text: 'Items added to the cart are listed in it.', type: 'behavior' }] },
+    { name: 'contact', description: 'the contact form', rules: [{ id: 'R5', text: 'The contact form requires an email.', type: 'validation' }] },
+  ],
+  roles: [],
+  truncated: false,
+};
+const PRODUCT = '/product/01ABCDEFGHJKMNPQRSTVWXYZ01';
+{
+  const { fetchFn, requests } = fixtureFetch({
+    [`${SEED}/robots.txt`]: `User-agent: *\nDisallow:\nSitemap: ${SEED}/sitemap.xml\n`,
+    [`${SEED}/sitemap.xml`]: sitemapXml([`${SEED}/`, `${SEED}/contact`, `${SEED}/privacy`]),
+    [`${SEED}/`]: ['/category/hand-tools', '/category/power-tools', '/rentals', PRODUCT, '/auth/login', '/auth/register', '/contact', '/privacy'].map((h) => `<a href="${h}">x</a>`).join(' '),
+    [`${SEED}/category/hand-tools`]: '', [`${SEED}/category/power-tools`]: '', [`${SEED}/rentals`]: '', [`${SEED}${PRODUCT}`]: '',
+    [`${SEED}/auth/login`]: '', [`${SEED}/auth/register`]: '', [`${SEED}/contact`]: '', [`${SEED}/privacy`]: '',
+  });
+  const browser = fakeCollector({ [`${SEED}/`]: ['/never-used'] });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, requirements: seedMap, fetchFn, crawlDelayMs: 0, collectRendered: browser.collect });
+  const paths = r.pages.map((p) => new URL(p.url).pathname);
+  check('L1. a 3-page sitemap whose crawl finds 6 more merges: method "sitemap+crawl"', r.method === 'sitemap+crawl', r.method);
+  check('L2. the continuing line names the features no sitemap page carries',
+    r.warnings.includes('sitemap: 3 page(s); no sitemap page carries feature(s) catalogue, account, cart; continuing to the crawl and merging.'), JSON.stringify(r.warnings));
+  check('L3. sitemap entries first, then the 6 crawl pages in crawl order, deduped by origin plus pathname (/, /contact and /privacy once)',
+    JSON.stringify(paths) === JSON.stringify(['/', '/contact', '/privacy', '/category/hand-tools', '/category/power-tools', '/rentals', PRODUCT, '/auth/login', '/auth/register']), JSON.stringify(paths));
+  check('L4. every page keeps its own source: sitemap for the seed, crawl for the rest',
+    r.pages.slice(0, 3).every((p) => p.source === 'sitemap') && r.pages.slice(3).every((p) => p.source === 'crawl'), JSON.stringify(r.pages.map((p) => p.source)));
+  check('L5. crawl pages keep linkedFrom, the generated-id page is tagged volatile, and a seed page the crawl also reached gains its linkedFrom',
+    r.pages.slice(3).every((p) => p.linkedFrom === `${SEED}/`) && r.pages.find((p) => p.url.endsWith(PRODUCT))?.volatile === true && r.pages.find((p) => p.url.endsWith('/contact'))?.linkedFrom === `${SEED}/`, JSON.stringify(r.pages));
+  check('L6. the fetch crawl added pages, so the browser crawl never ran; robots.txt was read and skipped nothing ([] recorded)', browser.calls.length === 0 && JSON.stringify(r.robotsSkipped) === '[]', JSON.stringify({ calls: browser.calls, skipped: r.robotsSkipped }));
+  check('L6b. the crawl caps, delay and user agent are unchanged on the seed path', requests.filter((q) => !q.url.endsWith('robots.txt') && !q.url.endsWith('sitemap.xml')).every((q) => q.ua === DISCOVERY_UA) && CRAWL_PAGE_CAP === 15 && CRAWL_DELAY_MS === 500);
+}
+{
+  // The fetch crawl sees a SPA shell; the browser crawl reads the rendered links and merges.
+  const { fetchFn } = fixtureFetch({
+    [`${SEED}/robots.txt`]: 404,
+    [`${SEED}/sitemap.xml`]: sitemapXml([`${SEED}/`, `${SEED}/contact`, `${SEED}/privacy`]),
+    [`${SEED}/`]: '<div id="app"></div>',
+  });
+  const browser = fakeCollector({ [`${SEED}/`]: ['/category/hand-tools', '/contact'], [`${SEED}/category/hand-tools`]: [], [`${SEED}/contact`]: [] });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, requirements: seedMap, fetchFn, crawlDelayMs: 0, collectRendered: browser.collect });
+  check('L7. the fetch crawl adds nothing, the browser crawl adds a page: method "sitemap+browser-crawl", the new page source browser-crawl',
+    r.method === 'sitemap+browser-crawl' && JSON.stringify(r.pages.map((p) => `${new URL(p.url).pathname}:${p.source}`)) === JSON.stringify(['/:sitemap', '/contact:sitemap', '/privacy:sitemap', '/category/hand-tools:browser-crawl']) && !!r.pageControls,
+    JSON.stringify({ method: r.method, pages: r.pages.map((p) => p.url) }));
+}
+{
+  // Both crawls find only the sitemap's own pages: the sitemap stands alone, from one rung, and the warnings say so.
+  const { fetchFn } = fixtureFetch({
+    [`${SEED}/robots.txt`]: 404,
+    [`${SEED}/sitemap.xml`]: sitemapXml([`${SEED}/`, `${SEED}/contact`, `${SEED}/privacy`]),
+    [`${SEED}/`]: '<a href="/contact">c</a>', [`${SEED}/contact`]: '',
+  });
+  const browser = fakeCollector({ [`${SEED}/`]: ['/privacy'], [`${SEED}/privacy`]: [] });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, requirements: seedMap, fetchFn, crawlDelayMs: 0, collectRendered: browser.collect });
+  check('L8. crawls that add nothing beyond the seed keep method "sitemap" and the 3 sitemap pages', r.method === 'sitemap' && r.pages.length === 3 && r.pages.every((p) => p.source === 'sitemap'), JSON.stringify({ method: r.method, pages: r.pages }));
+  check('L9. both crawls say they added nothing beyond the sitemap set and the entry',
+    r.warnings.includes('crawl: found 2 page(s), none beyond the sitemap set and the entry; trying the browser crawl.') && r.warnings.includes('browser crawl: added no page beyond the sitemap set and the entry; the sitemap pages stand alone.') && browser.calls.length === 2,
+    JSON.stringify(r.warnings));
+}
+
+/* ─── M. a sitemap whose pages carry every feature: the crawl is skipped ───── */
+{
+  const carried: RequirementsMap = {
+    features: [
+      { name: 'contact', description: 'the contact form', rules: [{ id: 'R1', text: 'The contact form requires an email.', type: 'validation' }] },
+      { name: 'login', description: 'sign in', rules: [{ id: 'R2', text: 'A wrong password shows an error.', type: 'validation' }] },
+    ],
+    roles: [],
+    truncated: false,
+  };
+  const routes = {
+    [`${SEED}/robots.txt`]: `User-agent: *\nDisallow:\n`,
+    [`${SEED}/sitemap.xml`]: sitemapXml([`${SEED}/`, `${SEED}/contact`, `${SEED}/login`]),
+    [`${SEED}/`]: '<a href="/elsewhere">x</a>',
+  };
+  const f = fixtureFetch(routes);
+  const browser = fakeCollector({ [`${SEED}/`]: ['/elsewhere'] });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, requirements: carried, fetchFn: f.fetchFn, crawlDelayMs: 0, collectRendered: browser.collect });
+  check('M1. every feature carried by a sitemap page: method "sitemap", the 3 pages', r.method === 'sitemap' && r.pages.length === 3, JSON.stringify({ method: r.method, pages: r.pages.map((p) => p.url) }));
+  check('M2. the skipped line names every feature', r.warnings.includes('sitemap: 3 page(s) carry every feature (contact, login); crawl skipped.'), JSON.stringify(r.warnings));
+  check('M3. neither crawl ran: no page fetched beyond robots.txt and the sitemap, the browser collector never called',
+    f.requests.every((q) => q.url.endsWith('/robots.txt') || q.url.endsWith('/sitemap.xml')) && browser.calls.length === 0, JSON.stringify(f.requests.map((q) => q.url)));
+  // The same with --features and no map.
+  const f2 = fixtureFetch(routes);
+  const r2 = await discoverPages({ entryUrl: `${SEED}/`, features: ['contact', 'login'], fetchFn: f2.fetchFn, crawlDelayMs: 0, collectRendered: fakeCollector({}).collect });
+  check('M4. a --features list counts as the feature list: carried by the sitemap, the crawl is skipped',
+    r2.method === 'sitemap' && r2.warnings.includes('sitemap: 3 page(s) carry every feature (contact, login); crawl skipped.') && f2.requests.every((q) => q.url.endsWith('/robots.txt') || q.url.endsWith('/sitemap.xml')), JSON.stringify(r2.warnings));
+  check('M5. a map\'s features win over --features, as in the page filter', JSON.stringify(discoveryFeatureList(carried, ['cart'])) === '["contact","login"]' && JSON.stringify(discoveryFeatureList(undefined, [' cart ', ''])) === '["cart"]');
+}
+
+/* ─── N. no feature list: the crawl runs and merges ─────────────────────── */
+{
+  const { fetchFn, requests } = fixtureFetch({
+    [`${SEED}/robots.txt`]: 404,
+    [`${SEED}/sitemap.xml`]: sitemapXml([`${SEED}/`, `${SEED}/a`]),
+    [`${SEED}/`]: '<a href="/b">b</a>', [`${SEED}/b`]: '',
+  });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, fetchFn, crawlDelayMs: 0, collectRendered: fakeCollector({}).collect });
+  check('N1. with no feature list the crawl runs after a non-empty sitemap and merges', r.method === 'sitemap+crawl' && JSON.stringify(r.pages.map((p) => new URL(p.url).pathname)) === JSON.stringify(['/', '/a', '/b']) && requests.some((q) => q.url === `${SEED}/b`), JSON.stringify(r.pages));
+  check('N2. the no-feature-list line prints', r.warnings.includes('sitemap: 2 page(s); no feature list, so the crawl runs and merges.'), JSON.stringify(r.warnings));
+}
+
+/* ─── O. robots Disallow /auth: the skip, the feature line, robots-disallowed coverage ── */
+{
+  const accountMap: RequirementsMap = {
+    features: [
+      { name: 'account', description: 'the account', rules: [{ id: 'R10', text: 'A registered user can log in with an email and a password.', type: 'behavior' }, { id: 'R11', text: 'A wrong password shows an error.', type: 'validation' }] },
+      { name: 'contact', description: 'the contact form', rules: [{ id: 'R5', text: 'The contact form requires an email.', type: 'validation' }] },
+    ],
+    roles: [],
+    truncated: false,
+  };
+  const { fetchFn, requests } = fixtureFetch({
+    [`${SEED}/robots.txt`]: `User-agent: *\nDisallow: /auth\nDisallow: /admin\n`,
+    [`${SEED}/sitemap.xml`]: 404,
+    [`${SEED}/`]: '<a href="/auth/login">Sign in</a> <a href="/contact">Contact</a> <a href="/admin">A</a> <a href="/auth/login#top">again</a>',
+    [`${SEED}/contact`]: '<a href="/auth/login">Sign in</a>',
+  });
+  const r = await discoverPages({ entryUrl: `${SEED}/`, requirements: accountMap, fetchFn, crawlDelayMs: 0, collectRendered: fakeCollector({}).collect });
+  check('O1. robotsSkipped holds /auth/login with the rule that matched (and /admin), deduped by path, and /auth/login was never fetched',
+    JSON.stringify(r.robotsSkipped) === JSON.stringify([{ path: '/auth/login', rule: '/auth' }, { path: '/admin', rule: '/admin' }]) && !requests.some((q) => q.url.includes('/auth/')), JSON.stringify({ skipped: r.robotsSkipped, requests: requests.map((q) => q.url) }));
+  const blocked = robotsBlockedFeatures({ entryUrl: `${SEED}/`, features: discoveryFeatureList(accountMap, undefined), candidates: r.pages, robotsSkipped: r.robotsSkipped, featureTokens: featureTokenMap(accountMap) });
+  const LINE = 'Feature "account": robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded.';
+  check('O2. the feature line names the feature, the path and the rule; contact (carried by /contact) gets none', blocked.length === 1 && blocked[0]!.line === LINE, JSON.stringify(blocked));
+  const details = robotsDisallowedDetails(accountMap, { pages: r.pages, candidates: r.pages, robotsSkipped: r.robotsSkipped }, `${SEED}/`);
+  const cov = computeRuleCoverage({
+    map: accountMap, planned: [{ name: 'contact form requires an email', ruleIds: ['R5'] }], scenarios: [{ name: 'contact form requires an email', ruleIds: ['R5'] }],
+    unreachableFeatures: unreachableFeatures(accountMap, r.pages, [], []).map((f) => f.name),
+    robotsDisallowed: details,
+  });
+  const u10 = cov.uncovered.find((u) => u.ruleId === 'R10');
+  check('O3. coverage reads robots-disallowed, with the paths and the rule as the detail, for both uncited account rules',
+    cov.uncovered.length === 2 && cov.uncovered.every((u) => u.reason === 'robots-disallowed') && u10?.detail === 'robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded', JSON.stringify(cov.uncovered));
+  const without = computeRuleCoverage({ map: accountMap, planned: [], scenarios: [], unreachableFeatures: ['account'] });
+  check('O4. only those rules change: without the robots record the same rules read not-reachable, and a cited rule keeps its own reason',
+    without.uncovered.filter((u) => u.ruleId !== 'R5').every((u) => u.reason === 'not-reachable') &&
+    computeRuleCoverage({ map: accountMap, planned: [{ name: 'x', ruleIds: ['R10'] }], scenarios: [], robotsDisallowed: details }).uncovered.find((u) => u.ruleId === 'R10')?.reason === 'planned-but-dropped');
+  check('O5. the console print names the reason and the detail', renderRuleCoverage(cov).some((l) => l.includes('R10 (robots-disallowed: robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded)')), renderRuleCoverage(cov).join(' | '));
+  check('O6. the no-discovered-page line is not printed for a robots-blocked feature (its own line says why)', !unreachableFeatures(accountMap, r.pages, [], [], ['account']).some((f) => f.name === 'account') && unreachableFeatures(accountMap, r.pages, [], []).some((f) => f.name === 'account'));
+
+  // The same site served locally, through scripts/discover-site.ts as a child process.
+  const http2 = (await import('node:http')).default;
+  const site = http2.createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://x');
+    if (u.pathname === '/robots.txt') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('User-agent: *\nDisallow: /auth\n'); return; }
+    if (u.pathname === '/sitemap.xml') { res.writeHead(404); res.end(''); return; }
+    if (u.pathname === '/' || u.pathname === '/contact') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<a href="/auth/login">Sign in</a> <a href="/contact">Contact</a>'); return; }
+    res.writeHead(404); res.end('');
+  });
+  await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+  const siteUrl = `http://127.0.0.1:${(site.address() as AddressInfo).port}/`;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-discover-site-'));
+  try {
+    const mapFile = path.join(cwd, 'requirements-map.json');
+    fs.writeFileSync(mapFile, JSON.stringify(accountMap));
+    const script = path.resolve('scripts/discover-site.ts');
+    const tsx = path.resolve('node_modules/.bin/tsx');
+    const env = { ...process.env, ANTHROPIC_API_KEY: 'fixture-key-never-sent', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' };
+    // Async: the fixture site answers from this process, so the child must not block it.
+    const runScript = (args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> => new Promise((resolve) => {
+      const child = spawn(tsx, [script, ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += String(d); });
+      child.stderr.on('data', (d) => { stderr += String(d); });
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+    const out = await runScript([siteUrl, '--map', mapFile]);
+    console.log(`  O script: exit ${String(out.status)}; ${out.stdout.split('\n').filter(Boolean).join(' | ')}`);
+    check('O7. scripts/discover-site.ts prints the method, every candidate with its source, robotsSkipped, the feature line and the warnings, and exits 0',
+      out.status === 0 && out.stdout.includes('method: crawl') && out.stdout.includes(`  ${siteUrl}  (crawl)`) && out.stdout.includes(`  ${siteUrl}contact  (crawl, linked from /)`) &&
+      out.stdout.includes('robotsSkipped: 1') && out.stdout.includes('  /auth/login  (Disallow: /auth)') && out.stdout.split('\n').includes(LINE) && out.stdout.includes('warnings: '),
+      out.stdout + out.stderr);
+    check('O8. the script writes nothing (no output/ folder, no discovery.json) in its working directory', JSON.stringify(fs.readdirSync(cwd)) === '["requirements-map.json"]', JSON.stringify(fs.readdirSync(cwd)));
+    const srs = path.join(cwd, 'toolshop-srs.md');
+    fs.writeFileSync(srs, '# SRS\n');
+    const refused = await runScript([siteUrl, '--map', srs]);
+    check('O9. an SRS document as --map is refused before anything runs (building a map would need a model call), exit 2', refused.status === 2 && refused.stderr.includes('would need a model call to build a map, which this script never makes'), refused.stderr);
+  } finally {
+    site.close();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the discovery ladder honors rung order and robots.txt, filters and caps politely, and never falls into single-page mode silently.');
+console.log('OK: the discovery ladder honors rung order and robots.txt, treats a sitemap as a seed, reports every robots skip, filters and caps politely, and never falls into single-page mode silently.');

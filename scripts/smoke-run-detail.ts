@@ -151,6 +151,7 @@ const shapeSkipped = shapePlan.slice(16, 19);
 const shapeFinding = shapePlan[19]!;
 const shapeAddedFinding = 'sorted products by price low to high and the visible list reordered';
 const shapeVerdicts = shapeRecorded.map((n, i) => ({ scenario: n, verdict: i === 0 ? 'pass' : i === 15 ? 'reject' : 'rework', reasons: ['weak'], required_fixes: [] }));
+const SHAPE_ROBOTS_DETAIL = 'robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded';
 const shapeReport = {
   url: 'https://practicesoftwaretesting.com/', language: 'ts', startedAt: '2026-09-18T16:39:02.000Z', finishedAt: '2026-09-18T17:03:06.000Z', steps: 274,
   scenarios: [{ name: shapeRecorded[0], feature: 'contact', category: 'negative', steps: [step('https://practicesoftwaretesting.com/contact')] }],
@@ -166,7 +167,16 @@ const shapeReport = {
     { scenario: shapeAddedFinding, category: 'happy', expected: 'locate element: element', url: 'https://practicesoftwaretesting.com/category/special-tools', messages: ['Selector could not be resolved or recovered after 2 attempts (css=a.card:first-of-type h5).'] },
   ],
   skipped: shapeSkipped.map((scenario) => ({ scenario, reason: 'no products on this page' })),
-  ruleCoverage: { covered: [{ ruleId: 'R13', scenarios: [shapeRecorded[0]] }], uncovered: Array.from({ length: 13 }, (_, i) => ({ ruleId: `R${i + 1 + (i >= 12 ? 1 : 0)}`, text: `rule ${i + 1}`, reason: 'not-planned' })) },
+  // R10 is uncovered for a robots skip (invariant 75); the other twelve read not-planned as recorded.
+  ruleCoverage: { covered: [{ ruleId: 'R13', scenarios: [shapeRecorded[0]] }], uncovered: Array.from({ length: 13 }, (_, i) => (i === 9 ? { ruleId: 'R10', text: 'rule 10', reason: 'robots-disallowed', detail: SHAPE_ROBOTS_DETAIL } : { ruleId: `R${i + 1 + (i >= 12 ? 1 : 0)}`, text: `rule ${i + 1}`, reason: 'not-planned' })) },
+  // The run 59540f D1 fix shape: a sitemap seed merged with the crawl, two robots skips (invariant 75).
+  discovery: {
+    method: 'sitemap+crawl',
+    pages: [{ url: 'https://practicesoftwaretesting.com/', source: 'sitemap' }, { url: 'https://practicesoftwaretesting.com/category/hand-tools', source: 'crawl', linkedFrom: 'https://practicesoftwaretesting.com/' }],
+    candidates: [{ url: 'https://practicesoftwaretesting.com/', source: 'sitemap' }, { url: 'https://practicesoftwaretesting.com/contact', source: 'sitemap' }, { url: 'https://practicesoftwaretesting.com/category/hand-tools', source: 'crawl' }],
+    warnings: ['sitemap: 3 page(s); no sitemap page carries feature(s) catalogue, account, cart; continuing to the crawl and merging.'],
+    robotsSkipped: [{ path: '/auth/login', rule: '/auth' }, { path: '/checkout', rule: '/checkout' }],
+  },
   reconciliation: {
     planned: 20, generated: 1,
     dropped: shapeVerdicts.filter((v) => v.verdict !== 'pass').map((v) => ({ name: v.scenario, stage: 'critic', reason: `critic ${v.verdict}: weak` })),
@@ -274,6 +284,11 @@ check('SK. a report without a discovery block: discovery stage not-applicable, s
 const emptyRun = buildRunDetail(db, root, emptyId);
 check('M3. an empty events.jsonl: events [], events_status empty', emptyRun.status === 200 && Array.isArray(emptyRun.body.events) && emptyRun.body.events.length === 0 && emptyRun.body.events_status === 'empty', JSON.stringify(emptyRun.status === 200 ? { e: emptyRun.body.events, s: emptyRun.body.events_status } : emptyRun.body));
 check('SB2. a completed run with 1 finding and 1 uncovered rule and no unmatched verdicts: Summary status attention (product behavior to review), not warning', emptyRun.status === 200 && emptyRun.body.legacy === false && emptyRun.body.unmatched_verdicts.length === 0 && emptyRun.body.stages.summary.status === 'attention' && emptyRun.body.stages.summary.attention === 2, emptyRun.status === 200 && emptyRun.body.legacy === false ? emptyRun.body.stages.summary.status : '');
+// For DS1 (invariant 75), read while the database is open.
+const shapeForDs1 = buildRunDetail(db, root, shapeId);
+const shapeStagesForDs1 = shapeForDs1.status === 200 && shapeForDs1.body.legacy === false ? shapeForDs1.body.stages : null;
+const mainForDs1 = buildRunDetail(db, root, runId);
+const mainRobotsSkippedForDs1 = mainForDs1.status === 200 && mainForDs1.body.legacy === false ? mainForDs1.body.stages.discovery.robots_skipped : 'not a run payload';
 const missing = buildRunDetail(db, root, 'does-not-exist');
 check('N. an unknown run id is a 404 whose message names the path looked for', missing.status === 404 && /does-not-exist/.test(missing.body.error) && /output\/\*\/does-not-exist\/run-report\.json/.test(missing.body.error), JSON.stringify(missing.body));
 const gone = buildRunDetail(db, root, goneId);
@@ -484,6 +499,22 @@ const rgbOf = (hsl: string): string => { const [h, s, l] = hsl.split(/\s+/).map(
 check('SG4d. page: the 5e4394 hero reads 13 (0 findings · 13 uncovered rules · 2 elements not found): the big number excludes the two locator failures, the extra count is in the neutral token and the number in the finding token', shapeKinds.hero === '13' && shapeKinds.heroSub === '0 findings · 13 uncovered rules · 2 elements not found' && shapeKinds.heroLocator === '2 elements not found' && shapeKinds.heroLocatorColor === rgbOf(shapeKinds.neutral) && shapeKinds.heroColor === rgbOf(shapeKinds.finding), JSON.stringify({ hero: shapeKinds.hero, sub: shapeKinds.heroSub, locator: shapeKinds.heroLocator, locatorColor: shapeKinds.heroLocatorColor, neutral: rgbOf(shapeKinds.neutral) }));
 check('SG4b. page: the 5e4394 locator findings are under the grey collapsed "Elements the agent could not find (2)" with the element looked for (prefix stripped), the violet section reads 0 with "No findings recorded", and the funnel row reads "2 (0 product behavior, 2 element not found)"', /^Product behavior to review\s*0$/.test(shapeKinds.productHeading.trim()) && shapeKinds.noFindings && shapeKinds.productCards === 0 && shapeKinds.locatorCount === '2' && shapeKinds.locatorOpen === false && shapeKinds.locatorRows === 2 && shapeKinds.element === 'search input' && shapeKinds.funnelKinds === '2 (0 product behavior, 2 element not found)', JSON.stringify(shapeKinds));
 check('SG4c. page: the locator heading is the neutral token, never the finding (violet) token', shapeKinds.headingColor !== '' && shapeKinds.neutral !== '' && shapeKinds.neutral !== shapeKinds.finding && shapeKinds.headingColor === `rgb(${(() => { const [h, s, l] = shapeKinds.neutral.split(/\s+/).map((v) => parseFloat(v)) as [number, number, number]; const S = s / 100, L = l / 100; const k = (n: number) => (n + h / 30) % 12; const a = S * Math.min(L, 1 - L); const f = (n: number) => L - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return [f(0), f(8), f(4)].map((v) => Math.round(v * 255)).join(', '); })()})`, JSON.stringify({ color: shapeKinds.headingColor, neutral: shapeKinds.neutral }));
+// Invariant 75 on the run page: the merged rung, the robots skips, a robots-disallowed rule with its detail.
+{
+  const shapeStages = shapeStagesForDs1;
+  check('DS1. payload: the Discovery stage carries the merged method and robotsSkipped verbatim; the uncovered rule carries its detail; a report without robotsSkipped carries null',
+    !!shapeStages && shapeStages.discovery.method === 'sitemap+crawl' && JSON.stringify(shapeStages.discovery.robots_skipped) === JSON.stringify([{ path: '/auth/login', rule: '/auth' }, { path: '/checkout', rule: '/checkout' }]) &&
+    shapeStages.summary.rule_coverage?.uncovered.find((u) => u.rule_id === 'R10')?.detail === SHAPE_ROBOTS_DETAIL && shapeStages.summary.rule_coverage?.uncovered.find((u) => u.rule_id === 'R1')?.detail === null &&
+    mainRobotsSkippedForDs1 === null, JSON.stringify(shapeStages?.discovery));
+  const shapeDisc = await page.evaluate(() => ({
+    rung: document.querySelector('[data-testid="discovery-method"]')?.textContent ?? '',
+    skipCount: document.querySelector('[data-testid="discovery-robots-skipped-count"]')?.textContent ?? '',
+    skips: Array.from(document.querySelectorAll('[data-testid="discovery-robots-skip"]')).map((li) => li.textContent ?? ''),
+    uncovered: document.querySelector('[data-testid="uncovered-list"]')?.textContent ?? '',
+  }));
+  check('DS2. page: the rung reads "sitemap + crawl (merged)", the robots skips are listed with their rule, and the robots-disallowed rule shows its reason and detail',
+    shapeDisc.rung === 'sitemap + crawl (merged)' && shapeDisc.skipCount === '2' && JSON.stringify(shapeDisc.skips) === JSON.stringify(['/auth/loginDisallow: /auth', '/checkoutDisallow: /checkout']) && shapeDisc.uncovered.includes(`robots-disallowed: ${SHAPE_ROBOTS_DETAIL}`), JSON.stringify(shapeDisc));
+}
 // Legacy notice.
 await page.goto(`http://127.0.0.1:${PORT}/runs/${legacyId}#token=${TOKEN}`, { waitUntil: 'networkidle' });
 await page.waitForSelector('[data-testid="run-detail"][data-legacy="true"]');

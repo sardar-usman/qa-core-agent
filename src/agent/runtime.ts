@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
 import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
-import type { RunReport, Scenario, TraceStep } from './trace.js';
+import type { PlanTrimmed, RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, pageFitRejectionLine, lockoutScenarioNames, knownAccountIdentifiers, unreachableFeatures, unreachableFeatureLine, reachActionsText, RULE_RETRY_CAP, type PlannedScenario } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, finalCriticSummary, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
@@ -17,7 +17,7 @@ import type { RequirementsMap } from './requirements.js';
 import { totalCost, COST_CLOSEOUT_GRACE_USD } from './cost-total.js';
 import { costOf } from './pricing.js';
 import { exploreStageModels, unknownModelRefusal } from './stage-models.js';
-import { discoverPages, fetchRobots, writeDiscoveryJson } from './discovery.js';
+import { discoverPages, discoveryFeatureList, fetchRobots, robotsBlockedFeatures, robotsDisallowedDetails, writeDiscoveryJson } from './discovery.js';
 import { detectStateFeatures, runStateProbes } from './state-probe.js';
 import type { PlannedPageEntry } from './planned-page.js';
 import { buildPlanTargets, planAcrossPages, ruleRetryLine, PER_PAGE_SCENARIO_CAP, GLOBAL_PLAN_CAP } from './plan-pages.js';
@@ -836,6 +836,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     plan: opts.resume?.plan ?? ([] as PlannedScenario[]),
     fillableFields: opts.resume?.fillableFields ?? 0,
     discovery: opts.resume?.discovery as RunReport['discovery'],
+    // The scenarios the per-page cap cut (invariant 75), so a resumed report
+    // and its coverage still name them. Set ([] when nothing was cut) once
+    // per-page planning ran; undefined when it never ran (a single-page run,
+    // or a checkpoint written before the field).
+    planTrimmed: opts.resume?.planTrimmed as PlanTrimmed[] | undefined,
     completed: [...restoredCompleted],
     verdicts: opts.resume?.verdicts as ScenarioVerdict[] | undefined,
     spend: opts.resume
@@ -862,6 +867,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     ...(cpState.discovery ? { discovery: cpState.discovery } : {}),
     ...(opts.requirements ? { requirementsMap: opts.requirements } : {}),
     plan: cpState.plan,
+    ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
     fillableFields: cpState.fillableFields,
     completedScenarios: cpState.completed,
     ...(cpState.verdicts && cpState.verdicts.length > 0 ? { verdicts: cpState.verdicts } : {}),
@@ -927,10 +933,25 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const disc = await discoverPages({
       entryUrl: opts.url,
       requirements: opts.requirements,
+      ...(opts.features && opts.features.length > 0 ? { features: opts.features } : {}),
       userUrls: opts.urls,
     });
     for (const w of disc.warnings) {
       opts.onEvent?.({ type: 'message', text: `discovery: ${w}` });
+    }
+    // A feature no candidate carries while a path robots.txt kept the crawl
+    // from loading does: one console line and one discovery warning, never
+    // silent (invariant 75). Robots honoring is unchanged.
+    const robotsBlocked = robotsBlockedFeatures({
+      entryUrl: opts.url,
+      features: discoveryFeatureList(opts.requirements, opts.features),
+      candidates: disc.pages,
+      robotsSkipped: disc.robotsSkipped,
+      ...(opts.requirements ? { featureTokens: featureTokenMap(opts.requirements) } : {}),
+    });
+    for (const b of robotsBlocked) {
+      opts.onEvent?.({ type: 'message', text: b.line });
+      disc.warnings.push(b.line);
     }
 
     // Relevance filter — only the remote-discovered sets (sitemap/crawl) are
@@ -992,7 +1013,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     for (const line of probes.lines) opts.onEvent?.({ type: 'message', text: line });
     const planned = buildPlanTargets({ pages, map: opts.requirements, features: opts.features, revealed: probes.revealed, candidates: disc.pages });
     pages = planned.pages;
-    discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings, ...(probes.probes.length > 0 ? { stateProbes: probes.probes } : {}) };
+    discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings, ...(disc.robotsSkipped ? { robotsSkipped: disc.robotsSkipped } : {}), ...(probes.probes.length > 0 ? { stateProbes: probes.probes } : {}) };
     try {
       writeDiscoveryJson(opts.outDir, discoveryInfo);
     } catch (err) {
@@ -1038,6 +1059,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     contradictionRejected.push(...planned2.contradictionRejected);
     plannerUsd += planned2.plannerUsd;
     if (planned2.planCapHit) planCapHit = true;
+    cpState.planTrimmed = planned2.planTrimmed;
 
     if (combined.length === 0) {
       throw new Error(
@@ -1050,7 +1072,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // carry either (no scenario tagged with it, none citing its rules) can
     // only report not-planned; say so after planning, never invent a URL for
     // it, and never say it of a feature the plan carries (invariant 72).
-    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes, combined)) {
+    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes, combined, robotsBlocked.map((b) => b.feature))) {
       opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
     }
     // Phase boundary: plan done.
@@ -1863,6 +1885,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     language: opts.language,
     ...(stopped ? { stopped } : {}),
     ...(discoveryInfo ? { discovery: discoveryInfo } : {}),
+    ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
     ...(orientationCalls !== undefined ? { orientationCalls } : {}),
     scenarios: emittedScenarios,
     cascadeStats,
@@ -1936,6 +1959,12 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // A feature whose state probe revealed no page: its rules still
         // uncited after planning read not-revealed with the probe's detail.
         ...(discoveryInfo?.stateProbes ? { notRevealed: notRevealedFeatures(discoveryInfo.stateProbes) } : {}),
+        // A feature robots.txt kept out of reach: its uncited rules read
+        // robots-disallowed with the paths and the rule (invariant 75).
+        robotsDisallowed: robotsDisallowedDetails(opts.requirements, discoveryInfo, opts.url),
+        // A rule whose only planned scenarios the per-page cap cut reads
+        // cut-by-page-cap, naming them, never not-planned (invariant 75).
+        ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
       }),
       // Derivation: which checklist categories produced scenarios per feature
       // and which were skipped, with the reason. The considered-not-automated

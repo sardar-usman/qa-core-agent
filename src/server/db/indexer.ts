@@ -196,6 +196,9 @@ export const UNCOVERED_STATUS: Record<string, 'not_planned' | 'planned_but_dropp
   // precise reason and its detail.
   'not-reachable': 'not_planned',
   'not-revealed': 'not_planned',
+  // Never planned either; the reason column keeps the precise label (schema v8, invariant 75).
+  'robots-disallowed': 'not_planned',
+  'cut-by-page-cap': 'not_planned',
 };
 
 /** Index one run directory: the runs row and its derived rows. */
@@ -238,9 +241,10 @@ export function indexRunDir(db: Database.Database, root: string, entry: RunDirEn
     if (rc) {
       const ruleInfo = new Map<string, { text: string; feature: string }>();
       for (const f of map?.features ?? []) for (const r of f.rules ?? []) ruleInfo.set(r.id, { text: r.text, feature: f.name });
-      const ins = db.prepare('INSERT OR REPLACE INTO rule_coverage (run_id, rule_id, rule_text, feature, status, scenarios_json) VALUES (?, ?, ?, ?, ?, ?)');
-      for (const c of rc.covered ?? []) ins.run(row.id, c.ruleId, ruleInfo.get(c.ruleId)?.text ?? null, ruleInfo.get(c.ruleId)?.feature ?? null, 'covered', JSON.stringify(c.scenarios ?? []));
-      for (const u of rc.uncovered ?? []) ins.run(row.id, u.ruleId, u.text ?? ruleInfo.get(u.ruleId)?.text ?? null, ruleInfo.get(u.ruleId)?.feature ?? null, UNCOVERED_STATUS[u.reason] ?? 'not_planned', '[]');
+      const ins = db.prepare('INSERT OR REPLACE INTO rule_coverage (run_id, rule_id, rule_text, feature, status, scenarios_json, reason, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const c of rc.covered ?? []) ins.run(row.id, c.ruleId, ruleInfo.get(c.ruleId)?.text ?? null, ruleInfo.get(c.ruleId)?.feature ?? null, 'covered', JSON.stringify(c.scenarios ?? []), null, null);
+      // The coarse status for the old columns, and the reason and detail exactly as the report recorded them.
+      for (const u of rc.uncovered ?? []) ins.run(row.id, u.ruleId, u.text ?? ruleInfo.get(u.ruleId)?.text ?? null, ruleInfo.get(u.ruleId)?.feature ?? null, UNCOVERED_STATUS[u.reason] ?? 'not_planned', '[]', typeof u.reason === 'string' ? u.reason : null, typeof u.detail === 'string' && u.detail ? u.detail : null);
     }
     for (const f of findingsOf(report)) {
       const id = findingKey(projectId, f.scenario, f.expected);
