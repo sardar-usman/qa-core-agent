@@ -22,6 +22,7 @@ import { openDatabase, schemaVersion } from '../src/server/db/migrate.js';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import { indexOutput, runRowFromReport, findingKey, UNASSIGNED_PROJECT_ID, runRowFromLegacyRecord, legacyRunId, importLegacyRecords, UNCOVERED_STATUS } from '../src/server/db/indexer.js';
+import { projectCoverage } from '../src/server/api.js';
 import { newRunId, setLatest } from '../src/agent/output-layout.js';
 import type { RunReport } from '../src/agent/trace.js';
 
@@ -122,7 +123,7 @@ fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'unknown.json'), JSON.stri
 /* ─── first index ─── */
 
 const db = openDatabase(dbPath);
-check('A. schema migrated to the current version (7: finding kind, a plain ADD COLUMN)', schemaVersion(db) === 7);
+check('A. schema migrated to the current version (8: rule coverage reason and detail, plain ADD COLUMNs)', schemaVersion(db) === 8);
 const r1 = indexOutput(db, root);
 check('A2. every auto-created project stores environment NULL, never a default label', (db.prepare('SELECT COUNT(*) AS n FROM projects WHERE environment IS NOT NULL').get() as { n: number }).n === 0 && (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n > 0);
 check('B. 6 reported runs + 3 pre-v2 records indexed (1 record covered by a report, skipped)', r1.runs === 9 && r1.legacy === 1 && r1.legacyRecords === 3 && r1.legacyCovered === 1, JSON.stringify(r1));
@@ -259,7 +260,7 @@ const v3Path = path.join(root, 'data', 'qa-core-v3.sqlite');
 let migrated: ReturnType<typeof openDatabase> | null = null;
 let migrateError: string | null = null;
 try { migrated = openDatabase(v3Path); } catch (e) { migrateError = String(e); }
-check('V2. migration reaches the current version (7) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 7, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
+check('V2. migration reaches the current version (8) on a database with referencing runs rows, without throwing', migrated !== null && schemaVersion(migrated) === 8, migrateError ?? (migrated ? `version ${schemaVersion(migrated)}` : ''));
 if (migrated) check('V2b. v7 added findings.kind (NOT NULL, default product) without a rebuild: the column exists and the index pass can write it', (migrated.prepare('PRAGMA table_info(findings)').all() as Array<{ name: string; notnull: number; dflt_value: string | null }>).some((c) => c.name === 'kind' && c.notnull === 1 && c.dflt_value === "'product'"));
 if (migrated) {
   const runsAfter = migrated.prepare("SELECT id, project_id, status FROM runs ORDER BY id").all() as Array<{ id: string; project_id: string; status: string }>;
@@ -276,7 +277,7 @@ if (migrated) {
   indexOutput(reopened, root);
   const proj = reopened.prepare("SELECT name, environment FROM projects WHERE id = 'saucedemo-com'").get() as { name: string; environment: string | null };
   const fnd = reopened.prepare('SELECT status, notes FROM findings').get() as { status: string; notes: string | null };
-  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 7 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
+  check('V7. reopening a current-version database applies no migration and a re-index never overwrites a person-set project name or environment', schemaVersion(reopened) === 8 && proj.name === 'Sauce Renamed' && proj.environment === 'production', JSON.stringify(proj));
   check('V8. finding status and notes survive the reopen and re-index too', fnd.status === 'wont-fix' && fnd.notes === 'by design', JSON.stringify(fnd));
   reopened.close();
 }
@@ -323,8 +324,56 @@ db2.close();
 
 // The index keeps the coarse status; the report and the console carry the
 // precise reason. not-reachable (invariant 61) and not-revealed (invariant
-// 71) both store as not_planned, so no schema change.
+// 71) both store as not_planned; since schema v8 the precise reason and its
+// detail sit beside it (invariant 75).
 check('UC. not-reachable and not-revealed index as not_planned', UNCOVERED_STATUS['not-reachable'] === 'not_planned' && UNCOVERED_STATUS['not-revealed'] === 'not_planned', JSON.stringify(UNCOVERED_STATUS));
+
+/* ─── schema v8: the precise uncovered reason and detail (invariant 75) ─── */
+{
+  const rcRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-index-v8-'));
+  const runId = newRunId(new Date('2026-10-23T12:00:00Z'), 'v8');
+  const dir = path.join(rcRoot, 'output', 'shop-example', runId);
+  fs.mkdirSync(dir, { recursive: true });
+  const ROBOTS = 'robots.txt disallows its matching path(s) /auth/login (rule Disallow: /auth); not loaded';
+  const CUT = 'cut by the per-page cap: "first page check four"';
+  const rep8 = mkReport('https://shop.example/', '2026-10-23T12:00:00.000Z', { shipped: 1, planned: 1 });
+  rep8.ruleCoverage = { covered: [{ ruleId: 'R1', scenarios: ['scenario 1'] }], uncovered: [
+    { ruleId: 'R10', text: 'A registered user can log in.', reason: 'robots-disallowed', detail: ROBOTS },
+    { ruleId: 'R3', text: 'Products sort by name.', reason: 'cut-by-page-cap', detail: CUT },
+    { ruleId: 'R4', text: 'Reset link expires.', reason: 'not-planned' },
+  ] };
+  fs.writeFileSync(path.join(dir, 'run-report.json'), JSON.stringify(rep8));
+  const db8 = openDatabase(':memory:');
+  indexOutput(db8, rcRoot);
+  const rows = db8.prepare('SELECT rule_id, status, reason, detail FROM rule_coverage ORDER BY rule_id').all() as Array<{ rule_id: string; status: string; reason: string | null; detail: string | null }>;
+  check('RC1. robots-disallowed and cut-by-page-cap index as not_planned with the precise reason and the detail beside it; covered rows carry neither; a reason with no detail stores NULL detail',
+    JSON.stringify(rows) === JSON.stringify([
+      { rule_id: 'R1', status: 'covered', reason: null, detail: null },
+      { rule_id: 'R10', status: 'not_planned', reason: 'robots-disallowed', detail: ROBOTS },
+      { rule_id: 'R3', status: 'not_planned', reason: 'cut-by-page-cap', detail: CUT },
+      { rule_id: 'R4', status: 'not_planned', reason: 'not-planned', detail: null },
+    ]) && UNCOVERED_STATUS['robots-disallowed'] === 'not_planned' && UNCOVERED_STATUS['cut-by-page-cap'] === 'not_planned', JSON.stringify(rows));
+  const cov = projectCoverage(db8, 'shop-example');
+  check('RC2. the coverage API returns the latest reason and detail per rule and the precise reason on the not-automated list',
+    cov.rules.find((r) => r.rule_id === 'R10')?.latest_reason === 'robots-disallowed' && cov.rules.find((r) => r.rule_id === 'R10')?.latest_detail === ROBOTS &&
+    cov.rules.find((r) => r.rule_id === 'R1')?.latest_reason === null && cov.not_automated.find((n) => n.rule_id === 'R3')?.uncovered_reason === 'cut-by-page-cap', JSON.stringify(cov));
+  db8.close();
+  // A v7 database gains the two columns by ADD COLUMN, its rows kept; a database built from the current schema.sql already has them.
+  const v7File = path.join(rcRoot, 'v7.sqlite');
+  const v7 = new Database(v7File);
+  v7.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+  v7.exec("CREATE TABLE rule_coverage (run_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_text TEXT, feature TEXT, status TEXT NOT NULL CHECK (status IN ('covered', 'not_planned', 'planned_but_dropped', 'planned_not_explored')), scenarios_json TEXT, PRIMARY KEY (run_id, rule_id))");
+  v7.prepare("INSERT INTO rule_coverage VALUES ('r', 'R1', 't', 'f', 'not_planned', '[]')").run();
+  for (let v = 1; v <= 7; v++) v7.prepare('INSERT INTO schema_version VALUES (?, ?, ?)').run(v, `v${v}`, 'x');
+  v7.close();
+  const up = openDatabase(v7File);
+  const cols = (up.prepare('PRAGMA table_info(rule_coverage)').all() as Array<{ name: string }>).map((c) => c.name);
+  const kept = up.prepare('SELECT rule_id, status, reason, detail FROM rule_coverage').all();
+  check('RC3. a v7 rule_coverage table gains reason and detail (NULL on the old row, kept as it was) and the version reads 8',
+    schemaVersion(up) === 8 && cols.includes('reason') && cols.includes('detail') && JSON.stringify(kept) === JSON.stringify([{ rule_id: 'R1', status: 'not_planned', reason: null, detail: null }]), JSON.stringify({ cols, kept }));
+  up.close();
+  fs.rmSync(rcRoot, { recursive: true, force: true });
+}
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed.`);

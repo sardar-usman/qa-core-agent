@@ -17,6 +17,22 @@ import { formatDate } from '@/lib/format';
 
 const STATUS_LABEL: Record<RuleStatus, string> = { covered: 'covered', planned_but_dropped: 'planned, dropped', planned_not_explored: 'planned, not explored', not_planned: 'not planned' };
 const STATUS_VARIANT: Record<RuleStatus, 'pass' | 'rework' | 'neutral' | 'reject'> = { covered: 'pass', planned_but_dropped: 'reject', planned_not_explored: 'rework', not_planned: 'neutral' };
+/**
+ * The precise reasons the index keeps beside the coarse not_planned status
+ * (schema v8, invariant 75): a rule robots.txt kept out of reach, or whose
+ * only planned scenarios the per-page cap cut, is never shown as "not
+ * planned". The other reasons keep their status label.
+ */
+const REASON_LABEL: Record<string, { label: string; variant: 'rework' | 'neutral' }> = {
+  'robots-disallowed': { label: 'blocked by robots.txt', variant: 'neutral' },
+  'cut-by-page-cap': { label: 'cut by page cap', variant: 'rework' },
+  'not-reachable': { label: 'no page found', variant: 'neutral' },
+  'not-revealed': { label: 'page not revealed', variant: 'neutral' },
+};
+function statusOf(r: { latest_status: RuleStatus; latest_reason?: string | null }): { label: string; variant: 'pass' | 'rework' | 'neutral' | 'reject' } {
+  const precise = r.latest_status !== 'covered' && r.latest_reason ? REASON_LABEL[r.latest_reason] : undefined;
+  return precise ?? { label: STATUS_LABEL[r.latest_status], variant: STATUS_VARIANT[r.latest_status] };
+}
 
 export function CoverageTable({ coverage }: { coverage: ProjectCoverage }) {
   if (coverage.srs_runs === 0) {
@@ -47,11 +63,12 @@ export function CoverageTable({ coverage }: { coverage: ProjectCoverage }) {
         </TableHeader>
         <TableBody>
           {coverage.rules.map((r) => (
-            <TableRow key={r.rule_id} id={`rule-${r.rule_id}`} className="scroll-mt-28" data-testid="rule-row" data-rule-id={r.rule_id} data-status={r.latest_status}>
+            <TableRow key={r.rule_id} id={`rule-${r.rule_id}`} className="scroll-mt-28" data-testid="rule-row" data-rule-id={r.rule_id} data-status={r.latest_status} data-reason={r.latest_reason ?? ''}>
               <TableCell><div className="font-medium text-fg">{r.rule_id}</div>{r.feature ? <div className="text-caption text-fg-2">{r.feature}</div> : null}</TableCell>
               <TableCell className="max-w-md text-small text-fg-2">{r.text ?? <span className="text-fg-2">no text recorded</span>}</TableCell>
               <TableCell>
-                <Badge variant={STATUS_VARIANT[r.latest_status]} data-testid="rule-status">{STATUS_LABEL[r.latest_status]}</Badge>
+                <Badge variant={statusOf(r).variant} data-testid="rule-status">{statusOf(r).label}</Badge>
+                {r.latest_status !== 'covered' && r.latest_detail ? <div className="mt-1 max-w-xs text-caption text-fg-2" data-testid="rule-detail">{r.latest_detail}</div> : null}
                 <div className="mt-1 text-caption text-fg-2">
                   <Tip asChild text={r.latest_run_id} mono>
                     <Link to={`/runs/${encodeURIComponent(r.latest_run_id)}`} className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="rule-latest-run">{formatDate(r.latest_run_at)} run</Link>

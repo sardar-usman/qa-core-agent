@@ -33,7 +33,7 @@ const MAX_ZIP_BYTES = 100 * 1024 * 1024; // 100 MB — pathological cap, real fr
  * directory. The redacted run-report the scaffold writes under the framework
  * root is a different file and stays.
  */
-export const RUN_ARTIFACTS: readonly string[] = ['checkpoint.json', 'events.jsonl', 'run-meta.json', 'requirements-map.json', 'rule-coverage.json', '*.zip', '*-srs.md', '*-srs.txt', '*-srs.pdf', '*-srs.docx'];
+export const RUN_ARTIFACTS: readonly string[] = ['checkpoint.json', 'events.jsonl', 'run-meta.json', 'requirements-map.json', 'rule-coverage.json', 'console.log', '*.zip', '*-srs.md', '*-srs.txt', '*-srs.pdf', '*-srs.docx'];
 
 /**
  * Folders a Playwright run leaves inside a framework tree, excluded from

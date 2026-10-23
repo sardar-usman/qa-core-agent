@@ -3,7 +3,7 @@ import path from 'node:path';
 import { maskForDisk } from './credential-leak.js';
 import type { PlannedScenario } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
-import type { RunReport, Scenario } from './trace.js';
+import type { PlanTrimmed, RunReport, Scenario } from './trace.js';
 import type { ScenarioVerdict } from './critic.js';
 import type { EmptyRunCause } from './reconcile.js';
 import { scenarioNameKey } from './rule-coverage.js';
@@ -76,6 +76,8 @@ export interface Checkpoint {
   discovery?: RunReport['discovery'];
   requirementsMap?: RequirementsMap;
   plan: PlannedScenario[];
+  /** Scenarios the per-page cap cut from the plan (invariant 75); [] when per-page planning cut nothing. Absent when it never ran and on older checkpoints. */
+  planTrimmed?: PlanTrimmed[];
   /** Form-control count from the snapshot, so the resumed step budget matches. */
   fillableFields: number;
   /** Full traces of every scenario completed so far. */
@@ -173,6 +175,7 @@ export function loadCheckpoint(file: string): Checkpoint {
     ...(cp.discovery ? { discovery: cp.discovery } : {}),
     ...(cp.requirementsMap ? { requirementsMap: cp.requirementsMap } : {}),
     plan: cp.plan,
+    ...(Array.isArray(cp.planTrimmed) ? { planTrimmed: cp.planTrimmed } : {}),
     fillableFields: typeof cp.fillableFields === 'number' ? cp.fillableFields : 0,
     completedScenarios: cp.completedScenarios,
     ...(Array.isArray(cp.verdicts) ? { verdicts: cp.verdicts } : {}),

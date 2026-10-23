@@ -1,3 +1,5 @@
+// First: the console copy starts before any other module prints (invariant 75).
+import { consoleCapture } from './console-capture.js';
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -212,6 +214,10 @@ async function main(): Promise<void> {
     }
     if (args.review) console.log('  mode: review (pause after Planner)');
   }
+  // The console copy goes to console.log in the run folder from here on,
+  // with every line printed so far first (invariant 75). A resumed or
+  // from-plan run continues the log its folder already holds.
+  consoleCapture.attach(outDir, { append: Boolean(resumeCp || fromPlan) });
   console.log(`  language: ${args.lang}`);
   console.log(`  output:   ${path.relative(process.cwd(), outDir)}`);
   console.log('');
@@ -340,6 +346,8 @@ async function main(): Promise<void> {
     // findings, trace) was already written by the runtime. Keep it. Only a
     // run that never planned anything has nothing worth keeping.
     if (diag?.cause === 'planner-none') {
+      // The folder goes, and its console copy with it: stop writing first.
+      consoleCapture.detach();
       try { if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* noop */ }
     } else {
       // Nothing was scaffolded, so nothing is slimmed: every artifact the run left stays (report, events, checkpoint, SRS copy, maps).

@@ -167,6 +167,24 @@ export function refusedNote(refused: number | undefined): string {
   return (refused ?? 0) > 0 ? ` · ${refused} refused by the wrong-password cap (not run, not counted as failed)` : '';
 }
 
+/** Each observed page message in a replay drop reason is cut at this many characters, with a visible ellipsis. */
+export const OBSERVED_MESSAGE_CAP = 160;
+
+/**
+ * What a replay drop reason appends for the page's visible messages when the
+ * step failed (invariant 75): `; the page showed: "<message>"` for each,
+ * each cut at OBSERVED_MESSAGE_CAP with "…" when cut. '' when the verdict
+ * observed no message, so a reason never claims the page said anything it
+ * did not.
+ */
+export function observedMessagesSuffix(messages: string[] | undefined): string {
+  return (messages ?? [])
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0)
+    .map((m) => `; the page showed: "${m.length > OBSERVED_MESSAGE_CAP ? `${m.slice(0, OBSERVED_MESSAGE_CAP)}…` : m}"`)
+    .join('');
+}
+
 /** The loud line for a drop whose recorded name claims no planned name. */
 export function unmatchedDropLine(recordedName: string): string {
   return `drop name: recorded name ${JSON.stringify(recordedName)} matched no planned name`;
@@ -244,10 +262,12 @@ export function reconcile(report: RunReport, opts: ReconcileOptions = {}): Recon
       }
       const at = v.failedStep != null ? ` at step ${v.failedStep + 1}` : '';
       const kind = v.stepKind ? ` (${v.stepKind})` : '';
+      // What the page showed when the step failed, so a locator timeout over
+      // a success message reads as what it was (run 59540f D6).
       dropped.push({
         name: v.name,
         stage: 'replay',
-        reason: `replay failed${at}${kind}: ${v.error ?? 'unknown error'}`,
+        reason: `replay failed${at}${kind}: ${v.error ?? 'unknown error'}${observedMessagesSuffix(v.observed?.messages)}`,
       });
     }
   }

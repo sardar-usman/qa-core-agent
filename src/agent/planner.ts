@@ -1714,6 +1714,7 @@ export function unreachableFeatures(
   pages: Array<{ feature?: string }>,
   stateProbes?: Array<{ feature: string }>,
   planned?: Array<{ feature?: string; ruleIds?: string[] }>,
+  robotsBlocked?: string[],
 ): Array<{ name: string; rules: number }> {
   if (!map) return [];
   const norm = (f: string): string => f.trim().toLowerCase();
@@ -1721,10 +1722,13 @@ export function unreachableFeatures(
   // A feature a state probe ran on has its own line (the probe line) and its
   // own coverage reason (not-revealed), never "no discovered page" (invariant 71).
   const probed = new Set((stateProbes ?? []).map((p) => p.feature));
+  // A feature robots.txt kept out of reach has its own line (the robots line)
+  // and its own coverage reason (robots-disallowed, invariant 75).
+  const blocked = new Set(robotsBlocked ?? []);
   const plannedFeatures = new Set((planned ?? []).map((p) => p.feature).filter((f): f is string => !!f).map(norm));
   const citedRules = new Set((planned ?? []).flatMap((p) => p.ruleIds ?? []));
   return map.features
-    .filter((f) => f.rules.length > 0 && !tagged.has(norm(f.name)) && !probed.has(f.name))
+    .filter((f) => f.rules.length > 0 && !tagged.has(norm(f.name)) && !probed.has(f.name) && !blocked.has(f.name))
     .filter((f) => !plannedFeatures.has(norm(f.name)) && !f.rules.some((r) => citedRules.has(r.id)))
     .map((f) => ({ name: f.name, rules: f.rules.length }));
 }

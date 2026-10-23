@@ -43,8 +43,8 @@ export interface FindingRow {
 export type RuleStatus = 'covered' | 'not_planned' | 'planned_but_dropped' | 'planned_not_explored';
 export interface ProjectCoverage {
   project_id: string; srs_runs: number;
-  rules: Array<{ rule_id: string; text: string | null; feature: string | null; latest_status: RuleStatus; latest_run_id: string; latest_run_at: string | null; last_covered_run_id: string | null; last_covered_at: string | null; last_covered_scenarios: string[]; runs_reported: number; runs_covered: number }>;
-  not_automated: Array<{ rule_id: string; text: string | null; reason: RuleStatus; run_id: string }>;
+  rules: Array<{ rule_id: string; text: string | null; feature: string | null; latest_status: RuleStatus; latest_run_id: string; latest_run_at: string | null; latest_reason?: string | null; latest_detail?: string | null; last_covered_run_id: string | null; last_covered_at: string | null; last_covered_scenarios: string[]; runs_reported: number; runs_covered: number }>;
+  not_automated: Array<{ rule_id: string; text: string | null; reason: RuleStatus; uncovered_reason?: string | null; run_id: string }>;
 }
 export interface ProjectTrends {
   project_id: string;
@@ -90,7 +90,7 @@ export interface ObservedOnFailure { url: string; target: string | null; message
 export type StageKey = 'discovery' | 'plan' | 'explore' | 'review' | 'verify' | 'summary';
 /** The six-stage view payload. Every value is a report field; see src/server/run-detail.ts buildStages. */
 export interface RunDetailStages {
-  discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean; same_template_as: string | null }>; warnings: string[] };
+  discovery: { status: StageStatus; stat: string; method: string | null; pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>; candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean; same_template_as: string | null }>; warnings: string[]; robots_skipped?: Array<{ path: string; rule: string }> | null };
   plan: { status: StageStatus; stat: string; planner_usd: number; scenarios: Array<{ name: string; feature: string | null; category: string | null; rule_ids: string[]; page_url: string | null }>; pages: Array<{ url: string | null; count: number }> };
   explore: {
     status: StageStatus; stat: string; steps: number; scenarios_recorded: number; scenarios_shipped: number; explorer_usd: number; repair_usd: number;
@@ -132,7 +132,7 @@ export interface RunDetailStages {
     emitted_check?: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
     /** requirements: the map cost from the report; null on a report written before the field existed. */
     cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; requirements: number | null; total: number };
-    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
+    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string; detail?: string | null }> } | null;
     zip: RunDetailArtifact | null; stopped: { kind: string; reason: string } | null;
   };
 }
