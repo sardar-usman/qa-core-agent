@@ -123,7 +123,8 @@ Oct 6.
    filter, feature parser) priced by the model it actually called; an
    unknown model id refuses to start. Found Oct 8: priceFor falls back to
    Opus 4.7 prices, the Critic and Planner prices are fixed constants, the
-   Stabilizer prices Opus at 15/75. Built, PR #50 (invariant 74: one price
+   Stabilizer prices Opus at 15/75. DONE, PR #50 merged Oct 16 (main
+   1e27c25) (invariant 74: one price
    table in src/agent/pricing.ts keyed by exact model id, costOf prices all
    four usage fields; every stage priced by the model it called and
    resolved in stage-models.ts; an unknown id refuses the run on the CLI,
@@ -142,7 +143,152 @@ replay.
 Live budget: one Toolshop run at the $6 ceiling, plus a saucedemo
 regression run (about $0.60) because item 3 touches login.
 Proposed, pending the owner: one A/B Toolshop run after item 8 with only
-the Explorer on Opus 5.5, Critic held fixed (about $6).
+the Explorer on Opus 5.5, Critic held fixed (about $6). Planned in
+"Opus 5.5 comparison" below.
+
+### Run 7 bar (written Oct 16, before the run)
+
+a. Command. Run 6's command, read from
+output/practicesoftwaretesting-com/20261001T122557Z-44cb3d/console.log
+line 3 (npm's echo of the script it ran):
+`tsx src/cli/explore.ts https://practicesoftwaretesting.com/ --srs output/practicesoftwaretesting-com/20260918T163858Z-5e4394/toolshop-srs.md --ceiling 6 --lang ts --pom --replay --stability 3 --stabilize --stabilize-attempts 3`.
+Run 7 uses the same flags, the same SRS file and the $6.00 ceiling,
+nothing added or removed:
+
+```bash
+cd /Users/osman/Projects/Openclaw/qa-core-agent && npm run explore -- https://practicesoftwaretesting.com/ --srs output/practicesoftwaretesting-com/20260918T163858Z-5e4394/toolshop-srs.md --ceiling 6 --lang ts --pom --replay --stability 3 --stabilize --stabilize-attempts 3
+```
+
+Every flag exists today under the same name (EXPLORE_FLAGS in
+src/agent/explore-request.ts), so no flag changed. `npm run explore --`
+is the npm form of line 3; the `--` passes the flags to the script. The
+emitted-spec check runs by default, as it did in run 6 (run-meta.json
+`flags.emittedCheck` true). The SRS file is byte-identical to the project
+copy (output/practicesoftwaretesting-com/srs/toolshop-srs.md) and its
+requirements map is cached under srs/ac278ddf17eb, so the map is reused
+and costs $0. Models are the defaults: Planner, requirements map, page
+filter and feature parser claude-haiku-4-5; Explorer claude-opus-4-7;
+Critic and Stabilizer claude-sonnet-4-6. No model env override may be
+set, in the shell or in .env: QA_CORE_PLANNER_MODEL,
+QA_CORE_MODEL_PLANNER, QA_CORE_EXPLORER_MODEL, QA_CORE_MODEL_EXPLORE,
+QA_CORE_CRITIC_MODEL, QA_CORE_MODEL_CRITIC, QA_CORE_MODEL_STABILIZER.
+Today .env line 10 sets QA_CORE_MODEL_EXPLORE=claude-opus-4-7 (the
+default value, so the model is the same); the owner comments that line
+out before the run. Also unset, so run 6's defaults hold:
+QA_CORE_REPAIR_RESERVE (run 6: 0.15, events.jsonl line 1),
+QA_CORE_MAX_STEPS (run 6: the formula, 406, console.log line 60),
+QA_CORE_WRONG_PASSWORD_CAP (default 10). `--ceiling 6` wins over
+QA_CORE_MAX_USD=2.00 in .env. After the run, `cost.models` on
+run-report.json must read exactly these models; any other value voids
+the run as run 7.
+
+b. Preconditions.
+
+- Login preflight: LOGIN OK on Oct 16 with the host-scoped Toolshop
+  account (QA_CORE_TEST_USER_PRACTICESOFTWARETESTING_COM /
+  QA_CORE_TEST_PASS_PRACTICESOFTWARETESTING_COM, owner-run). Run it again
+  right before the run; anything but LOGIN OK means no run:
+  `cd /Users/osman/Projects/Openclaw/qa-core-agent && npx tsx scripts/preflight-site.ts https://practicesoftwaretesting.com/ --login`
+- main at 1e27c25 or later, `git status` clean (no local changes).
+- `grep -n '^QA_CORE_.*MODEL' .env; env | grep '^QA_CORE_.*MODEL'` prints
+  only QA_CORE_MODEL_TRANSCRIBE (/generate, not an explore stage) and
+  QA_CORE_MODEL_ROUTER (read by nothing under src/).
+
+c. The bar (confirmed by the owner Oct 6). Each line names where it is
+measured; every file is in the run 7 folder under
+output/practicesoftwaretesting-com/.
+
+1. Rework rate under 35 percent on the FIRST Critic pass. Numerator: the
+   first-pass rework verdicts, which is the number of `review.repair`
+   entries in run-report.json (one per first-pass rework, `first:
+   "rework"`, funded or not; a scenario held as rework for "no verdict
+   returned" counts). Denominator: the scenarios the first pass judged,
+   the length of `verdicts` in the FIRST `critic_done` event in
+   events.jsonl (equal to `review.verdicts.length`). Cross-check: the
+   `verdict: "rework"` count in that event equals `review.repair.length`.
+   Run 6: 10 of 16, 62.5 percent. Strictly under 35 percent to pass.
+2. Shipped count and rules covered: reported, not targeted. Shipped is
+   `reconciliation.generated` (equal to `scenarios.length`); rules
+   covered is `ruleCoverage.covered` over all rules (rule-coverage.json,
+   and the one `Rule coverage:` console line). Run 6: 12 shipped, 10 of
+   14 rules.
+3. Emitted-spec check green for every shipped test: every
+   `emittedRun.tests` entry for a shipped test has status `passed`, and
+   `emittedRun.inconclusive` is not true (an inconclusive check is
+   recorded with its `reason` and the line is not graded met). Reported
+   beside it, the honest measure: tests with status `passed` over every
+   entry in `emittedRun.tests`, drops and the a11y spec included (a
+   failed test is also in `emittedFailed`). Run 6: 13 of 14.
+4. Zero shipped tests whose name claims more than the recording proves.
+   Graded by hand by the advisor, test by test, from the zip's
+   tests/**/*.spec.ts against the scenario's `steps`, `pageUrl` and
+   cited rules in run-report.json. Run 6: two (the rental-titled test
+   recorded on hand tools, D2; the wrong-password test that submitted a
+   generated non-existent account, D7).
+5. The happy login survives replay: the `replay.verdicts` entry whose
+   `name` is the happy login scenario (category happy, its password fill
+   marked `credential: "pass"`) has `passed: true` and no `refused`. No
+   such entry (skipped, dropped before replay) means the line is missed.
+   Run 6: "logged in with valid credentials", `passed: false`.
+
+d. Measured and recorded, not graded.
+
+- Cart state probe (invariant 71): the `State probe "cart"` line and
+  the `State probe "cart" rule split:` line on the console;
+  `discovery.stateProbes` in run-report.json and discovery.json
+  (`outcome`, `revealed`, `rulesSplit`). For each of R6 to R9: planned
+  or not (`plan[].ruleIds`), on which page (`plan[].pageUrl` and
+  `reachedBy`), and covered or why not (`ruleCoverage`).
+- `orientationCalls` on run-report.json and the `Orientation:` console
+  line (invariant 73).
+- RULE 7 refusals of a heading literal right after a click on a nav link
+  (the known false positive from the PR #49 review), counted from
+  events.jsonl: a `tool_result` with `ok: false` and an `error` that
+  begins `RULE 7 (literal catalogue value) rejected this`, whose
+  `tool_call` targets a heading and whose previous action in the same
+  scenario is a `click` on a role link. Also record the total RULE 7
+  refusals for scale.
+- For every covered rule, whether its citing test actually exercises it,
+  checked by hand (run 6's eco-friendly test cited R3 without exercising
+  the category filter).
+- `cost.models` per stage; cost per stage (`cost.requirementsUsd`,
+  `cost.plannerUsd`, `cost.usd` minus `cost.repairUsd` for the Explorer,
+  `cost.repairUsd`, `cost.criticUsd`, `stability.stabilizerCostUsd`);
+  the Explorer's cache spend from `cost.cacheReadTokens` and
+  `cost.cacheCreationTokens`. The non-Explorer stages' cache read and
+  cache write spend is inside their stage dollars (costOf prices all four
+  fields since PR #50) but their token split is not on the report: read
+  it from the Anthropic Console usage for the qa-core workspace over the
+  run's window, by model, and label it as such. This is the first run
+  that prices it; it decides the one-sentence audit note.
+- Total cost (`totalCost`, the `Cost:` console line) against the $6.00
+  ceiling (`cost.ceilingUsd`), with the over-ceiling text if it prints.
+- Wall time: `startedAt` to `finishedAt` on run-report.json (the
+  pipeline), and to `writtenAt` in run-meta.json (the end, the emitted
+  check and the zip included). Run 6: 19 min 32 s for the pipeline.
+
+e. Rules for the run. One run. A missed bar is recorded as missed, never
+re-run to improve the number (standing decision). If the run stops
+before the Critic (a crash, a billing error, a preflight stop), it is
+not graded, the cause is diagnosed at $0, and the owner decides whether
+a second attempt counts as run 7.
+
+### Opus 5.5 comparison (planned; runs only if the owner approves)
+
+The run 7 command with only QA_CORE_EXPLORER_MODEL=claude-opus-5-5 set
+(in the price table, so it is not refused), same $6.00 ceiling, same SRS,
+same preconditions, the same main commit as run 7, run after run 7 is
+graded:
+
+```bash
+cd /Users/osman/Projects/Openclaw/qa-core-agent && QA_CORE_EXPLORER_MODEL=claude-opus-5-5 npm run explore -- https://practicesoftwaretesting.com/ --srs output/practicesoftwaretesting-com/20260918T163858Z-5e4394/toolshop-srs.md --ceiling 6 --lang ts --pom --replay --stability 3 --stabilize --stabilize-attempts 3
+```
+
+`cost.models.explorer` must read claude-opus-5-5 and every other stage
+the run 7 models. No pass or fail bar: a side-by-side table of every line
+in parts c and d for both runs, plus cost per shipped test (`totalCost`
+over `reconciliation.generated`; run 6: $6.09 over 12). Both runs are
+reported, whichever looks better.
 
 ## Audit fix PRs, all MERGED
 
