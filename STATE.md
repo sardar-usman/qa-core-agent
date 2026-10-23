@@ -1,6 +1,6 @@
 # QA-Core STATE
 
-Updated: 2026-10-16. Update this file at the end of every working day.
+Updated: 2026-10-23. Update this file at the end of every working day.
 It is the first thing to read in any new thread.
 
 ## What QA-Core is
@@ -134,7 +134,9 @@ Oct 6.
 8. Live confirmation run (Toolshop, same SRS, $6 ceiling, about $6) on the
    current models (Haiku 4.5, Opus 4.7, Sonnet 4.6), logged in with a
    dedicated account the owner registered by hand (values in .env only),
-   graded against the bar below.
+   graded against the bar below. Run 7 done Oct 23, bar missed; diagnosis
+   docs/audit/run-59540f-diagnosis.md. Next: fix PR for D1 to D4 and D5's
+   cause, then run 8 with a new bar written first.
 Exit bar (written Oct 6, before the run): rework rate under 35 percent on
 the first Critic pass; shipped and rules covered reported, not targeted;
 emitted-spec check green for every shipped test; zero shipped tests whose
@@ -273,6 +275,29 @@ before the Critic (a crash, a billing error, a preflight stop), it is
 not graded, the cause is diagnosed at $0, and the owner decides whether
 a second attempt counts as run 7.
 
+Run 7 verdict: bar missed on lines 1, 4 and 5, met on line 3. Run
+20261023T122053Z-59540f, $2.01, 9 min 6 s; `cost.models` matched part a,
+so it counts as run 7. Diagnosis: docs/audit/run-59540f-diagnosis.md.
+
+1. Missed: 4 reworks of 8 on the first pass, 50 percent (run 6: 62.5);
+   both catalogue scenarios dropped on required fixes the Critic based
+   on misread compare lines (D3), and three of the four reworks hit a
+   secondary check that doctrine rule 8 allows (D7d).
+2. Reported: 5 shipped, 4 of 14 rules (run 6: 12, 10 of 14).
+3. Met: the emitted-spec check passed 6 of 6, nothing dropped, not
+   inconclusive.
+4. Missed: one shipped test overclaims; "search for term filtered list to
+   only matching product names" checks that the count fell and that the
+   first card contains "pliers", not that every card matches (D5).
+5. Missed: no login scenario was planned, so no replay verdict exists.
+
+Main cause (D1): discovery stopped at the site's new 3-URL sitemap
+(/, /contact, /privacy), so the run planned 9 scenarios on 3 pages with
+no category, product, login or cart page. The site's robots.txt, changed
+since run 6, now disallows /auth and /checkout, so fixing D1 brings back
+the catalogue pages but not login, registration or the cart page (D7a);
+line 5 needs an owner decision on `--urls` for the /auth pages.
+
 ### Opus 5.5 comparison (planned; runs only if the owner approves)
 
 The run 7 command with only QA_CORE_EXPLORER_MODEL=claude-opus-5-5 set
@@ -350,6 +375,7 @@ reported, whichever looks better.
 | 4 591732 | Sept 22 | #23 to #26 | 7 | 20 | 13 | 5 | $4.57 | completed | docs/audit/run-591732-diagnosis.md |
 | 5 51d535 | Sept 24 | #25 to #29 | 8 | 17 | 13 | 5 | $6.03 | stopped at ceiling, framework written | docs/audit/run-51d535-diagnosis.md |
 | 6 44cb3d | Oct 1 | #30 to #32 | 8 | 20 | 16 | 12 | $6.09 | completed, repair stopped at its budget | docs/audit/run-44cb3d-diagnosis.md |
+| 7 59540f | Oct 23 | #42 to #50 | 3 (sitemap) | 9 | 8 | 5 | $2.01 | completed | docs/audit/run-59540f-diagnosis.md |
 
 Run 4 verdict: hypothesis confirmed (the tool surface was the bottleneck;
 zero reworks asked for a missing capability). Framework ran 6 of 6.
@@ -388,7 +414,7 @@ saucedemo proof runs: Sept 14 $0.6187 4 shipped; Sept 17 after #18 $0.4536
 Oct 1 after #32 $0.5961, 4 shipped, 2 reworks repaired, emitted 6 of 6 with
 credentials. That run was the regression check for #25 to #32.
 
-Live spend on Toolshop to date: $33.83 over six runs.
+Live spend on Toolshop to date: $35.84 over seven runs.
 
 ## The audit plan
 
@@ -467,6 +493,31 @@ using the qa-core-heal evaluation report as the template.
   a wrong no-discovered-page warning, the repair decision line cut by the
   240-character cap). docs/audit/run-44cb3d-diagnosis.md section 3, D8.
   Invariant 72; locked by smoke-console-honesty and smoke-repair-block.
+- D1 (run 7): OPEN. Discovery returns at the sitemap rung when it yields
+  any page; Toolshop's new sitemap lists 3 URLs, so the crawl never ran and
+  no category or product page was planned. The site's robots.txt now
+  disallows /auth and /checkout, which no remote rung may load (D7a).
+  docs/audit/run-59540f-diagnosis.md, D1.
+- D2 (run 7): OPEN. The state probe looks for a trigger only on candidate
+  pages and never hops from a listing into an item, so "Add to cart" on a
+  product page is never found from /. docs/audit/run-59540f-diagnosis.md,
+  D2.
+- D3 (run 7): OPEN. Critic errors: a compare after select_option called
+  vacuous, "greater" read in the wrong direction, the capture's locator
+  read as the polling source, and a "$" demanded on a price the page
+  renders as "14.15"; both catalogue scenarios dropped on fixes that could
+  not be applied. docs/audit/run-59540f-diagnosis.md, D3 (and D7d, the
+  Critic's flagging rule 2 against doctrine rule 8).
+- D4 (run 7): OPEN. assert_compare equal compares raw text: "$14.15"
+  against "14.15" fails while greater and less parse the number, so R5's
+  "same price" cannot be recorded. docs/audit/run-59540f-diagnosis.md, D4.
+- D5 (run 7): OPEN. A shipped test name claims "only matching" while the
+  recording checks the first card only; the Critic passed it.
+  docs/audit/run-59540f-diagnosis.md, D5.
+- D6 (run 7): OPEN. The contact first-name negative dropped at replay:
+  the page showed the success message in a fresh context after the
+  Explorer saw the error twice; cause open, and the drop reason reads as a
+  locator timeout. docs/audit/run-59540f-diagnosis.md, D6.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report
