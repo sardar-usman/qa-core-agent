@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { RunReport } from '../agent/trace.js';
+import type { DiscoveryMethod } from '../agent/discovery.js';
 import { readRunEvents, type StoredEvent } from './events.js';
 import { hostOf } from './db/indexer.js';
 import { assignVerdicts, verdictMatchesScenario, type ScenarioVerdict } from '../agent/critic.js';
@@ -86,9 +87,12 @@ export interface RunDetailStages {
     /** report.discovery.candidates: every page the rung found before the filter (empty on older reports). same_template_as names the planned page a candidate shares its path template with. */
     candidates: Array<{ url: string; source: string; feature: string | null; volatile: boolean; same_template_as: string | null }>;
     status: StageStatus; stat: string;
-    method: string | null;
+    /** The rung, or merged rungs ("sitemap+crawl"), that yielded the pages. */
+    method: DiscoveryMethod | null;
     pages: Array<{ url: string; source: string; feature: string | null; volatile: boolean }>;
     warnings: string[];
+    /** report.discovery.robotsSkipped: every path a remote rung skipped for robots, with the rule. null when the report carries none (no remote rung ran, or an older report). */
+    robots_skipped: Array<{ path: string; rule: string }> | null;
   };
   plan: {
     status: StageStatus; stat: string;
@@ -171,7 +175,7 @@ export interface RunDetailStages {
     emitted_check: { inconclusive: boolean; reason: string | null; passed: number; failed: number; total: number; duration_ms: number; tests: Array<{ name: string; status: string; error: string | null }> } | null;
     /** requirements: the map cost read off the report (cost.requirementsUsd); null on a report written before the field existed. */
     cost_split: { planner: number; explorer: number; critic: number; repair: number; stabilizer: number; requirements: number | null; total: number };
-    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string }> } | null;
+    rule_coverage: { covered: Array<{ rule_id: string; scenarios: string[] }>; uncovered: Array<{ rule_id: string; text: string; reason: string; detail: string | null }> } | null;
     zip: RunDetailArtifact | null;
     stopped: { kind: string; reason: string } | null;
   };
@@ -401,8 +405,8 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
 
   const disc = report.discovery;
   const discovery: RunDetailStages['discovery'] = disc
-    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), candidates: (disc.candidates ?? []).map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true, same_template_as: p.sameTemplateAs ?? null })), warnings: disc.warnings ?? [] }
-    : { status: 'not-applicable', stat: 'single page', method: null, pages: [], candidates: [], warnings: [] };
+    ? { status: (disc.warnings ?? []).length > 0 ? 'warning' : 'done', stat: `${plural(disc.pages.length, 'page')} found`, method: disc.method, pages: disc.pages.map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true })), candidates: (disc.candidates ?? []).map((p) => ({ url: p.url, source: p.source, feature: p.feature ?? null, volatile: p.volatile === true, same_template_as: p.sameTemplateAs ?? null })), warnings: disc.warnings ?? [], robots_skipped: Array.isArray(disc.robotsSkipped) ? disc.robotsSkipped.map((s) => ({ path: s.path, rule: s.rule })) : null }
+    : { status: 'not-applicable', stat: 'single page', method: null, pages: [], candidates: [], warnings: [], robots_skipped: null };
 
   const pageCounts = new Map<string | null, number>();
   for (const p of plan) pageCounts.set(p.pageUrl ?? null, (pageCounts.get(p.pageUrl ?? null) ?? 0) + 1);
@@ -503,7 +507,7 @@ export function buildStages(report: RunReport, artifacts: RunDetailArtifact[], t
       }
       : null,
     cost_split: { planner: usd(cost.plannerUsd), explorer: usd(cost.usd) - usd(cost.repairUsd), critic: usd(cost.criticUsd), repair: usd(cost.repairUsd), stabilizer, requirements: hasRequirementsCost(report) ? usd(cost.requirementsUsd) : null, total: totalUsd },
-    rule_coverage: rc ? { covered: (rc.covered ?? []).map((c) => ({ rule_id: c.ruleId, scenarios: c.scenarios ?? [] })), uncovered: (rc.uncovered ?? []).map((u) => ({ rule_id: u.ruleId, text: u.text, reason: u.reason })) } : null,
+    rule_coverage: rc ? { covered: (rc.covered ?? []).map((c) => ({ rule_id: c.ruleId, scenarios: c.scenarios ?? [] })), uncovered: (rc.uncovered ?? []).map((u) => ({ rule_id: u.ruleId, text: u.text, reason: u.reason, detail: u.detail ?? null })) } : null,
     zip: artifacts.find((a) => a.kind === 'zip') ?? null,
     stopped,
   };

@@ -111,7 +111,7 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
   return (
     <>
       <KV>
-        <K label="rung" value={d.method ?? '?'} mono testid="discovery-method" />
+        <K label="rung" value={rungLabel(d.method)} mono testid="discovery-method" />
         <K label="pages" value={d.pages.length} testid="discovery-pages" />
         {Object.entries(bySource).map(([src, n]) => <K key={src} label={src} value={n} />)}
       </KV>
@@ -134,6 +134,19 @@ function Discovery({ d }: { d: RunDetailStages['discovery'] }) {
                 <span className="mono min-w-0 break-all text-fg-2" title={p.url}>{p.url}</span>
                 {d.pages.some((k) => k.url === p.url) ? <Badge variant="pass">kept</Badge> : p.same_template_as ? <Badge variant="neutral" data-testid="discovery-same-template" title={p.same_template_as}>same template as {shortPath(p.same_template_as)}</Badge> : <Badge variant="neutral">not picked</Badge>}
                 {p.volatile ? <Badge variant="neutral">volatile</Badge> : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {d.robots_skipped && d.robots_skipped.length ? (
+        <details className="mt-2 text-small" data-testid="discovery-robots-skipped">
+          <summary className="cursor-pointer text-fg-2">paths robots.txt disallows, not loaded: <span className="font-medium text-fg" data-testid="discovery-robots-skipped-count">{d.robots_skipped.length}</span> (also in discovery.json)</summary>
+          <ul className="mt-1">
+            {d.robots_skipped.map((s) => (
+              <li key={`r-${s.path}`} className="flex flex-wrap items-baseline gap-2 border-t border-line/60 py-1 first:border-t-0" data-testid="discovery-robots-skip">
+                <span className="mono min-w-0 break-all text-fg-2">{s.path}</span>
+                <Badge variant="neutral">Disallow: {s.rule}</Badge>
               </li>
             ))}
           </ul>
@@ -181,6 +194,13 @@ function Plan({ p }: { p: RunDetailStages['plan'] }) {
 }
 
 /** The path of a URL, for a compact "same template as /category/hand-tools" label. */
+/** The rung as the panel shows it: a merged sitemap seed reads "sitemap + crawl (merged)". */
+function rungLabel(method: string | null): string {
+  if (method === 'sitemap+crawl') return 'sitemap + crawl (merged)';
+  if (method === 'sitemap+browser-crawl') return 'sitemap + browser crawl (merged)';
+  return method ?? '?';
+}
+
 function shortPath(url: string): string {
   try { return new URL(url).pathname; } catch { return url; }
 }
@@ -441,7 +461,7 @@ function Summary({ sm, findings, live }: { sm: RunDetailStages['summary']; findi
           {sm.rule_coverage.uncovered.length ? (
             <>
               <div className="mt-2 text-small font-medium text-fg">Considered, not automated <span className="font-normal text-fg-2" data-testid="coverage-uncovered">{sm.rule_coverage.uncovered.length}</span></div>
-              <ul data-testid="uncovered-list">{sm.rule_coverage.uncovered.map((u) => <Row key={u.rule_id} tag={u.rule_id} tagVariant="outline" name={u.text} why={u.reason} />)}</ul>
+              <ul data-testid="uncovered-list">{sm.rule_coverage.uncovered.map((u) => <Row key={u.rule_id} tag={u.rule_id} tagVariant="outline" name={u.text} why={u.detail ? `${u.reason}: ${u.detail}` : u.reason} />)}</ul>
             </>
           ) : null}
         </div>

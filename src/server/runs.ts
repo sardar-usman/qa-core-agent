@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RunReport } from '../agent/trace.js';
+import type { DiscoveryMethod } from '../agent/discovery.js';
 import { findingsOf, type Reconciliation } from '../agent/reconcile.js';
 import { findingKindOf } from '../agent/finding-kind.js';
 import { totalCost } from '../agent/cost-total.js';
@@ -45,7 +46,7 @@ export interface DiskRun {
   findings: number;
   /** The same findings by kind (invariant 67): product behavior to review, and elements the agent could not find. */
   findingKinds: { product: number; locator: number };
-  discovery: { method: string; pages: number } | null;
+  discovery: { method: DiscoveryMethod; pages: number } | null;
   /** The verdict journeys of the repair pass, when one ran. */
   repair: NonNullable<RunReport['review']>['repair'] | null;
 }

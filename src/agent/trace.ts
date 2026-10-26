@@ -1,7 +1,18 @@
 import type { CascadeLevel, ResolvedLocator } from './selectors.js';
 import type { StageModels } from './stage-models.js';
-import type { ReachAction, ReachedBy } from './discovery.js';
+import type { DiscoveryMethod, ReachAction, ReachedBy, RobotsSkip } from './discovery.js';
 import type { StateProbe } from './state-probe.js';
+
+/**
+ * One scenario the per-page cap cut from a page's plan (invariant 75): the
+ * page its plan call was for, its name, and the rule ids it cited ([] when
+ * it cited none).
+ */
+export interface PlanTrimmed {
+  pageUrl: string;
+  name: string;
+  ruleIds: string[];
+}
 
 /**
  * A single verified step in the exploration trace. The transcriber turns
@@ -342,15 +353,32 @@ export interface RunReport {
    * single-page runs.
    */
   discovery?: {
-    method: string;
+    /** The rung, or merged rungs, that yielded the pages (DiscoveryMethod). Older reports carry only the single-rung values. */
+    method: DiscoveryMethod;
     /** The pages planned. A page found by an action has source 'action' and reachedBy (invariant 71). */
     pages: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry' | 'action'; feature?: string; volatile?: boolean; linkedFrom?: string; reachedBy?: ReachedBy }>;
     /** Every page the winning rung found before the relevance filter (also written to discovery.json). A page that shares a path template with a planned page carries sameTemplateAs. */
     candidates?: Array<{ url: string; source: 'srs' | 'sitemap' | 'crawl' | 'browser-crawl' | 'user' | 'entry' | 'action'; feature?: string; volatile?: boolean; sameTemplateAs?: string; linkedFrom?: string }>;
     warnings: string[];
+    /**
+     * Every path a remote rung skipped because robots.txt disallows it, with
+     * the rule that matched (invariant 75), as in discovery.json. [] when a
+     * remote rung ran and skipped nothing; absent when none ran, and on a
+     * report written before the field.
+     */
+    robotsSkipped?: RobotsSkip[];
     /** One record per state-dependent feature the probe ran on (invariant 71), as in discovery.json. */
     stateProbes?: StateProbe[];
   };
+  /**
+   * Scenarios the per-page cap cut from a page's plan (invariant 75), each
+   * with the page its plan call was for and the rules it cited. They never
+   * reach the plan, so reconciliation.planned stays the post-trim count; a
+   * rule whose only planned scenarios were cut reads cut-by-page-cap. []
+   * when per-page planning cut nothing; absent when it never ran (a
+   * single-page run) and on a report written before the field.
+   */
+  planTrimmed?: PlanTrimmed[];
   scenarios: Scenario[];
   cascadeStats: Record<CascadeLevel, number>;
   cost: {

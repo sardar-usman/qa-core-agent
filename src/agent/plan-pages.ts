@@ -2,6 +2,7 @@ import type { DiscoveredPage, ReachAction } from './discovery.js';
 import { crossPageBasisText, dedupeAcrossPages, pageFitRejectionLine, uniqueScenarioNames, type PageSnapshot, type PlannedScenario, type PlanResult, type RuleRetry } from './planner.js';
 import type { RequirementsMap } from './requirements.js';
 import type { RevealedFeature } from './state-probe.js';
+import type { PlanTrimmed } from './trace.js';
 
 /**
  * Per-page planning for a discovery run: which plan() call each page gets,
@@ -161,6 +162,8 @@ export interface PlanAcrossPagesResult {
   plannerUsd: number;
   fillableMax: number;
   planCapHit: boolean;
+  /** Every scenario the per-page cap cut, with its page and cited rules; [] when nothing was cut. Never in `combined`. */
+  planTrimmed: PlanTrimmed[];
 }
 
 /**
@@ -187,6 +190,7 @@ export async function planAcrossPages(opts: {
   let plannerUsd = 0;
   let fillableMax = 0;
   let planCapHit = false;
+  const planTrimmed: PlanTrimmed[] = [];
   const pageFeatureOf = (url: string | undefined): string | undefined => targets.find((t) => t.page.url === url)?.page.feature;
   for (const [idx, t] of targets.entries()) {
     const pg = t.page;
@@ -231,8 +235,13 @@ export async function planAcrossPages(opts: {
     for (const rr of p.ruleRetries) onMessage(ruleRetryLine(rr));
     if (scen.length > PER_PAGE_SCENARIO_CAP) {
       planCapHit = true;
-      onMessage(`Planner: ${pg.url} planned ${scen.length} scenarios, trimmed to the per-page cap of ${PER_PAGE_SCENARIO_CAP}.`);
-      scen = scen.slice(0, PER_PAGE_SCENARIO_CAP);
+      // A rule's only citer on this page is kept first; every cut scenario
+      // is named with its rules and recorded (run 59540f cut R3's only
+      // citer and said nothing, and R3 read not-planned).
+      const trim = trimToPageCap(scen, PER_PAGE_SCENARIO_CAP);
+      onMessage(pageCapLine(pg.url, scen.length, PER_PAGE_SCENARIO_CAP, trim.cut));
+      for (const c of trim.cut) planTrimmed.push({ pageUrl: pg.url, name: c.name, ruleIds: [...(c.ruleIds ?? [])] });
+      scen = trim.kept;
     }
     const room = GLOBAL_PLAN_CAP - combined.length;
     if (scen.length > room) { planCapHit = true; scen = scen.slice(0, room); }
@@ -264,5 +273,32 @@ export async function planAcrossPages(opts: {
     const label = t.reachedBy ? `${pg.url} (reached by action from ${t.reachedBy.origin})` : pg.url;
     onMessage(`Planner [${idx + 1}/${targets.length}] ${label}: ${scen.length} scenario(s) · $${p.costUsd.toFixed(4)}`);
   }
-  return { combined, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, plannerUsd, fillableMax, planCapHit };
+  return { combined, dropped, rejected, citationDrops, pageFitRejected, contradictionRejected, plannerUsd, fillableMax, planCapHit, planTrimmed };
+}
+
+/**
+ * Trim one page's plan to the per-page cap. A scenario that is the only one
+ * on this page's plan citing some rule is kept first; the rest fill the room
+ * left; ties keep the Planner's order, and the kept scenarios stay in the
+ * Planner's order. A scenario citing no rule is never kept ahead of a rule's
+ * only citer. Exported for the smoke.
+ */
+export function trimToPageCap<T extends { name: string; ruleIds?: string[] }>(scenarios: T[], cap: number): { kept: T[]; cut: T[] } {
+  if (scenarios.length <= cap) return { kept: [...scenarios], cut: [] };
+  const citers = new Map<string, number>();
+  for (const s of scenarios) for (const id of new Set(s.ruleIds ?? [])) citers.set(id, (citers.get(id) ?? 0) + 1);
+  const soleCiter = (s: T): boolean => (s.ruleIds ?? []).some((id) => citers.get(id) === 1);
+  const order = scenarios.map((s, i) => ({ s, i }));
+  const priority = [...order.filter((x) => soleCiter(x.s)), ...order.filter((x) => !soleCiter(x.s))];
+  const keep = new Set(priority.slice(0, cap).map((x) => x.i));
+  return {
+    kept: order.filter((x) => keep.has(x.i)).map((x) => x.s),
+    cut: order.filter((x) => !keep.has(x.i)).map((x) => x.s),
+  };
+}
+
+/** The console line for a per-page trim: every cut scenario named with the rules it cited. */
+export function pageCapLine(url: string, planned: number, cap: number, cut: Array<{ name: string; ruleIds?: string[] }>): string {
+  const named = cut.map((c) => `"${c.name}" (${c.ruleIds && c.ruleIds.length > 0 ? `cited ${c.ruleIds.join(', ')}` : 'cited no rule'})`).join(', ');
+  return `Planner: ${url} planned ${planned} scenarios, trimmed to the per-page cap of ${cap}; cut: ${named}.`;
 }

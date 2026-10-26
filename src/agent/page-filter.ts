@@ -24,10 +24,11 @@ export const MAX_PAGES_NO_FEATURES = 5;
 
 /**
  * The discovery methods whose page sets go through the relevance filter:
- * every remote-discovered set (sitemap and BOTH crawls). SRS pages are stated
- * requirements and user pages are explicit intent; neither is ever trimmed.
+ * every remote-discovered set (sitemap, BOTH crawls, and a sitemap seed
+ * merged with either crawl). SRS pages are stated requirements and user
+ * pages are explicit intent; neither is ever trimmed.
  */
-export const FILTERED_SOURCES: ReadonlySet<string> = new Set(['sitemap', 'crawl', 'browser-crawl']);
+export const FILTERED_SOURCES: ReadonlySet<string> = new Set(['sitemap', 'crawl', 'browser-crawl', 'sitemap+crawl', 'sitemap+browser-crawl']);
 
 /**
  * At most ONE volatile-id page in a final page set. Detail pages behind

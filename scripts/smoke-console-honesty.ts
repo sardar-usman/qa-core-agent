@@ -131,7 +131,9 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-console-honesty-'
   const cov = computeRuleCoverage({ map, planned: saucePlan, scenarios: [], unreachableFeatures: unreachableFeatures(map, entryOnly, [], saucePlan).map((f) => f.name) });
   check('B5. coverage agrees: login rules are never not-reachable, cart rules are', cov.uncovered.filter((u) => u.reason === 'not-reachable').map((u) => u.ruleId).join(',') === 'R5,R6', JSON.stringify(cov.uncovered));
   const runtimeSrc = fs.readFileSync(path.join('src', 'agent', 'runtime.ts'), 'utf8');
-  check('B6. the runtime prints the line after planning, with the plan', /unreachableFeatures\(opts\.requirements, pages, probes\.probes, combined\)/.test(runtimeSrc) && runtimeSrc.indexOf('unreachableFeatures(opts.requirements, pages, probes.probes, combined)') > runtimeSrc.indexOf('const planned2 = await planAcrossPages('));
+  // Since invariant 75 the call also passes the robots-blocked features, which print their own line instead.
+  const CALL = 'unreachableFeatures(opts.requirements, pages, probes.probes, combined, robotsBlocked.map((b) => b.feature))';
+  check('B6. the runtime prints the line after planning, with the plan (and the robots-blocked features left out)', runtimeSrc.includes(CALL) && runtimeSrc.indexOf(CALL) > runtimeSrc.indexOf('const planned2 = await planAcrossPages('));
 }
 
 /* ─── C. no console message is dropped ────────────────────────────────────── */

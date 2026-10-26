@@ -149,6 +149,22 @@ export const MIGRATIONS: Migration[] = [
       db.exec("ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'product' CHECK (kind IN ('product', 'locator'))");
     },
   },
+  {
+    // rule_coverage.reason and detail: the precise uncovered reason and its
+    // detail as rule-coverage.json records them (robots-disallowed,
+    // cut-by-page-cap, not-reachable, not-revealed, ...), beside the coarse
+    // status, so the rule table never shows them as "not planned" (invariant
+    // 75). Plain ADD COLUMNs, no rebuild: existing rows read NULL until the
+    // next index pass rewrites every derived row from the files. A database
+    // created from the current schema.sql already has both columns.
+    version: 8,
+    name: 'rule coverage reason and detail',
+    up: (db) => {
+      const cols = new Set((db.prepare('PRAGMA table_info(rule_coverage)').all() as Array<{ name: string }>).map((c) => c.name));
+      if (!cols.has('reason')) db.exec('ALTER TABLE rule_coverage ADD COLUMN reason TEXT');
+      if (!cols.has('detail')) db.exec('ALTER TABLE rule_coverage ADD COLUMN detail TEXT');
+    },
+  },
 ];
 
 /** Open (creating the file and its directory if needed) and migrate. */

@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS rule_coverage (
   feature        TEXT,
   status         TEXT NOT NULL CHECK (status IN ('covered', 'not_planned', 'planned_but_dropped', 'planned_not_explored')),
   scenarios_json TEXT,
+  -- The precise uncovered reason and its detail from rule-coverage.json (robots-disallowed, cut-by-page-cap, ...); NULL for a covered rule (schema v8).
+  reason         TEXT,
+  detail         TEXT,
   PRIMARY KEY (run_id, rule_id)
 );
 
