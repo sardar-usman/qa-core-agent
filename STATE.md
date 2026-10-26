@@ -507,9 +507,10 @@ using the qa-core-heal evaluation report as the template.
   on discovery.robotsSkipped (report and discovery.json), a feature only a
   skipped path carries prints one line and one warning, and its uncited
   rules read robots-disallowed in coverage, the rule table and the run page
-  (schema v8). Whether to name the /auth pages with --urls stays an owner
-  decision. Locked by smoke-discovery-ladder, smoke-index, smoke-projects,
-  smoke-run-detail and smoke-console-log.
+  (schema v8). Decided Oct 23: no --urls past robots.txt on the public
+  site; run 8 moves to a self-hosted Toolshop. Locked by
+  smoke-discovery-ladder, smoke-index, smoke-projects, smoke-run-detail and
+  smoke-console-log.
 - D7e (run 7): ADDRESSED (PR #53, engine/discovery-seed, not merged). The
   per-page cap cut R3's only citer silently. Now a rule's only citer is
   kept first, the line names every cut with its rules, the cuts are on the
@@ -524,15 +525,41 @@ using the qa-core-heal evaluation report as the template.
   pages and never hops from a listing into an item, so "Add to cart" on a
   product page is never found from /. docs/audit/run-59540f-diagnosis.md,
   D2.
-- D3 (run 7): OPEN. Critic errors: a compare after select_option called
-  vacuous, "greater" read in the wrong direction, the capture's locator
-  read as the polling source, and a "$" demanded on a price the page
-  renders as "14.15"; both catalogue scenarios dropped on fixes that could
-  not be applied. docs/audit/run-59540f-diagnosis.md, D3 (and D7d, the
-  Critic's flagging rule 2 against doctrine rule 8).
-- D4 (run 7): OPEN. assert_compare equal compares raw text: "$14.15"
-  against "14.15" fails while greater and less parse the number, so R5's
-  "same price" cannot be recorded. docs/audit/run-59540f-diagnosis.md, D4.
+- D3 (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+  Critic errors: a compare after select_option called vacuous, "greater"
+  read in the wrong direction, the capture's locator read as the polling
+  source, and a "$" demanded on a price the page renders as "14.15"; both
+  catalogue scenarios dropped on fixes that could not be applied. Now the
+  compare line names only the element re-read and the relation in words
+  ("re-read X must be GREATER THAN captured cap_y"), and the Critic prompt
+  says to look for the action between capture and compare, to read the
+  relation as re-read RELATION captured, and never to require a format a
+  recorded value contradicts (invariant 76). Locked by smoke-critic-parse.
+  scripts/critic-input.ts prints any run's Critic input at $0.
+  docs/audit/run-59540f-diagnosis.md, D3.
+- D4 (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+  assert_compare equal compared raw text: "$14.15" against "14.15" failed
+  while greater and less parse the number, so R5's "same price" could not
+  be recorded. Now equal, unchanged and changed compare two plain numbers
+  by value through one sameValue, in the tool, replay and both emitters
+  (helpers/same-value in the framework); other text compares exactly
+  (invariant 76). Locked by smoke-capture-compare and smoke-emitted-run.
+  docs/audit/run-59540f-diagnosis.md, D4.
+- D7d (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+  The Critic's flagging rule 2 reworked any check of something already true
+  before the action, while doctrine rule 8 allows it as a secondary sanity
+  check; three of the four first-pass reworks hit such a check. Now one
+  rule, word for word in the Critic prompt and the repair review: such a
+  check is a rework reason only as the primary outcome assertion, never a
+  required fix beside a real one (invariant 76). This changes what counts
+  as a rework; run 8's bar is written after this merges. Locked by
+  smoke-prompt-agreement. docs/audit/run-59540f-diagnosis.md, D7d.
+- D7g (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+  The Explorer tried both compare directions because the assert_compare
+  tool description never said which side is which. Now it states "re-read
+  RELATION captured", greater as re-read > captured and less as re-read <
+  captured (invariant 76). Locked by smoke-prompt-agreement.
+  docs/audit/run-59540f-diagnosis.md, D7g.
 - D5 (run 7): OPEN. A shipped test name claims "only matching" while the
   recording checks the first card only; the Critic passed it.
   docs/audit/run-59540f-diagnosis.md, D5.
@@ -542,8 +569,15 @@ using the qa-core-heal evaluation report as the template.
   Explorer saw the error twice. Now the drop reason appends what the page
   showed ("; the page showed: ..."), so it no longer reads as a bare
   locator timeout (smoke-reconcile). Why the site accepted the submit is
-  still unknown; the scripted reproduction is an owner decision.
-  docs/audit/run-59540f-diagnosis.md, D6.
+  still unknown; reproduced on the self-hosted Toolshop before run 8
+  (advisor decision Oct 23). docs/audit/run-59540f-diagnosis.md, D6.
+- OPEN: the global 20-scenario plan cap in planAcrossPages cuts without
+  naming what it cut (found in PR #53).
+- OPEN: a run that planned nothing deletes its folder and its console.log;
+  the run that most needs its console keeps none (found in the PR #53
+  review).
+- OPEN: gateway and MCP runs keep no console copy; their prepare notes and
+  end summary go only to the client (found in PR #53).
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report

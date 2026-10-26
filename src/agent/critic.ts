@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { Scenario, SelectorRecord, TraceStep } from './trace.js';
+import type { CompareRelation, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { costOf } from './pricing.js';
 import { stageModel } from './stage-models.js';
 import { scenarioNameKey } from './rule-coverage.js';
@@ -69,9 +69,40 @@ export interface CriticClient {
   messages: { create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message> };
 }
 
+/**
+ * The one rule for a check of something already true before the action,
+ * word for word in the Critic prompt (flagging rule 2) and the repair review
+ * prompt. Run 59540f: the old flagging rule 2 reworked "anything that was
+ * already true before the action", while doctrine rule 8 bans such a check
+ * only "as the primary assertion" and keeps it "as a secondary sanity check";
+ * three of the four first-pass reworks targeted exactly such a secondary check
+ * beside a real outcome assertion (D7d). Invariant 54: neither prompt may
+ * permit what the other rejects; smoke-prompt-agreement locks this text in
+ * both Critic prompts and doctrine rule 8's scope beside it.
+ */
+export const SECONDARY_CHECK_RULE = `A check of something already true before the action (toBeVisible on the element the agent just clicked, an attribute the element always had, "the element is still present") is a rework reason only when it is the scenario's primary outcome assertion, meaning no other recorded assertion checks the outcome of the key action. When a real outcome assertion is also recorded, such a check is an allowed secondary sanity check under doctrine rule 8: never a rework reason and never a required fix. You may mention it in reasons.`;
+
+/**
+ * How the Critic reads capture and assert_compare lines. Run 59540f: the
+ * Critic called a compare after a select_option vacuous, read "greater" in
+ * the wrong direction, took the capture's locator for the polling source, and
+ * required a "$" on a price the page rendered as "14.15"; both catalogue
+ * scenarios dropped on fixes that could not be applied (D3). The compare line
+ * now states the relation in words (describeStep), and these lines say how
+ * to read it. Locked by smoke-critic-parse.
+ */
+export const COMPARE_READING_RULES = `Reading capture and compare lines:
+- A capture line reads a value off its element into a named variable: "capture text of <element> -> cap_x".
+- A compare line names the element it RE-READS, then the relation in words, then the captured variable: "assert_compare: re-read <element> must be GREATER THAN captured cap_x". Read it as re-read RELATION captured, never reversed: GREATER THAN means the re-read value is greater than the captured value, LESS THAN means it is less. The captured element is named on its capture line only, never on the compare line.
+- A capture, then an action step (click, fill, press, select_option, set_checked, navigate), then an assert_compare that re-reads the same element is a real before/after comparison. Look for the action between the capture line and the compare line before calling a compare vacuous, circular, or a value compared with itself.
+- EQUAL TO, UNCHANGED FROM and DIFFERENT FROM compare two plain numbers by value: "$14.15" and "14.15" are the same value, so a compare across the two formats is correct as recorded.
+- A required fix must be satisfiable by what the page renders. Every recorded step passed on the live page, so a recorded value or a passing assertion shows what the page renders (a price that passed /^\\d+\\.\\d{2}$/ carries no currency symbol). Never require a format, symbol or text that a recorded value on the line contradicts.`;
+
 export const CRITIC_SYSTEM_PROMPT = `You are the Critic, a senior QA reviewer. You will be shown test scenarios that an exploration agent recorded against a live page. Every scenario executed successfully, the actions worked. Your job is to judge whether the ASSERTIONS would catch a real regression.
 
 Every recorded step names its target as "intent = locator", where the locator is the resolved Playwright call exactly as the emitted spec will write it: page.getByRole(...), page.getByTestId(...), page.locator("css"), with .first() when the cascade had to take the first of several matches and page.frameLocator(...) when the element lives inside a frame. The locator shown IS the locator under test. Judge it on its merits; never report a locator as unspecified, missing, or unknown.
+
+${COMPARE_READING_RULES}
 
 For each scenario return one JSON object:
 
@@ -91,7 +122,7 @@ Flagging rules — apply to every scenario:
 
 1. Timing: any assertion on an animated or async element (progress bar, countdown timer, loading spinner, toast, live counter) with [no-timeout] is automatically "rework". The required_fix must name the correct tool: wait_for_text (polls until text matches) or assert with timeout set to at least 10000ms. An assert_compare line ends in [polls Nms]: the replay engine and the emitted spec poll its re-read for that long (expect.poll), so a compare never needs a timeout and must not be reworked for one.
 
-2. Vacuous or substring: asserting toBeVisible on the element the agent just clicked, or on anything that was already true before the action, proves nothing about the outcome (doctrine rule 8 below; cite it as rule 8). A substring match (toContainText with a single character or a unit-only string like "%") is never acceptable. Flag as "rework".
+2. Vacuous or substring (doctrine rule 8 below; cite it as rule 8): ${SECONDARY_CHECK_RULE} A substring match (toContainText with a single character or a unit-only string like "%") is never acceptable. Flag as "rework".
 
 3. a11y without ARIA: an a11y scenario that only checks visible text or element presence is automatically "rework". It must assert ARIA attributes (role, aria-valuenow, aria-valuemin, aria-valuemax, aria-label, aria-expanded) via toHaveAttribute, or prove keyboard operability produced a meaningful outcome.
 
@@ -100,7 +131,7 @@ Flagging rules — apply to every scenario:
 A fill rendered as <generated:email>, <generated:token> or <generated:password> is a value the framework generates fresh on every run by design (a unique registration email, a unique username, a strong password); it is never a hardcoded literal and never a rule 6 violation.
 A fill rendered as <credential:user> or <credential:pass> types the run's dedicated test account, read from the environment on every run (its identifier and its password); it is never a hardcoded literal and never a rule 6 violation. A wrong-password negative fills <credential:user> with a literal wrong password by design.
 
-5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-read from a second element ("re-read at ...") for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
+5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-reading a second element (the compare line names the element it re-reads) for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
 ${ASSERTION_DOCTRINE}
 
@@ -144,6 +175,7 @@ Rules for this review:
 - "fixes" lists EVERY required fix from the first review, in the order given, each with applied true or false and a one-sentence reason that names the recorded step.
 - A fix is applied when the recorded steps now do what it asked; judge the recorded steps shown, not what a browser might do.
 - A new complaint the first review did not make goes in "observations", never in "fixes" and never as the ground for a rework verdict: the scenario is kept when every listed fix is applied.
+- ${SECONDARY_CHECK_RULE} So removing a secondary check is never a required fix: a first-review fix that only asked to remove such a check, while a real outcome assertion is recorded, is judged "applied": true with the reason "allowed by doctrine rule 8".
 - "verdict" is "pass" when every listed fix is applied, "rework" when one is not.`;
 
 export async function critique(opts: {
@@ -172,14 +204,7 @@ export async function critique(opts: {
   const client: CriticClient = opts.client ?? new Anthropic({ apiKey });
 
   const repairFixes = opts.repairFixes;
-  const traceSummary = opts.scenarios.map((s, i) => {
-    const steps = s.steps.map((step) => describeStep(step)).join('\n      ');
-    const fixes = repairFixes ? fixesFor(repairFixes, s.name) : [];
-    const fixBlock = repairFixes
-      ? `\n      REQUIRED FIXES from the first review:${fixes.length ? fixes.map((f, j) => `\n        ${j + 1}. ${f}`).join('') : ' (none listed)'}`
-      : '';
-    return `${i + 1}. [${s.category}] ${s.name}${fixBlock}\n      ${steps}`;
-  }).join('\n\n');
+  const userMessage = criticUserMessage(opts.scenarios, opts.url, repairFixes);
   const system: Anthropic.TextBlockParam[] = [{ type: 'text', text: CRITIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Anthropic.TextBlockParam];
   if (repairFixes) system.push({ type: 'text', text: REPAIR_REVIEW_PROMPT } as Anthropic.TextBlockParam);
 
@@ -191,7 +216,7 @@ export async function critique(opts: {
       messages: [
         {
           role: 'user',
-          content: `URL: ${opts.url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`,
+          content: userMessage,
         },
       ],
     });
@@ -255,6 +280,24 @@ export async function critique(opts: {
 
   const completed = completeVerdicts(opts.scenarios, parsed);
   return { verdicts: completed.verdicts, summary: parseSummary(text), costUsd, raw, unreviewed: completed.unreviewed, warnings };
+}
+
+/**
+ * The user message the Critic receives: every scenario with its category,
+ * name, the repair review's required fixes when set, and each recorded step
+ * through describeStep. Exported so scripts/critic-input.ts prints exactly
+ * what the Critic would read, at $0.
+ */
+export function criticUserMessage(scenarios: Array<Pick<Scenario, 'name' | 'category' | 'steps'>>, url: string, repairFixes?: Map<string, string[]>): string {
+  const traceSummary = scenarios.map((s, i) => {
+    const steps = s.steps.map((step) => describeStep(step)).join('\n      ');
+    const fixes = repairFixes ? fixesFor(repairFixes, s.name) : [];
+    const fixBlock = repairFixes
+      ? `\n      REQUIRED FIXES from the first review:${fixes.length ? fixes.map((f, j) => `\n        ${j + 1}. ${f}`).join('') : ' (none listed)'}`
+      : '';
+    return `${i + 1}. [${s.category}] ${s.name}${fixBlock}\n      ${steps}`;
+  }).join('\n\n');
+  return `URL: ${url}\n\nRecorded scenarios:\n\n${traceSummary}\n\nReview.`;
 }
 
 /** The note (and console warning) on a repaired scenario whose review returned no per-fix judgement even after the retry. */
@@ -334,6 +377,20 @@ function where(t: SelectorRecord): string {
   return `${t.intent} = ${emitLocatorCall(t.level, t.arg, t.ambiguous === true, t.frameChain, t.filterText)}`;
 }
 
+/**
+ * The relation in words on a compare line, read as re-read RELATION captured
+ * (invariant 76). absent has its own wording: no element is re-read.
+ */
+export const COMPARE_RELATION_WORDS: Record<Exclude<CompareRelation, 'absent'>, string> = {
+  greater: 'GREATER THAN',
+  less: 'LESS THAN',
+  equal: 'EQUAL TO',
+  unchanged: 'UNCHANGED FROM',
+  changed: 'DIFFERENT FROM',
+  before: 'SORTED BEFORE',
+  after: 'SORTED AFTER',
+};
+
 // Exported: the repair pass renders each rework scenario's recorded steps
 // with this same compact notation so the Explorer starts from what it did.
 export function describeStep(step: TraceStep): string {
@@ -405,9 +462,24 @@ export function describeStep(step: TraceStep): string {
       // The poll is what replay and the emitted spec do (expect.poll for
       // COMPARE_POLL_TIMEOUT_MS); the Critic asked for a timeout on compares
       // five times in run 5e4394 because the line did not say so.
+      const poll = ` [polls ${COMPARE_POLL_TIMEOUT_MS}ms]`;
+      if (step.relation === 'absent') {
+        // The captured VALUE is the selector here (replay's absenceLocatorFor),
+        // so no element is re-read and none is named.
+        const by = step.source === 'attribute' && step.attribute ? `no element still carries ${step.attribute}="<captured>"` : 'no element still shows the captured text exactly';
+        const frame = step.target.frameChain?.length ? ` inside ${step.target.frameChain.join(' > ')}` : '';
+        return `assert_compare: captured ${step.varName} absent (${by}${frame})${poll}`;
+      }
+      // Run 59540f: the old line named the re-read after the capture variable
+      // (cap_x_now) and put the capture's locator after "at", so the Critic
+      // took the capture's element for the polling source and read "greater"
+      // backwards (D3). The line now names ONLY the element actually re-read
+      // (readTarget when set, the replay rule) and the relation in words, read
+      // as re-read RELATION captured.
+      const readFrom = step.readTarget ?? step.target;
+      const what = step.source === 'count' ? 'count of ' : step.source === 'attribute' && step.attribute ? `${step.attribute} of ` : '';
       const bounds = step.bounds ? `, strictly within ${step.bounds.min}..${step.bounds.max}` : '';
-      const reread = step.readTarget ? `, re-read at ${where(step.readTarget)}` : '';
-      return `assert_compare ${step.readVar} ${step.relation} vs captured ${step.varName} at ${where(step.target)}${reread}${bounds} [polls ${COMPARE_POLL_TIMEOUT_MS}ms]`;
+      return `assert_compare: re-read ${what}${where(readFrom)} must be ${COMPARE_RELATION_WORDS[step.relation]} captured ${step.varName}${bounds}${poll}`;
     }
     case 'wait_for_state':
       return `wait_for_state(${where(step.target)}, ${step.state})`;

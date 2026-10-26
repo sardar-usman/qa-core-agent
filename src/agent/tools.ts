@@ -10,7 +10,7 @@ import { baseLocator } from './replay.js';
 import { detectUniqueField, generateUnique, isEmailField } from './unique-data.js';
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
-import { parseNumber, noNumberMessage } from './parse-number.js';
+import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
@@ -706,9 +706,11 @@ export const TOOL_DEFS = [
     name: 'assert_compare',
     description:
       'Assert how a value changed relative to one you captured earlier in this scenario. The captured value is the REAL value read from the page, never a literal you invent. ' +
-      'relation="changed" (the value is now different, e.g. a regenerated id), "unchanged"/"equal" (it held), "greater"/"less" (numeric move, e.g. a count went up), "before"/"after" (text order: after a name sort the new first cell sorts before the captured one), or "absent" (the OLD value no longer matches any element). ' +
+      'Every relation reads re-read RELATION captured: the value re-read now on the left, the captured value on the right. ' +
+      'relation="changed" (the re-read value differs from the captured one, e.g. a regenerated id), "unchanged"/"equal" (it held), "greater"/"less" (a numeric move; greater: the re-read value is greater than the captured value (re-read > captured); less: the re-read value is less than the captured value (re-read < captured); a count that went up is greater), "before"/"after" (text order: the re-read sorts before / after the captured one; after a name sort the new first cell sorts before the captured one), or "absent" (the OLD value no longer matches any element). ' +
       'With NO element hints it re-reads the element you captured from. With hints (css / testid / role / label / text) it re-reads THAT element instead, so you can compare two different elements: capture the listing name, click through, assert_compare {name, relation:"equal", css:"h1"} against the detail heading; capture the first price after a sort, then assert_compare {relation:"greater", css:"<second card price>"}. For "absent" the captured value itself becomes the selector (e.g. the old id), so no element hint is needed. ' +
       '"greater" and "less" parse the first number out of formatted text ("$1,299.00" compares as 1299, "42%" as 42) and fail loudly when a side holds no number. ' +
+      '"equal", "unchanged" and "changed" compare two plain numbers by value ("$14.15" equals "14.15", "1,299.00" equals "1299"); any other text compares exactly. ' +
       'A compare of equal/unchanged on the SAME element with no action since the capture is rejected as circular: act first, or use changed. ' +
       'Use this after capture + an action to prove the feature actually did something. A test that cannot tell the value changed is worthless. ' +
       'When you pass element hints, ALSO pass `intent` naming that element ("detail page heading"); when omitted it is derived from the hints and recorded, never "element".',
@@ -1416,11 +1418,16 @@ async function readBySource(page: Page, entry: CaptureEntry, target: SelectorRec
   return (await loc.textContent(opts))?.trim() ?? '';
 }
 
-function relationHolds(relation: CompareRelation, captured: string, current: string): boolean {
+// Exported for smoke-capture-compare: the one table of sameValue cases is
+// driven through this decision, replay's compareHolds and both emitters.
+export function relationHolds(relation: CompareRelation, captured: string, current: string): boolean {
   switch (relation) {
-    case 'changed': return current !== captured;
+    // Plain numbers compare by value ("$14.15" is "14.15"), anything else by
+    // exact text (sameValue, invariant 76). changed uses the same function, so
+    // a format difference alone never reads as a change.
+    case 'changed': return !sameValue(captured, current);
     case 'unchanged':
-    case 'equal': return current === captured;
+    case 'equal': return sameValue(captured, current);
     // Numbers are parsed out of formatted text ($48.41, 1,299.00, 42%). A side
     // with no number never holds; the handler reports which side and why.
     case 'greater': {

@@ -9,16 +9,24 @@
  *     confuse the scan
  *   - a malformed or truncated response returns [] without throwing
  *   - gateByVerdicts drops rework/reject scenarios and keeps pass scenarios
+ *   - the step lines the Critic reads (describeStep), including the compare
+ *     line in words (invariant 76), and the Critic prompt's reading rules
+ *   - scripts/critic-input.ts, run as a child process on a fixture run folder
  *
- * Pure in-code fixtures. No network. No LLM. No browser.
+ * In-code fixtures and one child process. No network. No LLM. No browser.
  */
-import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson, CRITIC_SYSTEM_PROMPT, completeVerdicts, criticMaxTokens, CRITIC_TOKENS_PER_VERDICT, CRITIC_SUMMARY_TOKENS, critique, type CriticClient } from '../src/agent/critic.js';
+import { parseVerdicts, gateByVerdicts, describeStep, renderValueForCritic, repairJson, CRITIC_SYSTEM_PROMPT, COMPARE_READING_RULES, completeVerdicts, criticMaxTokens, CRITIC_TOKENS_PER_VERDICT, CRITIC_SUMMARY_TOKENS, critique, type CriticClient } from '../src/agent/critic.js';
 import { EXPLORER_SYSTEM_PROMPT } from '../src/agent/runtime.js';
 import { ASSERTION_DOCTRINE } from '../src/agent/doctrine.js';
-import type { TraceStep } from '../src/agent/trace.js';
+import type { SelectorRecord, TraceStep } from '../src/agent/trace.js';
 import { attachRuleIds, computeRuleCoverage } from '../src/agent/rule-coverage.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 import type { Scenario } from '../src/agent/trace.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { CREDENTIAL_REDACTION } from '../src/agent/credential-leak.js';
 
 let pass = 0;
 let fail = 0;
@@ -228,13 +236,17 @@ const l5 = describeStep({ kind: 'assert', name: 'v', assertion: { type: 'toBeVis
 check('L5. the default "element" intent never renders bare: the locator follows it',
   l5.startsWith('assert element = page.locator("[data-test=\\"no-results\\"]") visible') && !/assert element visible/.test(l5), l5);
 const l6 = describeStep({ kind: 'assert_compare', varName: 'cap_x', readVar: 'cap_x_now', relation: 'less', source: 'count', intent: 'product cards', target: { level: 'css', arg: '.card', intent: 'product cards' } });
-check('L6. assert_compare names the locator it re-reads', l6.includes('at product cards = page.locator(".card")'), l6);
+// Pin changed in PR engine/critic-compare (run 59540f D3): the line names the
+// re-read element and the relation in words, never "cap_x_now ... at".
+check('L6. assert_compare names the element it re-reads and the relation in words', l6 === 'assert_compare: re-read count of product cards = page.locator(".card") must be LESS THAN captured cap_x [polls 10000ms]', l6);
 // Run 5e4394: the Critic asked for a timeout on five compares because the line
 // did not say the re-read polls. It now ends in the replay poll, and a compare
 // that re-reads a second element names that element too.
 check('L6a. assert_compare shows the poll timeout replay and the emitted spec use', l6.endsWith('[polls 10000ms]'), l6);
 const l6b = describeStep({ kind: 'assert_compare', varName: 'cap_name', readVar: 'cap_name_now', relation: 'equal', source: 'text', intent: 'first card name', target: { level: 'css', arg: 'a.card h5', intent: 'first card name' }, readTarget: { level: 'css', arg: 'h1', intent: 'detail heading' } });
-check('L6b. a cross-element compare names the element it re-reads', l6b.includes('re-read at detail heading = page.locator("h1")') && l6b.includes('at first card name = page.locator("a.card h5")'), l6b);
+// Pin changed in PR engine/critic-compare: the capture's locator (a.card h5)
+// is on the capture line only; run 59540f's Critic read it as the poll source.
+check('L6b. a cross-element compare names only the element it re-reads', l6b === 'assert_compare: re-read detail heading = page.locator("h1") must be EQUAL TO captured cap_name [polls 10000ms]' && !l6b.includes('a.card h5') && !l6b.includes('cap_name_now'), l6b);
 const l6c = describeStep({ kind: 'assert', name: 'p', assertion: { type: 'toHaveText', target: { level: 'css', arg: 'a.card .card-footer', intent: 'first card price' }, text: '', pattern: '^\\$\\d+\\.\\d{2}$', timeout: 5000 } });
 check('L6c. a pattern assertion renders as "matching /.../", never as an empty literal', l6c.includes('has text matching /^\\$\\d+\\.\\d{2}$/') && !l6c.includes('has text ""'), l6c);
 const l6d = describeStep({ kind: 'assert', name: 'c', assertion: { type: 'toHaveCount', target: { level: 'css', arg: 'a.card', intent: 'product cards' }, count: 1, atLeast: true, timeout: 5000 } });
@@ -294,6 +306,92 @@ check('O1. the shared doctrine carries the falsifiability ban as rule 8', /\n8\.
 check('O2. the Explorer prompt\'s ASSERTION RULES 7 points at doctrine rule 8 instead of its own copy', /7\. Falsifiability: ASSERTION DOCTRINE rule 8 below/.test(EXPLORER_SYSTEM_PROMPT) && !/Banned as the primary assertion: visibility of an element that was already visible before the action, a bare "URL did not change" check, and "the element is still present"\. Each of those passes/.test(EXPLORER_SYSTEM_PROMPT.replace(ASSERTION_DOCTRINE, '')));
 check('O3. the Critic\'s vacuous rule cites doctrine rule 8', /doctrine rule 8 below; cite it as rule 8/.test(CRITIC_SYSTEM_PROMPT));
 check('O4. doctrine rule 2 names the text relations before and after', /before or after for text/.test(ASSERTION_DOCTRINE));
+
+/* ─── Q. run 59540f D3 and D7g: the compare line says what it compares, in words ── */
+// The two run 7 steps the Critic misread, from droppedTraces[0].steps[6] and
+// droppedTraces[1].steps[3] (docs/audit/run-59540f-diagnosis.md, D3). The old
+// lines named the re-read "cap_x_now" and put the capture's locator after
+// "at"; the Critic took that locator for the poll source and read greater
+// backwards. Each line now names only the element re-read and the relation.
+const firstOfTypePrice: SelectorRecord = { level: 'css', arg: "a[data-test^='product-']:first-of-type [data-test='product-price']", intent: 'first product price after asc sort' };
+const lastOfTypePrice: SelectorRecord = { level: 'css', arg: "a[data-test^='product-']:last-of-type [data-test='product-price']", intent: 'last visible product price' };
+const q1 = describeStep({ kind: 'assert_compare', varName: 'cap_firstPriceAsc', readVar: 'cap_firstPriceAsc_now', relation: 'greater', source: 'text', intent: 'first product price after asc sort', target: firstOfTypePrice, readTarget: lastOfTypePrice });
+console.log('   run 7 sort step 7: ' + q1);
+check('Q1. run 7 sort step 7 renders the re-read element, GREATER THAN and the captured var, nothing else',
+  q1 === `assert_compare: re-read last visible product price = page.locator("a[data-test^='product-']:last-of-type [data-test='product-price']") must be GREATER THAN captured cap_firstPriceAsc [polls 10000ms]`, q1);
+check('Q1a. the capture\'s locator (first-of-type) and the readVar never appear on the compare line', !q1.includes('first-of-type') && !q1.includes('cap_firstPriceAsc_now'), q1);
+const listingName: SelectorRecord = { level: 'css', arg: "a[data-test^='product-']:first-of-type [data-test='product-name']", intent: 'first product name' };
+const detailName: SelectorRecord = { level: 'css', arg: "[data-test='product-name']", intent: 'detail page product name' };
+const q2 = describeStep({ kind: 'assert_compare', varName: 'cap_listingName', readVar: 'cap_listingName_now', relation: 'equal', source: 'text', intent: 'first product name', target: listingName, readTarget: detailName });
+console.log('   run 7 detail step 4: ' + q2);
+check('Q2. run 7 detail step 4 names the detail element it re-reads, EQUAL TO, and not the listing locator',
+  q2 === `assert_compare: re-read detail page product name = page.locator("[data-test='product-name']") must be EQUAL TO captured cap_listingName [polls 10000ms]` && !q2.includes('first-of-type'), q2);
+// Every relation's words, hard-coded here so a renamed word fails this lock.
+const QWORDS: Array<[string, string]> = [['greater', 'GREATER THAN'], ['less', 'LESS THAN'], ['equal', 'EQUAL TO'], ['unchanged', 'UNCHANGED FROM'], ['changed', 'DIFFERENT FROM'], ['before', 'SORTED BEFORE'], ['after', 'SORTED AFTER']];
+const qLine = (relation: string): string => describeStep({ kind: 'assert_compare', varName: 'cap_v', readVar: 'cap_v_now', relation: relation as 'equal', source: 'text', intent: 'value', target: { level: 'css', arg: '#v', intent: 'value' } });
+const qBad = QWORDS.filter(([r, w]) => qLine(r) !== `assert_compare: re-read value = page.locator("#v") must be ${w} captured cap_v [polls 10000ms]`).map(([r]) => `${r}: ${qLine(r)}`);
+check('Q3. every relation renders its words: GREATER THAN, LESS THAN, EQUAL TO, UNCHANGED FROM, DIFFERENT FROM, SORTED BEFORE, SORTED AFTER', qBad.length === 0, qBad.join(' | '));
+const q4 = describeStep({ kind: 'assert_compare', varName: 'cap_oldId', readVar: 'cap_oldId_now', relation: 'absent', source: 'attribute', attribute: 'id', intent: 'regenerate button', target: { level: 'role', arg: { role: 'button', name: 'Regenerate' }, intent: 'regenerate button' } });
+check('Q4. absent keeps its word, names no element and no readVar: the captured value is the selector', q4 === 'assert_compare: captured cap_oldId absent (no element still carries id="<captured>") [polls 10000ms]', q4);
+const q5 = describeStep({ kind: 'assert_compare', varName: 'cap_bar', readVar: 'cap_bar_again', relation: 'unchanged', source: 'attribute', attribute: 'aria-valuenow', intent: 'progress bar', target: { level: 'role', arg: { role: 'progressbar' }, intent: 'progress bar' }, bounds: { min: 'aria-valuemin', max: 'aria-valuemax' } });
+check('Q5. an attribute re-read names the attribute, and the bounds text is kept', q5 === 'assert_compare: re-read aria-valuenow of progress bar = page.getByRole("progressbar") must be UNCHANGED FROM captured cap_bar, strictly within aria-valuemin..aria-valuemax [polls 10000ms]', q5);
+check('Q6. the Critic prompt carries the compare reading rules verbatim', CRITIC_SYSTEM_PROMPT.includes(COMPARE_READING_RULES));
+check('Q7. reading rule 1: a capture, an action, then a compare on the same element is a real compare; look for the action first',
+  /A capture, then an action step \(click, fill, press, select_option, set_checked, navigate\), then an assert_compare that re-reads the same element is a real before\/after comparison\. Look for the action between the capture line and the compare line before calling a compare vacuous/.test(COMPARE_READING_RULES));
+check('Q8. reading rule 2: the relation is read as re-read RELATION captured, never reversed', COMPARE_READING_RULES.includes('Read it as re-read RELATION captured, never reversed'));
+check('Q9. reading rule 3: a required fix must be satisfiable by what the page renders, never contradicting a recorded value',
+  COMPARE_READING_RULES.includes('A required fix must be satisfiable by what the page renders.') && COMPARE_READING_RULES.includes('Never require a format, symbol or text that a recorded value on the line contradicts.'));
+// The example in the prompt is the shape describeStep writes: tie the two.
+const qExample = describeStep({ kind: 'assert_compare', varName: 'cap_x', readVar: 'cap_x_now', relation: 'greater', source: 'text', intent: 'el', target: { level: 'css', arg: '#e', intent: 'el' } });
+check('Q10. the prompt\'s example compare line has the shape describeStep writes',
+  COMPARE_READING_RULES.includes('"assert_compare: re-read <element> must be GREATER THAN captured cap_x"') && qExample.replace('el = page.locator("#e")', '<element>').replace(' [polls 10000ms]', '') === 'assert_compare: re-read <element> must be GREATER THAN captured cap_x', qExample);
+check('Q11. the volatile-values rule no longer points at the old "re-read at" wording', !CRITIC_SYSTEM_PROMPT.includes('re-read at') && CRITIC_SYSTEM_PROMPT.includes('the compare line names the element it re-reads'));
+
+/* ─── R. scripts/critic-input.ts prints the Critic's input at $0 ─────────── */
+// A fixture run folder: one shipped scenario whose fill typed a planted
+// account value literally (an older report), one dropped trace with a repair
+// recording. The script runs as a child process with that value as the env
+// test password and a fake API key; it must print the compare lines in words,
+// mask the value, and write nothing.
+{
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-critic-input-'));
+  const planted = 'Planted-Secret-Value-77';
+  const price: SelectorRecord = { level: 'css', arg: '.price', intent: 'first price', ambiguous: true };
+  const fixture = {
+    url: 'https://shop.example/', language: 'ts',
+    scenarios: [{ name: 'signed in and the cart kept its price', category: 'happy', feature: 'cart', steps: [
+      { kind: 'fill', target: { level: 'label', arg: 'Password', intent: 'password input' }, value: planted },
+      { kind: 'capture', varName: 'cap_first', source: 'text', intent: 'first price', target: price },
+      { kind: 'click', target: { level: 'role', arg: { role: 'button', name: 'Reload' }, intent: 'reload button' } },
+      { kind: 'assert_compare', varName: 'cap_first', readVar: 'cap_first_now', relation: 'unchanged', source: 'text', intent: 'first price', target: price },
+    ] }],
+    droppedTraces: [{ name: 'sorted by price ascending', stage: 'critic', reason: 'critic rework', category: 'happy', steps: [
+      { kind: 'capture', varName: 'cap_a', source: 'text', intent: 'first price', target: price },
+      { kind: 'select_option', target: { level: 'label', arg: 'Sort', intent: 'sort dropdown' }, by: 'value', option: 'price,asc' },
+      { kind: 'assert_compare', varName: 'cap_a', readVar: 'cap_a_now', relation: 'greater', source: 'text', intent: 'first price', target: price, readTarget: { level: 'css', arg: '.price:last-of-type', intent: 'last price' } },
+    ], repairSteps: [
+      { kind: 'capture', varName: 'cap_b', source: 'text', intent: 'first price', target: price },
+      { kind: 'select_option', target: { level: 'label', arg: 'Sort', intent: 'sort dropdown' }, by: 'value', option: 'price,asc' },
+      { kind: 'assert_compare', varName: 'cap_b', readVar: 'cap_b_now', relation: 'less', source: 'text', intent: 'first price', target: price },
+    ] }],
+    cascadeStats: {}, cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 }, steps: 0, startedAt: '', finishedAt: '',
+  };
+  const reportText = JSON.stringify(fixture, null, 2);
+  fs.writeFileSync(path.join(runDir, 'run-report.json'), reportText);
+  const env = { ...process.env, QA_CORE_TEST_PASS: planted, QA_CORE_TEST_USER: 'fixture-user@example.com', ANTHROPIC_API_KEY: 'sk-ant-fake-key-not-used' };
+  const res = spawnSync(process.execPath, ['--import', 'tsx', path.join(process.cwd(), 'scripts/critic-input.ts'), runDir], { env, encoding: 'utf8' });
+  const outText = res.stdout ?? '';
+  check('R1. critic-input.ts exits 0 on a run folder', res.status === 0, (res.stderr ?? '').slice(-400));
+  check('R2. it prints the shipped scenario through describeStep, the compare line in words', outText.includes('assert_compare: re-read first price = page.locator(".price").first() must be UNCHANGED FROM captured cap_first [polls 10000ms]') && outText.includes('Recorded scenarios:') && outText.includes('Review.'), outText);
+  check('R3. it prints the dropped trace and its repair recording', outText.includes('-- drop 1 of 1: stage critic') && outText.includes('must be GREATER THAN captured cap_a') && outText.includes('-- repair recording of drop 1:') && outText.includes('must be LESS THAN captured cap_b'), outText);
+  check('R4. the planted account value is masked, never printed', !outText.includes(planted) && outText.includes(CREDENTIAL_REDACTION), outText.split('\n').filter((l) => /fill\(/.test(l)).join(' | '));
+  check('R5. nothing is written: the run folder holds only the report, byte for byte', JSON.stringify(fs.readdirSync(runDir)) === JSON.stringify(['run-report.json']) && fs.readFileSync(path.join(runDir, 'run-report.json'), 'utf8') === reportText);
+  const src = fs.readFileSync(path.join(process.cwd(), 'scripts/critic-input.ts'), 'utf8');
+  check('R6. the script removes ANTHROPIC_API_KEY before anything runs and imports no model client', /\ndelete process\.env\.ANTHROPIC_API_KEY;\n/.test(src) && !/@anthropic-ai\/sdk/.test(src));
+  const bad = spawnSync(process.execPath, ['--import', 'tsx', path.join(process.cwd(), 'scripts/critic-input.ts')], { env, encoding: 'utf8' });
+  check('R7. with no run folder it prints usage and exits 2', bad.status === 2 && /usage: npx tsx scripts\/critic-input\.ts <run dir>/.test(bad.stderr ?? ''), String(bad.status));
+  fs.rmSync(runDir, { recursive: true, force: true });
+}
 
 /* ─── P. run 44cb3d: success signals from the recordings, timeouts at the floor ── */
 // The first verdict reworked the happy registration for a success message the
