@@ -525,7 +525,7 @@ using the qa-core-heal evaluation report as the template.
   pages and never hops from a listing into an item, so "Add to cart" on a
   product page is never found from /. docs/audit/run-59540f-diagnosis.md,
   D2.
-- D3 (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+- D3 (run 7): ADDRESSED (PR #54, engine/critic-compare, not merged).
   Critic errors: a compare after select_option called vacuous, "greater"
   read in the wrong direction, the capture's locator read as the polling
   source, and a "$" demanded on a price the page renders as "14.15"; both
@@ -537,7 +537,7 @@ using the qa-core-heal evaluation report as the template.
   recorded value contradicts (invariant 76). Locked by smoke-critic-parse.
   scripts/critic-input.ts prints any run's Critic input at $0.
   docs/audit/run-59540f-diagnosis.md, D3.
-- D4 (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+- D4 (run 7): ADDRESSED (PR #54, engine/critic-compare, not merged).
   assert_compare equal compared raw text: "$14.15" against "14.15" failed
   while greater and less parse the number, so R5's "same price" could not
   be recorded. Now equal, unchanged and changed compare two plain numbers
@@ -545,7 +545,7 @@ using the qa-core-heal evaluation report as the template.
   (helpers/same-value in the framework); other text compares exactly
   (invariant 76). Locked by smoke-capture-compare and smoke-emitted-run.
   docs/audit/run-59540f-diagnosis.md, D4.
-- D7d (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+- D7d (run 7): ADDRESSED (PR #54, engine/critic-compare, not merged).
   The Critic's flagging rule 2 reworked any check of something already true
   before the action, while doctrine rule 8 allows it as a secondary sanity
   check; three of the four first-pass reworks hit such a check. Now one
@@ -554,7 +554,7 @@ using the qa-core-heal evaluation report as the template.
   required fix beside a real one (invariant 76). This changes what counts
   as a rework; run 8's bar is written after this merges. Locked by
   smoke-prompt-agreement. docs/audit/run-59540f-diagnosis.md, D7d.
-- D7g (run 7): ADDRESSED (PR #PRNUM, engine/critic-compare, not merged).
+- D7g (run 7): ADDRESSED (PR #54, engine/critic-compare, not merged).
   The Explorer tried both compare directions because the assert_compare
   tool description never said which side is which. Now it states "re-read
   RELATION captured", greater as re-read > captured and less as re-read <
