@@ -11,6 +11,7 @@ import { detectUniqueField, generateUnique, isEmailField } from './unique-data.j
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
+import { ALL_ITEMS_FLAGS, escapeForPattern, pollAllItems, typedValueForPattern } from './all-items.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
@@ -651,6 +652,7 @@ export const TOOL_DEFS = [
       'To assert the CURRENT value of a form field (an input you filled, a textarea, a select), use toHaveValue with the expected value, NOT toHaveAttribute("value", ...). Typed text lives on the value PROPERTY, so toHaveAttribute reads empty; toHaveValue reads the property. ' +
       'FORMAT instead of literal: toHaveText, toContainText and toHaveAttribute take `regex` (a regex source such as "^\\$\\d+\\.\\d{2}$" for a price, "^\\S+ \\S+$" for a name-shaped string, "\\S" for non-empty) in place of text/value; the element must MATCH it. Use this for catalogue data (a price is rendered, a name is present) where a literal would rot. ' +
       'MINIMUM count: toHaveCount with `atLeast` (e.g. atLeast: 1) proves at least that many elements and polls; it never pins the catalogue count. ' +
+      'EVERY ITEM: for an "only matching" or "all items" outcome (a search or filter shows only items with the term), use allItemsMatch with the hints for the ITEM locator (every product name, not the first) and `text` set to the value you typed (the search term); it checks, in one read of the whole list, that there is at least 1 item and every item matches, so checking the first item is never needed. ' +
       'CHECKED state: toBeChecked asserts a checkbox or radio is checked (pass checked: false for not checked). ' +
       'ALWAYS pass `intent`: a short name for the element ("thank you message", "first product price"). It becomes the page-object field name in the emitted framework. When you omit it, one is derived from the hints (the testid words, the label, the role and its name, the text, the css testid / id / words) and recorded; "element" is never recorded.',
     input_schema: {
@@ -658,14 +660,14 @@ export const TOOL_DEFS = [
       properties: {
         type: {
           type: 'string',
-          enum: ['toBeVisible', 'toBeHidden', 'toHaveText', 'toContainText', 'toHaveURL', 'toHaveCount', 'toHaveAttribute', 'toHaveValue', 'toBeChecked'],
+          enum: ['toBeVisible', 'toBeHidden', 'toHaveText', 'toContainText', 'toHaveURL', 'toHaveCount', 'toHaveAttribute', 'toHaveValue', 'toBeChecked', 'allItemsMatch'],
         },
         intent: { type: 'string', description: 'A short name for the element under test, e.g. "thank you message". Becomes the page-object field name. Derived from testid, label, role and text, or css when omitted; never "element".' },
         role: { type: 'string' },
         label: { type: 'string' },
         testid: { type: 'string' },
         css: { type: 'string' },
-        text: { type: 'string' },
+        text: { type: 'string', description: 'A locator hint, the expected text for toHaveText / toContainText, or for allItemsMatch the value this scenario typed (the search term) that every item must contain.' },
         pattern: { type: 'string', description: 'URL substring (literal, no regex required).' },
         count: { type: 'number', description: 'Expected match count for toHaveCount. Use 0 to assert the selector matches nothing (absence).' },
         attribute: { type: 'string', description: 'Attribute name for toHaveAttribute (e.g. aria-valuenow, role, aria-label).' },
@@ -1354,6 +1356,34 @@ function recordFromHints(input: {
   );
 }
 
+/** The refusal a hint-built testid record gets when no get_dom has shown the page's test-id attribute. */
+export const TESTID_ATTRIBUTE_UNKNOWN = "the page's test-id attribute is not known yet: call get_dom first or pass css with the page's test-id attribute";
+
+/**
+ * The record an UNRESOLVED assertion uses: an absence (toHaveCount 0,
+ * toBeHidden) or a list (allItemsMatch), built from the hints without the
+ * cascade, because the element may be gone or many. A testid hint is
+ * resolved through the host's test-id attribute (dominantTestIdAttribute,
+ * invariant 77, run 59540f D7c): data-testid keeps level testid
+ * (getByTestId reads it); any other attribute (data-test, data-cy) records
+ * css [<attr>="<value>"]; no attribute known yet is refused. Run 7 recorded
+ * getByTestId("contact-submit") on a data-test site: it matched nothing
+ * before or after the submit, so the count-0 check could never fail.
+ * Exported for the smoke.
+ */
+export function hintBuiltRecord(
+  ctx: Pick<ToolContext, '_testIdCounts'>,
+  input: { intent?: string; role?: string; label?: string; testid?: string; css?: string; text?: string },
+  fallback: 'element' | 'elements' = 'element',
+): SelectorRecord | Error {
+  const record = recordFromHints({ ...input, intent: deriveIntent(input, fallback) });
+  if (record.level !== 'testid') return record;
+  const attribute = dominantTestIdAttribute(ctx);
+  if (attribute === null) return new Error(`testid hint ${JSON.stringify(String(record.arg))}: ${TESTID_ATTRIBUTE_UNKNOWN}.`);
+  if (attribute === 'data-testid') return record;
+  return { ...record, level: 'css', arg: `[${attribute}="${cssEscapeValue(String(record.arg))}"]` };
+}
+
 /** Make a string safe to use as a JS identifier in the emitted spec. */
 function sanitizeIdent(raw: string): string {
   const cleaned = raw
@@ -1781,7 +1811,7 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
       case 'capture': {
         const name = String(call.input.name ?? '').trim();
         if (!name) return { ok: false, error: 'capture needs a name.' };
-        if (!ctx.current) return { ok: false, error: 'No scenario in progress — call begin_scenario first.' };
+        if (!ctx.current) return { ok: false, error: 'No scenario in progress: call begin_scenario first.' };
         const source = String(call.input.source ?? '') as CaptureSource;
         if (source !== 'attribute' && source !== 'text' && source !== 'count') {
           return { ok: false, error: 'capture source must be attribute, text, or count.' };
@@ -1928,6 +1958,9 @@ async function runToolInner(ctx: ToolContext, call: ToolInput): Promise<ToolResu
       }
       case 'wait_for_text': {
         const wftText = String(call.input.text ?? '');
+        // An empty expected text would record toHaveText(''), which proves
+        // nothing and which the emitters refuse to write (invariant 77).
+        if (wftText.trim() === '') return { ok: false, error: 'wait_for_text needs a non-empty text: an empty expected text proves nothing. Use toBeHidden or toHaveCount 0 for an element that should be gone.' };
         // Live polling budget — how long the Explorer waits for the page to
         // reach the target state. Capped at the adaptive ceiling so a slow but
         // real operation can be observed in full. This budget is NOT recorded;
@@ -2380,6 +2413,11 @@ async function executeAssertion(
   // ceiling to observe a slow settle. The recorded timeout is unchanged: the
   // model's value or the adaptive observation.
   const countProbe = { timeout: Math.min(input.timeout && input.timeout > 0 ? input.timeout : LIVE_PROBE_TIMEOUT_MS, LIVE_PROBE_TIMEOUT_MS) };
+  // A text probe honors a model timeout below the ceiling (invariant 77, run
+  // 59540f D7h: a toHaveText probe given 15000 waited 60 s on a value the
+  // recording had already shown). With no model timeout the ceiling stays,
+  // so a slow but real settle is still observed in full (invariant 55).
+  const textProbe = { timeout: input.timeout && input.timeout > 0 && input.timeout < ADAPTIVE_CEILING_MS ? input.timeout : ADAPTIVE_CEILING_MS };
   switch (input.type) {
     case 'toBeVisible': {
       const { record, loc } = await resolveAndRecord(ctx, { ...input, intent: deriveIntent(input) });
@@ -2398,6 +2436,12 @@ async function executeAssertion(
       const pattern = regexSource(input.regex);
       if (pattern instanceof Error) return { ok: false, error: pattern.message };
       if (input.text == null && !pattern) return { ok: false, error: `${input.type} needs text, or regex for a format.` };
+      // An empty expected text proves nothing: toContainText('') passes on
+      // any element that exists (invariant 77, run 59540f D7b). Refused here
+      // so it is never recorded; the emitters refuse to write one too.
+      if (!pattern && input.text!.trim() === '') {
+        return { ok: false, error: `${input.type} with an empty expected text proves nothing (it passes on any element). Pass the text the element shows, regex for a format, or toBeHidden / toHaveCount 0 for an element that should be gone.` };
+      }
       // A `text` hint is a locator hint on every other assertion; with a regex
       // it must not double as one, or the element would be looked up by the
       // pattern source. The pattern form locates by the other hints only.
@@ -2406,10 +2450,10 @@ async function executeAssertion(
       const t0 = Date.now();
       if (pattern) {
         // A format assertion: the same RegExp the emitted spec passes.
-        if (input.type === 'toHaveText') await expect(loc).toHaveText(new RegExp(pattern), probe);
-        else await expect(loc).toContainText(new RegExp(pattern), probe);
-      } else if (input.type === 'toHaveText') await expect(loc).toHaveText(input.text!, probe);
-      else await expect(loc).toContainText(input.text!, probe);
+        if (input.type === 'toHaveText') await expect(loc).toHaveText(new RegExp(pattern), textProbe);
+        else await expect(loc).toContainText(new RegExp(pattern), textProbe);
+      } else if (input.type === 'toHaveText') await expect(loc).toHaveText(input.text!, textProbe);
+      else await expect(loc).toContainText(input.text!, textProbe);
       const observed = recordedTimeout(ctx, input.timeout, t0);
       pushStep(ctx, {
         kind: 'assert',
@@ -2480,7 +2524,11 @@ async function executeAssertion(
       // because the whole point is that nothing matches. Wait for it to settle
       // and record an adaptive timeout so a just-removed element is honored.
       if (input.count === 0) {
-        const record = recordFromHints(input);
+        // A testid hint reads the host's test-id attribute (hintBuiltRecord):
+        // a getByTestId on a data-test site matches nothing before or after
+        // the action, so the absence could never fail (run 59540f D7c).
+        const record = hintBuiltRecord(ctx, input);
+        if (record instanceof Error) return { ok: false, error: record.message };
         const countLoc = baseLocator(ctx.page, record);
         const t0 = Date.now();
         await expect(countLoc).toHaveCount(0, countProbe);
@@ -2509,11 +2557,54 @@ async function executeAssertion(
       });
       return { ok: true };
     }
+    case 'allItemsMatch': {
+      // "No item in <list> fails to match <typed value>" (invariant 77, run
+      // 59540f D5: a test named "only matching product names" checked the
+      // first card only). The ITEM locator is built from the hints, never
+      // resolved to one element; `text` is the typed term, never a hint.
+      if (!ctx.current) return { ok: false, error: 'No scenario in progress: call begin_scenario first.' };
+      const listHints = { ...input, text: undefined };
+      const record = hintBuiltRecord(ctx, listHints, 'elements');
+      if (record instanceof Error) return { ok: false, error: record.message };
+      const shape = allItemsShape(input, ctx.current.steps, record);
+      if (shape instanceof Error) return { ok: false, error: shape.message };
+      // RULE 7 ran before the probe (assertWithRetryCap): the pattern is a
+      // value this scenario typed, escaped, case-insensitive.
+      const items = baseLocator(ctx.page, shape.target);
+      const re = new RegExp(shape.pattern, shape.flags);
+      const t0 = Date.now();
+      // ONE read decides both facts, polled until that read holds: at least
+      // 1 item and every item's text matches (pollAllItems). Two checks read
+      // at different moments passed a list that cleared while loading (the
+      // PR #55 review).
+      const read = await pollAllItems(items, re, countProbe.timeout);
+      const observed = recordedTimeout(ctx, input.timeout, t0);
+      if (!read.held) {
+        // An empty list is refused, nothing recorded and nothing counted:
+        // "every item matches" proves nothing on no items.
+        if (read.last && read.last.items === 0) {
+          return {
+            ok: false,
+            error: `allItemsMatch refused: ${shape.target.intent} matches no item, and "every item matches /${shape.pattern}/${shape.flags}" proves nothing on an empty list (last read: 0 items). Point the hints at the items the list shows (every product name), or, when the list should not be empty, assert toHaveCount with atLeast 1 to record that outcome.`,
+          };
+        }
+        // Items that do not match are an outcome failure, counted by the retry cap.
+        throw new Error(`allItemsMatch: ${shape.target.intent} ${read.last === null ? 'could not be read' : `has ${read.last.items} item(s); not matching /${shape.pattern}/${shape.flags}: ${JSON.stringify(read.last.notMatching)}`}`);
+      }
+      pushStep(ctx, {
+        kind: 'assert',
+        name: `every ${shape.target.intent} item matches /${shape.pattern}/${shape.flags} (at least 1 item, one read)`,
+        assertion: { ...shape, timeout: observed },
+      });
+      return { ok: true, data: { pattern: `/${shape.pattern}/${shape.flags}`, items: read.last!.items, checked: 'at least 1 item and every item matches, in one read of the list' } };
+    }
     case 'toBeHidden': {
       // Absence form: do NOT resolve — the element may not exist at all. Build
       // the locator straight from hints. toBeHidden passes when the element is
       // hidden OR matches zero elements, which is exactly "this is not shown".
-      const record = recordFromHints(input);
+      // A testid hint reads the host's test-id attribute, as count 0 does.
+      const record = hintBuiltRecord(ctx, input);
+      if (record instanceof Error) return { ok: false, error: record.message };
       const loc = baseLocator(ctx.page, record).first();
       const t0 = Date.now();
       await expect(loc).toBeHidden(countProbe);
@@ -2643,6 +2734,7 @@ function describeAssertion(input: AssertionInput): string {
     case 'toBeHidden': return `${who} to be hidden`;
     case 'toBeChecked': return `${who} to be ${input.checked === false ? 'not checked' : 'checked'}`;
     case 'toHaveCount': return input.atLeast != null ? `${who} to match at least ${input.atLeast} element(s)` : `${who} to match ${input.count} element(s)`;
+    case 'allItemsMatch': return `at least 1 item of ${who}, every one containing "${input.text ?? input.regex ?? ''}", in one read`;
     default: return `assertion ${input.type}`;
   }
 }
@@ -2679,7 +2771,39 @@ export function ruleSevenShape(input: AssertionInput): Extract<Assertion, { targ
         : { type: input.type, target: record, text: String(input.text ?? '') };
 }
 
+/**
+ * The assertion an allItemsMatch call records, before any probe: the item
+ * record and the pattern. The pattern is the escaped typed value the model's
+ * `text` (or `regex`) names case-insensitively (all-items.ts); when it names
+ * no typed value it stays the model's own, escaped, and RULE 7 refuses it.
+ * Exported for the smoke.
+ */
+export function allItemsShape(input: AssertionInput, priorSteps: TraceStep[], record: SelectorRecord): Extract<Assertion, { type: 'allItemsMatch' }> | Error {
+  const rx = regexSource(input.regex);
+  if (rx instanceof Error) return rx;
+  const term = input.text != null ? String(input.text).trim() : '';
+  const raw = term ? escapeForPattern(term) : rx;
+  if (!raw) return new Error('allItemsMatch needs text: the value this scenario typed (the search term) that every item must contain.');
+  const typed = typedValueForPattern(raw, priorSteps);
+  return { type: 'allItemsMatch', target: { ...record, ambiguous: undefined }, pattern: typed !== null ? escapeForPattern(typed) : raw, flags: ALL_ITEMS_FLAGS };
+}
+
 async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Promise<ToolResult> {
+  // RULE 7 for an all-items assertion: its pattern must be a value this
+  // scenario typed (invariant 77). Refused before the probe, nothing recorded.
+  if (ctx.current && input.type === 'allItemsMatch') {
+    const listHints = { ...input, text: undefined };
+    let listRecord: SelectorRecord;
+    try {
+      listRecord = recordFromHints({ ...listHints, intent: deriveIntent(listHints, 'elements') });
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+    const itemsShape = allItemsShape(input, ctx.current.steps, listRecord);
+    if (itemsShape instanceof Error) return { ok: false, error: itemsShape.message };
+    const r7Items = catalogueLiteralReason(itemsShape, ctx.current.steps, knownAccountNames(ctx));
+    if (r7Items) return { ok: false, error: `RULE 7 (literal catalogue value) rejected this assertion: ${r7Items}.` };
+  }
   // RULE 7 in-run: a literal catalogue value is refused before the probe runs,
   // so the model is steered at once instead of at end_scenario (the gate
   // applies the same rule again on the recorded trace).
@@ -2699,9 +2823,10 @@ async function assertWithRetryCap(ctx: ToolContext, input: AssertionInput): Prom
   // same checks the end_scenario gate runs, before the probe waits on the
   // element and before the retry cap counts anything.
   if (input.type !== 'toHaveURL') {
-    // With a regex the `text` field is not a locator hint (the handler drops it too).
-    const forHint = (input.regex ? { ...input, text: undefined } : input) as unknown as Record<string, unknown>;
-    const assertHint = hintRecord(forHint, input.type === 'toHaveCount' ? 'elements' : 'element');
+    // With a regex, and on an all-items assertion, the `text` field is not a
+    // locator hint (the handler drops it too).
+    const forHint = (input.regex || input.type === 'allItemsMatch' ? { ...input, text: undefined } : input) as unknown as Record<string, unknown>;
+    const assertHint = hintRecord(forHint, input.type === 'toHaveCount' || input.type === 'allItemsMatch' ? 'elements' : 'element');
     if (assertHint) {
       // The recorded timeout is the model's value or the adaptive observation
       // (never under the 5000 ms floor), so the element counts as dynamic

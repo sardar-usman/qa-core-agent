@@ -1,4 +1,4 @@
-import type { RunReport, Scenario, TraceStep } from './trace.js';
+import type { RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
 import { canonicalIntent } from './pom.js';
 import { findHappyLoginScenario, recordedCredentials } from './auth-emit.js';
@@ -10,9 +10,20 @@ import { CREDENTIAL_REDACTION, envCredentialValues, maskDeep } from './credentia
  *
  * For each feature, every scenario that filled form fields contributes one
  * named case: valid (happy scenarios), invalid (negative scenarios, carrying
- * the error text the scenario asserted), boundary (edge scenarios probing a
- * limit). When a RequirementsMap exists, validation rules stating lengths or
- * formats synthesize additional boundary/invalid cases with their ruleIds.
+ * every check the scenario recorded on its own error element: a literal
+ * text, a pattern with its flags, and visibility), boundary (edge scenarios
+ * probing a limit). Every case also carries each select_option value its
+ * recording chose. When a RequirementsMap exists, validation rules stating
+ * lengths or formats synthesize additional boundary/invalid cases with their
+ * ruleIds.
+ *
+ * A case whose recorded error assertion cannot be carried (a check type the
+ * data shape cannot express, an assertion before the last action, a captured
+ * value, nothing asserted at all, or a rule-derived case with no recording)
+ * is marked `uncarriable` with the reason: the POM emitter leaves it out of
+ * the data file with one line naming it, and a recorded case ships as its
+ * own test. It is never emitted with an empty expectation (invariant 77,
+ * run 59540f D7b: the R14 email case asserted toContainText('')).
  *
  * Hard exclusions:
  * - Credential-like values NEVER land in a dataset: password-intent fields
@@ -24,12 +35,43 @@ import { CREDENTIAL_REDACTION, envCredentialValues, maskDeep } from './credentia
  *   replay of the dataset gets a fresh value.
  */
 
+/**
+ * One check an error case carries from its own recording (invariant 77): the
+ * error element it asserted on, and what it asserted there. A text check
+ * holds a non-empty literal or a pattern with its flags, never neither.
+ */
+export interface DatasetErrorCheck {
+  /** The error element the recording asserted on; the emitter names it (the page-object field). */
+  target: SelectorRecord;
+  /** visible: toBeVisible; text: toHaveText; contains: toContainText. */
+  check: 'visible' | 'text' | 'contains';
+  /** The literal the recording asserted (text and contains), never empty. */
+  text?: string;
+  /** The pattern source the recording asserted (text and contains). */
+  pattern?: string;
+  /** The pattern's flags ('' for a recorded regex source). */
+  flags?: string;
+  /** The recorded timeout. */
+  timeout?: number;
+}
+
+/** A select_option value a case's recording chose, with its match mode. */
+export interface DatasetSelect {
+  by: 'value' | 'label' | 'index' | 'auto';
+  option: string;
+}
+
 export interface DatasetCase {
   name: string;
   /** field key (canonical intent) -> value or generator marker. */
   values: Record<string, string>;
+  /** select key (canonical intent) -> every select_option value the recording chose. */
+  selects?: Record<string, DatasetSelect>;
   expect: 'success' | 'error';
-  errorText?: string;
+  /** An error case's own recorded checks, in order; never empty on a carried error case. */
+  errors?: DatasetErrorCheck[];
+  /** Why this case cannot be carried in a data file (invariant 77); the emitter leaves it out and says so. */
+  uncarriable?: string;
   ruleIds?: string[];
 }
 
@@ -160,14 +202,65 @@ function fillValues(scenario: Scenario): Record<string, string> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-/** First asserted error text in the scenario (toHaveText/toContainText). */
-function assertedErrorText(scenario: Scenario): string | undefined {
-  for (const step of scenario.steps) {
-    if (step.kind !== 'assert') continue;
-    const a = step.assertion;
-    if ((a.type === 'toHaveText' || a.type === 'toContainText') && a.text.trim()) return a.text;
+/** A step that drives the page; the checks a data case carries sit after the last one. */
+function isDataAction(st: TraceStep): boolean {
+  return st.kind === 'click' || st.kind === 'fill' || st.kind === 'press' || st.kind === 'select_option' || st.kind === 'set_checked' || st.kind === 'set_input_files';
+}
+
+/**
+ * Every check a scenario recorded on its error element(s), in order, or why
+ * none can be carried. The data loop checks a case only after all its
+ * actions, so an assertion before the last action, a captured value, a check
+ * type the data shape cannot express, or an empty text cannot be carried;
+ * neither can a recording that asserted nothing.
+ */
+export function recordedErrorChecks(s: Scenario): { checks: DatasetErrorCheck[] } | { reason: string } {
+  let lastAction = -1;
+  s.steps.forEach((st, i) => { if (isDataAction(st)) lastAction = i; });
+  const checks: DatasetErrorCheck[] = [];
+  for (let i = 0; i < s.steps.length; i++) {
+    const st = s.steps[i]!;
+    if (st.kind === 'capture' || st.kind === 'assert_compare') return { reason: `step ${i + 1} reads a captured value, which a data case cannot carry` };
+    if (st.kind !== 'assert') continue;
+    if (i < lastAction) return { reason: `step ${i + 1} asserts before the last action, which a data case cannot carry` };
+    const a = st.assertion;
+    const timeout = 'timeout' in a && typeof a.timeout === 'number' ? { timeout: a.timeout } : {};
+    if (a.type === 'toBeVisible') {
+      checks.push({ target: a.target, check: 'visible', ...timeout });
+    } else if (a.type === 'toHaveText' || a.type === 'toContainText') {
+      const check = a.type === 'toHaveText' ? 'text' : 'contains';
+      if (a.pattern !== undefined && a.pattern !== '' && a.pattern.trim() === '') return { reason: `step ${i + 1} asserts an empty pattern, which proves nothing` };
+      if (a.pattern) checks.push({ target: a.target, check, pattern: a.pattern, flags: '', ...timeout });
+      else if (a.text.trim()) checks.push({ target: a.target, check, text: a.text, ...timeout });
+      else return { reason: `step ${i + 1} asserts an empty text, which proves nothing` };
+    } else {
+      return { reason: `step ${i + 1} asserts ${a.type}, which a data case cannot carry` };
+    }
   }
-  return undefined;
+  if (checks.length === 0) return { reason: 'its recording asserts nothing on an error element' };
+  return { checks };
+}
+
+/** True when the scenario asserted a text (a literal or a pattern): an edge case that did is an error-expect case. */
+function assertsText(s: Scenario): boolean {
+  return s.steps.some((st) => st.kind === 'assert' && (st.assertion.type === 'toHaveText' || st.assertion.type === 'toContainText'));
+}
+
+/**
+ * Every select_option value the scenario chose, keyed by the select's
+ * canonical intent, or why it cannot be carried (the same select chose two
+ * values: a key holds one).
+ */
+export function recordedSelects(s: Scenario): { selects: Record<string, DatasetSelect> } | { reason: string } {
+  const out: Record<string, DatasetSelect> = {};
+  for (const st of s.steps) {
+    if (st.kind !== 'select_option') continue;
+    const key = canonicalIntent(st.target.intent);
+    const prev = out[key];
+    if (prev && (prev.by !== st.by || prev.option !== st.option)) return { reason: `it selects ${JSON.stringify(key)} twice with different values, which a data case cannot carry` };
+    out[key] = { by: st.by, option: st.option };
+  }
+  return { selects: out };
 }
 
 /** Does an edge scenario's data plausibly probe a limit? */
@@ -198,17 +291,31 @@ export function deriveDatasets(report: RunReport, map?: RequirementsMap): Featur
     for (const s of scenarios) {
       const values = fillValues(s);
       if (!values) continue;
-      const errorText = assertedErrorText(s);
+      // Every select value the recording chose travels with the case (run
+      // 59540f: the R14 email case selected "warranty", the data loop reused
+      // the happy case's "customer-service").
+      const sel = recordedSelects(s);
+      const selects = 'selects' in sel ? (Object.keys(sel.selects).length > 0 ? { selects: sel.selects } : {}) : {};
+      const selectGap = 'reason' in sel ? sel.reason : undefined;
+      // An error case carries its own recorded checks, or why it cannot.
+      const errorPart = (): Pick<DatasetCase, 'errors' | 'uncarriable'> => {
+        const rec = recordedErrorChecks(s);
+        if ('reason' in rec) return { uncarriable: rec.reason };
+        return selectGap ? { errors: rec.checks, uncarriable: selectGap } : { errors: rec.checks };
+      };
+      const gap = selectGap ? { uncarriable: selectGap } : {};
       if (s.category === 'happy') {
-        cases.push({ name: s.name, values, expect: 'success', ...(ruleIdsOf(s)) });
+        cases.push({ name: s.name, values, ...selects, expect: 'success', ...gap, ...(ruleIdsOf(s)) });
       } else if (s.category === 'negative') {
-        cases.push({ name: s.name, values, expect: 'error', ...(errorText ? { errorText } : {}), ...(ruleIdsOf(s)) });
+        cases.push({ name: s.name, values, ...selects, expect: 'error', ...errorPart(), ...(ruleIdsOf(s)) });
       } else if (s.category === 'edge' && looksLikeBoundary(s, values)) {
+        const isError = assertsText(s);
         cases.push({
           name: `boundary: ${s.name}`,
           values,
-          expect: errorText ? 'error' : 'success',
-          ...(errorText ? { errorText } : {}),
+          ...selects,
+          expect: isError ? 'error' : 'success',
+          ...(isError ? errorPart() : gap),
           ...(ruleIdsOf(s)),
         });
       }
@@ -225,11 +332,11 @@ function ruleIdsOf(s: Scenario): { ruleIds?: string[] } {
   return s.ruleIds && s.ruleIds.length > 0 ? { ruleIds: [...s.ruleIds] } : {};
 }
 
-/** Drop later cases whose values duplicate an earlier case exactly. */
+/** Drop later cases whose values and select values duplicate an earlier case exactly. */
 function dedupeCases(cases: DatasetCase[]): DatasetCase[] {
   const seen = new Set<string>();
   return cases.filter((c) => {
-    const key = JSON.stringify(Object.entries(c.values).sort()) + '|' + c.expect;
+    const key = JSON.stringify(Object.entries(c.values).sort()) + '|' + JSON.stringify(Object.entries(c.selects ?? {}).sort()) + '|' + c.expect;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -259,9 +366,19 @@ function fieldForRule(ruleText: string, fieldKeys: string[]): string | undefined
  * whole form still fills, and overrides only the constrained field. Without a
  * valid baseline nothing is synthesized (a partial form proves nothing).
  */
+/**
+ * Why a rule-derived error case is never carried: it has no recording, so no
+ * error element and no asserted text (invariant 77). Before this it asserted
+ * toContainText('') on another case's error element, which proves nothing.
+ */
+export const RULE_DERIVED_ERROR_UNCARRIABLE = 'a rule-derived case has no recording, so it carries no error assertion';
+
 function enrichFromRules(feature: string, existing: DatasetCase[], map: RequirementsMap): DatasetCase[] {
-  const baseline = existing.find((c) => c.expect === 'success');
+  const baseline = existing.find((c) => c.expect === 'success' && !c.uncarriable);
   if (!baseline) return [];
+  // A synthesized case fills the whole form from the baseline, select values included.
+  const baseSelects = baseline.selects ? { selects: baseline.selects } : {};
+  const noRecording = { uncarriable: RULE_DERIVED_ERROR_UNCARRIABLE };
   const fieldKeys = Object.keys(baseline.values);
   const featureRules = map.features.find((f) => f.name === feature)?.rules ?? [];
   const out: DatasetCase[] = [];
@@ -278,6 +395,7 @@ function enrichFromRules(feature: string, existing: DatasetCase[], map: Requirem
       out.push({
         name: `boundary: ${field} at the ${n}-character minimum`,
         values: { ...baseline.values, [field]: 'x'.repeat(n) },
+        ...baseSelects,
         expect: 'success',
         ruleIds: [rule.id],
       });
@@ -285,7 +403,9 @@ function enrichFromRules(feature: string, existing: DatasetCase[], map: Requirem
         out.push({
           name: `invalid: ${field} one character under the ${n}-character minimum`,
           values: { ...baseline.values, [field]: 'x'.repeat(n - 1) },
+          ...baseSelects,
           expect: 'error',
+          ...noRecording,
           ruleIds: [rule.id],
         });
       }
@@ -297,13 +417,16 @@ function enrichFromRules(feature: string, existing: DatasetCase[], map: Requirem
       out.push({
         name: `boundary: ${field} at the ${n}-character maximum`,
         values: { ...baseline.values, [field]: 'x'.repeat(n) },
+        ...baseSelects,
         expect: 'success',
         ruleIds: [rule.id],
       });
       out.push({
         name: `invalid: ${field} one character over the ${n}-character maximum`,
         values: { ...baseline.values, [field]: 'x'.repeat(n + 1) },
+        ...baseSelects,
         expect: 'error',
+        ...noRecording,
         ruleIds: [rule.id],
       });
       continue;
@@ -312,7 +435,9 @@ function enrichFromRules(feature: string, existing: DatasetCase[], map: Requirem
       out.push({
         name: `invalid: ${field} breaks the email format`,
         values: { ...baseline.values, [field]: 'not-an-email' },
+        ...baseSelects,
         expect: 'error',
+        ...noRecording,
         ruleIds: [rule.id],
       });
     }
@@ -325,13 +450,48 @@ function enrichFromRules(feature: string, existing: DatasetCase[], map: Requirem
  * order (case fields in a fixed order, value keys alphabetical) so re-running
  * the emitter is byte-identical.
  */
-export function renderDatasetJson(dataset: FeatureDataset): string {
-  const cases = dataset.cases.map((c) => ({
-    name: c.name,
-    values: Object.fromEntries(Object.entries(c.values).sort(([a], [b]) => a.localeCompare(b))),
-    expect: c.expect,
-    ...(c.errorText !== undefined ? { errorText: c.errorText } : {}),
-    ...(c.ruleIds !== undefined ? { ruleIds: c.ruleIds } : {}),
-  }));
+export function renderDatasetJson(dataset: FeatureDataset, elementName: (target: SelectorRecord) => string = (t) => t.intent): string {
+  const cases = dataset.cases.map((c) => {
+    // Never write a case that cannot be carried, nor an error case with no
+    // check or a text check with neither a literal nor a pattern (invariant
+    // 77): it would assert nothing and look like a test.
+    if (c.uncarriable) throw new EmptyDatasetExpectationError(c.name, c.uncarriable);
+    if (c.expect === 'error' && (!c.errors || c.errors.length === 0)) throw new EmptyDatasetExpectationError(c.name, 'an error case with no recorded error assertion');
+    for (const e of c.errors ?? []) {
+      // An empty or whitespace pattern matches every text, so it is as empty
+      // as an empty literal (new RegExp('') passes on anything).
+      if (e.pattern !== undefined && e.pattern.trim() === '') throw new EmptyDatasetExpectationError(c.name, 'a text check with an empty pattern');
+      if (e.check !== 'visible' && e.pattern === undefined && !(e.text ?? '').trim()) throw new EmptyDatasetExpectationError(c.name, 'a text check with an empty expected text');
+    }
+    return {
+      name: c.name,
+      values: Object.fromEntries(Object.entries(c.values).sort(([a], [b]) => a.localeCompare(b))),
+      ...(c.selects ? { selects: Object.fromEntries(Object.entries(c.selects).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, v.option])) } : {}),
+      expect: c.expect,
+      ...(c.errors ? {
+        errors: c.errors.map((e) => ({
+          element: elementName(e.target),
+          check: e.check,
+          ...(e.text !== undefined ? { text: e.text } : {}),
+          ...(e.pattern !== undefined ? { pattern: e.pattern, flags: e.flags ?? '' } : {}),
+          ...(e.timeout !== undefined ? { timeout: e.timeout } : {}),
+        })),
+      } : {}),
+      ...(c.ruleIds !== undefined ? { ruleIds: c.ruleIds } : {}),
+    };
+  });
   return JSON.stringify(cases, null, 2) + '\n';
+}
+
+/**
+ * Thrown when a data file would carry a case that asserts nothing: an
+ * uncarriable case, an error case with no check, or a text check with no
+ * literal and no pattern (invariant 77, standing rule 2). The POM emitter
+ * leaves such cases out before rendering, so this is the last guard.
+ */
+export class EmptyDatasetExpectationError extends Error {
+  constructor(caseName: string, why: string) {
+    super(`refusing to write data case ${JSON.stringify(caseName)}: ${why}`);
+    this.name = 'EmptyDatasetExpectationError';
+  }
 }

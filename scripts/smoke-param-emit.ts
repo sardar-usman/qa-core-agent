@@ -83,14 +83,15 @@ for (const d of [tsDir, jsDir]) fs.rmSync(d, { recursive: true, force: true });
 scaffold({ report: makeReport('ts'), outDir: tsDir, siteName: 'shop.example' });
 const dataFile = path.join(tsDir, 'data', 'contact.json');
 check('A1. data/contact.json is written', fs.existsSync(dataFile));
-const cases = JSON.parse(fs.readFileSync(dataFile, 'utf8')) as Array<{ name: string; expect: string; errorText?: string }>;
-check('A2. it carries both shared-signature cases', cases.length === 2 && cases.some((c) => c.expect === 'error' && c.errorText === 'Please enter a valid email'), JSON.stringify(cases));
+const cases = JSON.parse(fs.readFileSync(dataFile, 'utf8')) as Array<{ name: string; expect: string; errorText?: string; errors?: Array<{ element: string; check: string; text?: string }> }>;
+check('A2. it carries both shared-signature cases, the error case with its own recorded check on its own error element',
+  cases.length === 2 && cases.some((c) => c.expect === 'error' && c.errorText === undefined && c.errors?.length === 1 && c.errors[0]!.element === 'errorMessage' && c.errors[0]!.check === 'contains' && c.errors[0]!.text === 'Please enter a valid email'), JSON.stringify(cases));
 
 const spec = fs.readFileSync(path.join(tsDir, 'tests', 'contact', 'contact.spec.ts'), 'utf8');
 check('A3. the spec imports the dataset and loops the Playwright way',
   spec.includes(`import rawCases from '../../data/contact.json';`) && spec.includes('for (const c of dataCases)') && spec.includes('test(`[data] contact —'), spec.slice(0, 400));
-check('A4. the loop branches on c.expect with the recorded error locator',
-  spec.includes(`if (c.expect === 'error')`) && spec.includes(`.toContainText(c.errorText ?? ''`));
+check('A4. the loop branches on c.expect and asserts the case\'s own checks through its recorded error locator, never an empty expectation',
+  spec.includes(`if (c.expect === 'error')`) && spec.includes(`await expectDataErrors(c, { "errorMessage": contactPage.errorMessage });`) && !spec.includes(`c.errorText ?? ''`) && !/to(?:Contain|Have)Text\((?:''|"")/.test(spec), spec.split('\n').filter((l) => /expectDataErrors|errorText/.test(l)).join(' | '));
 check('A5. the collapsed scenarios are gone as individual tests',
   !spec.includes(`test("[happy] sent the contact form"`) && !spec.includes(`test("[negative] rejected a malformed email"`));
 check('A6. the non-shared scenario stays an individual test, untouched',

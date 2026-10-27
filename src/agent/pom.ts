@@ -3,11 +3,12 @@ import path from 'node:path';
 import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
-import { regexLiteral } from './transcriber.js';
+import { regexLiteral, textExpectation } from './transcriber.js';
+import { allItemsPollLine } from './all-items.js';
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { sameValuePoll } from './parse-number.js';
 import { captureWaitNeeded } from './capture-ready.js';
-import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
+import { deriveDatasets, renderDatasetJson, recordedSelects, type DatasetCase, type DatasetSelect, type FeatureDataset } from './datasets.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, envVarForFill, loginFeatureOf, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
 import type { RequirementsMap } from './requirements.js';
 import type { Assertion, CaptureSource, GenerateKind, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
@@ -81,6 +82,12 @@ export interface POMTranscribeResult {
   features: string[];
   /** data/<feature>.json files written for parameterized specs (may be empty). */
   dataFiles: string[];
+  /**
+   * One line per dataset case left out of a data file because its recorded
+   * error assertion or select values cannot be carried, naming it and why
+   * (invariant 77). The caller prints them once.
+   */
+  datasetNotes: string[];
 }
 
 /* ───────────────────────── Entry point ───────────────────────── */
@@ -124,12 +131,15 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
     if (plan) paramPlans.set(pc.feature, plan);
   }
   const dataFiles: string[] = [];
+  const datasetNotes: string[] = [];
   if (paramPlans.size > 0) {
     fs.mkdirSync(path.join(outDir, 'data'), { recursive: true });
     for (const [feature, plan] of paramPlans) {
+      const pc = pageClasses.find((c) => c.feature === feature)!;
       const dataFile = path.join(outDir, 'data', `${feature}.json`);
-      fs.writeFileSync(dataFile, renderDatasetJson({ feature, cases: plan.cases }));
+      fs.writeFileSync(dataFile, renderDatasetJson({ feature, cases: plan.cases }, (t) => errorElementName(pc, t)));
       dataFiles.push(dataFile);
+      datasetNotes.push(...plan.notes);
     }
   }
 
@@ -178,6 +188,7 @@ export function transcribePOM(opts: POMTranscribeOptions): POMTranscribeResult {
     scenarios: report.scenarios.length,
     features,
     dataFiles,
+    datasetNotes,
   };
 }
 
@@ -188,10 +199,10 @@ interface ParamPlan {
   members: Set<Scenario>;
   /** The happy member whose steps drive the loop body. */
   representative: Scenario;
-  /** Error assertion target from a negative member, for expect: 'error' cases. */
-  errorTarget?: SelectorRecord;
-  /** The dataset cases the data file carries (members + rule-derived). */
+  /** The dataset cases the data file carries (members + rule-derived), each error case with its own checks. */
   cases: DatasetCase[];
+  /** One line per case left out because it cannot be carried (invariant 77). */
+  notes: string[];
 }
 
 /** Ordered action signature: what the scenario DOES, ignoring the values. */
@@ -222,9 +233,13 @@ function fillKeysOf(s: Scenario): string[] {
  * Decide whether this feature's scenarios support ONE parameterized loop:
  * 2+ scenarios share the same action signature (same fills/clicks, differing
  * values), each has a dataset case, at least one is happy (its steps become
- * the loop body and its assertions the success branch), and error-expect
- * cases have an assertable error target from a negative member. Scenarios
- * outside the group stay individual tests exactly as today.
+ * the loop body and its assertions the success branch). Each error case
+ * asserts its own recorded checks on its own error element(s), and every case
+ * carries the select values its recording chose (invariant 77). A case that
+ * cannot be carried (its error assertion or a select value) is left out with
+ * one note naming it and why: a recorded one ships as its own test, a
+ * rule-derived one is not emitted. Scenarios outside the group stay
+ * individual tests exactly as today.
  */
 function buildParamPlan(pc: PageClassPlan, dataset: FeatureDataset): ParamPlan | null {
   const bySig = new Map<string, Scenario[]>();
@@ -235,9 +250,9 @@ function buildParamPlan(pc: PageClassPlan, dataset: FeatureDataset): ParamPlan |
     list.push(s);
     bySig.set(sig, list);
   }
-  for (const group of bySig.values()) {
-    if (group.length < 2) continue;
-    const representative = group.find((s) => s.category === 'happy');
+  for (const fullGroup of bySig.values()) {
+    if (fullGroup.length < 2) continue;
+    const representative = fullGroup.find((s) => s.category === 'happy');
     if (!representative) continue;
     const caseFor = (s: Scenario): DatasetCase | undefined =>
       dataset.cases.find((c) => c.name === s.name || c.name === `boundary: ${s.name}`);
@@ -250,39 +265,58 @@ function buildParamPlan(pc: PageClassPlan, dataset: FeatureDataset): ParamPlan |
       if (!c) return false;
       return JSON.stringify(Object.keys(c.values).sort()) === JSON.stringify(fillKeysOf(s));
     };
-    if (!group.every(covers)) continue;
+    if (!fullGroup.every(covers)) continue;
+
+    // The loop selects each case's own value with the representative's match
+    // mode, so a case whose selects differ in key or mode cannot be carried.
+    const repSel = recordedSelects(representative);
+    const repSelects = 'selects' in repSel ? repSel.selects : null;
+    const selectGap = (c: DatasetCase): string | null => {
+      if (!repSelects) return 'the loop representative selects one dropdown twice with different values';
+      const keys = Object.keys(repSelects).sort();
+      const own = c.selects ?? {};
+      if (JSON.stringify(Object.keys(own).sort()) !== JSON.stringify(keys)) return 'its select values do not cover the loop\'s dropdowns';
+      const mode = keys.find((k) => own[k]!.by !== repSelects[k]!.by);
+      return mode ? `it chose ${JSON.stringify(mode)} by ${own[mode]!.by}, the loop selects it by ${repSelects[mode]!.by}` : null;
+    };
+    const gapOf = (c: DatasetCase): string | null => c.uncarriable ?? selectGap(c);
 
     // The data file: the members' cases plus rule-derived cases whose value
     // keys match the group's fill keys (enrichment starts from a member
     // baseline, so key equality selects exactly the compatible cases).
     const groupKeys = JSON.stringify(fillKeysOf(representative));
-    const cases = dataset.cases.filter((c) =>
-      group.some((s) => caseFor(s) === c) || JSON.stringify(Object.keys(c.values).sort()) === groupKeys,
+    const candidates = dataset.cases.filter((c) =>
+      fullGroup.some((s) => caseFor(s) === c) || JSON.stringify(Object.keys(c.values).sort()) === groupKeys,
     );
-    if (cases.length < 2) continue;
-
-    let errorTarget: SelectorRecord | undefined;
-    for (const s of group) {
-      if (s.category !== 'negative') continue;
-      for (const st of s.steps) {
-        if (st.kind === 'assert' && (st.assertion.type === 'toHaveText' || st.assertion.type === 'toContainText')) {
-          errorTarget = st.assertion.target;
-          break;
-        }
-      }
-      if (errorTarget) break;
+    // The representative drives the loop body, so its own case must carry.
+    const repCase = caseFor(representative);
+    if (!repCase || gapOf(repCase)) continue;
+    const notes: string[] = [];
+    const left = new Set<DatasetCase>();
+    for (const c of candidates) {
+      const gap = gapOf(c);
+      if (!gap) continue;
+      left.add(c);
+      const member = fullGroup.some((s) => caseFor(s) === c);
+      notes.push(`Data case ${JSON.stringify(c.name)} (${pc.feature}) left out of data/${pc.feature}.json: ${gap}; ${member ? 'it ships as its own test' : 'it is not emitted'}.`);
     }
-    // error-expect cases with nowhere to assert the error cannot parameterize.
-    if (cases.some((c) => c.expect === 'error') && !errorTarget) continue;
+    const group = fullGroup.filter((s) => !left.has(caseFor(s)!));
+    const cases = candidates.filter((c) => !left.has(c));
+    if (group.length < 2 || cases.length < 2) continue;
 
-    return {
-      members: new Set(group),
-      representative,
-      ...(errorTarget ? { errorTarget } : {}),
-      cases,
-    };
+    return { members: new Set(group), representative, cases, notes };
   }
   return null;
+}
+
+/**
+ * The name an error element carries in a data file: its page-object field,
+ * so the loop maps it back to the same locator (every target of the
+ * feature's scenarios is a field). A target with no field is named by its
+ * locator, which the loop maps to the inline call.
+ */
+function errorElementName(pc: PageClassPlan, t: SelectorRecord): string {
+  return fieldFor(pc, t) ?? locatorIdentity(t);
 }
 
 /* ───────────────────────── Page grouping ───────────────────────── */
@@ -951,8 +985,11 @@ function renderSpec(
     const rel = relationsByVarName(sc.steps);
     return sc.steps.some((st) => st.kind === 'capture' && captureWaitNeeded(st, rel));
   });
+  // A data loop with error cases asserts each case's own checks through a
+  // typed element map (invariant 77), so the TS spec imports the Locator type.
+  const paramErrors = param ? param.cases.some((c) => c.expect === 'error') : false;
   if (ext === 'ts') {
-    out.push(`import { test, expect } from '@playwright/test';`);
+    out.push(paramErrors ? `import { test, expect, type Locator } from '@playwright/test';` : `import { test, expect } from '@playwright/test';`);
     out.push(`import { ${pc.className} } from '${importPath}';`);
     if (genFns.length > 0) out.push(`import { ${genFns.join(', ')} } from '../../helpers/unique-data';`);
     if (usesNumeric) out.push(`import { parseNumber } from '../../helpers/parse-number';`);
@@ -978,13 +1015,17 @@ function renderSpec(
     // The dataset the loop below iterates. Extend it by hand: add a case to
     // data/<feature>.json and the suite grows without touching this file.
     if (ext === 'ts') {
-      out.push(`type DataCase = { name: string; values: Record<string, string>; expect: string; errorText?: string; ruleIds?: string[] };`);
+      out.push(`type DataErrorCheck = { element: string; check: 'visible' | 'text' | 'contains'; text?: string; pattern?: string; flags?: string; timeout?: number };`);
+      out.push(`type DataCase = { name: string; values: Record<string, string>; selects?: Record<string, string>; expect: string; errors?: DataErrorCheck[]; ruleIds?: string[] };`);
       out.push(`const dataCases = rawCases as unknown as DataCase[];`);
     } else {
-      out.push(`/** @type {Array<{ name: string, values: Record<string, string>, expect: string, errorText?: string, ruleIds?: string[] }>} */`);
+      out.push(`/** @typedef {{ element: string, check: 'visible' | 'text' | 'contains', text?: string, pattern?: string, flags?: string, timeout?: number }} DataErrorCheck */`);
+      out.push(`/** @typedef {{ name: string, values: Record<string, string>, selects?: Record<string, string>, expect: string, errors?: DataErrorCheck[], ruleIds?: string[] }} DataCase */`);
+      out.push(`/** @type {DataCase[]} */`);
       out.push(`const dataCases = rawCases;`);
     }
     out.push(renderResolveData(genFns, ext));
+    out.push(...renderDataHelpers(param, ext));
     out.push(``);
   }
   out.push(`test.describe(${q(describeTitle)}, () => {`);
@@ -1041,10 +1082,53 @@ function renderResolveData(genFns: string[], ext: 'ts' | 'js'): string {
 }
 
 /**
+ * Helpers a data loop needs, emitted once above the describe block:
+ * dataSelect reads a case's select value (a case missing one throws, never
+ * falls back to another case's value), and expectDataErrors asserts an error
+ * case's own recorded checks on its own error elements. An error case with no
+ * check, an unknown element, or an empty expected text throws instead of
+ * passing (invariant 77, standing rule 2).
+ */
+function renderDataHelpers(param: ParamPlan, ext: 'ts' | 'js'): string[] {
+  const out: string[] = [];
+  const hasSelects = param.representative.steps.some((st) => st.kind === 'select_option');
+  const hasErrors = param.cases.some((c) => c.expect === 'error');
+  if (hasSelects) {
+    out.push(ext === 'ts'
+      ? `const dataSelect = (c: DataCase, key: string): string => {`
+      : `/** @param {DataCase} c @param {string} key @returns {string} */\nconst dataSelect = (c, key) => {`);
+    out.push(`  const v = c.selects?.[key];`);
+    out.push(`  if (v === undefined) throw new Error(\`data case "\${c.name}" has no value for the select "\${key}"\`);`);
+    out.push(`  return v;`);
+    out.push(`};`);
+  }
+  if (hasErrors) {
+    out.push(`// An error case asserts what its own recording asserted, on its own error element.`);
+    out.push(ext === 'ts'
+      ? `async function expectDataErrors(c: DataCase, elements: Record<string, Locator>): Promise<void> {`
+      : `/** @param {DataCase} c @param {Record<string, import('@playwright/test').Locator>} elements */\nasync function expectDataErrors(c, elements) {`);
+    out.push(`  if (!c.errors || c.errors.length === 0) throw new Error(\`data case "\${c.name}" expects an error but carries no error assertion\`);`);
+    out.push(`  for (const e of c.errors) {`);
+    out.push(`    const el = elements[e.element];`);
+    out.push(`    if (!el) throw new Error(\`data case "\${c.name}": no error element named "\${e.element}"\`);`);
+    out.push(`    const timeout = e.timeout ?? ${COMPARE_POLL_TIMEOUT_MS};`);
+    out.push(`    if (e.check === 'visible') { await expect(el).toBeVisible({ timeout }); continue; }`);
+    out.push(`    // An empty or whitespace pattern matches every text, as empty as an empty literal.`);
+    out.push(`    if ((e.pattern !== undefined ? e.pattern : (e.text ?? '')).trim() === '') throw new Error(\`data case "\${c.name}": an empty expected text or pattern proves nothing\`);`);
+    out.push(`    const expected = e.pattern !== undefined ? new RegExp(e.pattern, e.flags ?? '') : (e.text ?? '');`);
+    out.push(`    if (e.check === 'text') await expect(el).toHaveText(expected, { timeout });`);
+    out.push(`    else await expect(el).toContainText(expected, { timeout });`);
+    out.push(`  }`);
+    out.push(`}`);
+  }
+  return out;
+}
+
+/**
  * The one data-driven test loop: the happy representative's steps drive the
- * page, fills take their values from the case, and the closing assertion
- * follows c.expect — the representative's own success assertions, or the
- * recorded error locator with c.errorText.
+ * page, fills and selects take their values from the case, and the closing
+ * assertion follows c.expect: the representative's own success assertions,
+ * or the case's own recorded error checks (expectDataErrors).
  */
 function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'): string[] {
   const handle = camelize(pc.className);
@@ -1077,7 +1161,19 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
         : `await ${emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText)}.fill(${valueArg});`);
       continue;
     }
-    if (step.kind === 'click' || step.kind === 'press' || step.kind === 'select_option' || step.kind === 'set_checked' || step.kind === 'set_input_files') {
+    if (step.kind === 'select_option') {
+      // Every case selects its own recorded value, with the mode the
+      // representative recorded (run 59540f: the email case's "warranty" was
+      // replaced by the happy case's "customer-service").
+      const key = canonicalIntent(step.target.intent);
+      const field = fieldFor(pc, step.target);
+      const base = field ? `${handle}.${field}` : emitLocatorCall(step.target.level, step.target.arg, step.target.ambiguous === true, step.target.frameChain, step.target.filterText);
+      const v = `dataSelect(c, ${q(key)})`;
+      const arg = step.by === 'value' ? `{ value: ${v} }` : step.by === 'label' ? `{ label: ${v} }` : step.by === 'index' ? `{ index: Number(${v}) }` : v;
+      actions.push(`await ${base}.selectOption(${arg});`);
+      continue;
+    }
+    if (step.kind === 'click' || step.kind === 'press' || step.kind === 'set_checked' || step.kind === 'set_input_files') {
       actions.push(...emitStepCall(step, pc, handle, null, repRelations));
       continue;
     }
@@ -1088,15 +1184,23 @@ function renderParamLoop(param: ParamPlan, pc: PageClassPlan, ext: 'ts' | 'js'):
   }
 
   for (const line of actions) out.push(`    ${line}`);
-  const errorField = param.errorTarget ? fieldFor(pc, param.errorTarget) : undefined;
-  const errorLocExpr = param.errorTarget
-    ? (errorField
-        ? `${handle}.${errorField}`
-        : emitLocatorCall(param.errorTarget.level, param.errorTarget.arg, param.errorTarget.ambiguous === true, param.errorTarget.frameChain, param.errorTarget.filterText))
-    : null;
-  if (errorLocExpr) {
+  const errorCases = param.cases.filter((c) => c.expect === 'error');
+  if (errorCases.length > 0) {
+    // Each error element any case asserts on, mapped from its data-file name
+    // to the locator (the page-object field, else the inline call).
+    const elements = new Map<string, string>();
+    for (const c of errorCases) {
+      for (const e of c.errors ?? []) {
+        const name = errorElementName(pc, e.target);
+        const field = fieldFor(pc, e.target);
+        elements.set(name, field
+          ? `${handle}.${field}`
+          : emitLocatorCall(e.target.level, e.target.arg, e.target.ambiguous === true, e.target.frameChain, e.target.filterText));
+      }
+    }
+    const map = [...elements.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${q(k)}: ${v}`).join(', ');
     out.push(`    if (c.expect === 'error') {`);
-    out.push(`      await expect(${errorLocExpr}).toContainText(c.errorText ?? '', { timeout: ${COMPARE_POLL_TIMEOUT_MS} });`);
+    out.push(`      await expectDataErrors(c, { ${map} });`);
     out.push(`    } else {`);
     for (const line of closing) out.push(`      ${line}`);
     out.push(`    }`);
@@ -1310,7 +1414,8 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       const loc = field ? `${handle}.${field}` : emitLocatorCall(a.target.level, a.target.arg, a.target.ambiguous === true, a.target.frameChain, a.target.filterText);
       const fn = a.type === 'toHaveText' ? 'toHaveText' : 'toContainText';
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return `await expect(${loc}).${fn}(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`;
+      // textExpectation throws EmptyTextExpectationError on an empty literal (invariant 77).
+      return `await expect(${loc}).${fn}(${textExpectation(a)}${opts});`;
     }
     case 'toBeChecked': {
       const field = fieldFor(pc, a.target);
@@ -1345,6 +1450,18 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       }
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return `await expect(${loc}).toHaveCount(${a.count}${opts});`;
+    }
+    case 'allItemsMatch': {
+      // One read of every item's text decides both facts (invariant 77): at
+      // least 1 item and every item matches, on the multi-match locator (a
+      // field that ever took .first() is bypassed, as for toHaveCount).
+      const field = fieldFor(pc, a.target);
+      const fieldRec = field ? pc.fields.find((f) => f.name === field)?.record : undefined;
+      const loc = field && fieldRec && fieldRec.ambiguous !== true
+        ? `${handle}.${field}`
+        : emitLocatorCall(a.target.level, a.target.arg, false, a.target.frameChain, a.target.filterText);
+      const re = regexLiteral(a.pattern, a.flags);
+      return allItemsPollLine(loc, re, a.flags, a.timeout ?? COMPARE_POLL_TIMEOUT_MS);
     }
     case 'toHaveAttribute': {
       const field = fieldFor(pc, a.target);

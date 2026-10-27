@@ -9,6 +9,7 @@ import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
+import { pollAllItems } from './all-items.js';
 
 /**
  * Reality check.
@@ -565,6 +566,16 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number, credent
         return;
       }
       await pollUntil(effectiveTimeout, async () => (await loc.count()) === a.count, `toHaveCount: expected ${a.count}`);
+      return;
+    }
+    case 'allItemsMatch': {
+      // ONE read decides both facts, polled until that read holds: at least
+      // 1 item and every item's text matches (invariant 77; pollAllItems, the
+      // tool's own poll). The multi-match item locator, never .first().
+      const read = await pollAllItems(baseLocator(page, a.target), new RegExp(a.pattern, a.flags), a.timeout ?? timeoutMs);
+      if (!read.held) {
+        throw new Error(`allItemsMatch: "${a.target.intent}" ${read.last === null ? 'could not be read' : `has ${read.last.items} item(s); not matching /${a.pattern}/${a.flags}: ${JSON.stringify(read.last.notMatching)}`}`);
+      }
       return;
     }
     case 'toHaveAttribute': {

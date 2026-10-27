@@ -9,6 +9,7 @@ import { inlineParseNumberFn, inlineSameValueFn, sameValuePoll } from './parse-n
 // so the spec and the in-process check agree.
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { captureWaitNeeded, inlineAwaitCaptureReadyFn } from './capture-ready.js';
+import { allItemsPollLine } from './all-items.js';
 import type { Assertion, CaptureSource, CredentialMarker, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER } from './auth-emit.js';
 
@@ -226,11 +227,11 @@ function emitAssertion(a: Assertion): string[] {
     }
     case 'toHaveText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toHaveText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toHaveText(${textExpectation(a)}${opts});`];
     }
     case 'toContainText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toContainText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toContainText(${textExpectation(a)}${opts});`];
     }
     case 'toBeChecked': {
       const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
@@ -254,6 +255,12 @@ function emitAssertion(a: Assertion): string[] {
       }
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return [`await expect(${loc(a.target)}).toHaveCount(${a.count}${opts});`];
+    }
+    case 'allItemsMatch': {
+      // One read of every item's text decides both facts (invariant 77): at
+      // least 1 item and every item matches, on the multi-match locator.
+      const re = regexLiteral(a.pattern, a.flags);
+      return [allItemsPollLine(locCount(a.target), re, a.flags, a.timeout ?? COMPARE_POLL_TIMEOUT_MS)];
     }
     case 'toHaveAttribute': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
@@ -328,8 +335,34 @@ export function credentialEnvExpr(marker: CredentialMarker): string {
   return `process.env.${marker === 'user' ? AUTH_ENV_USER : AUTH_ENV_PASS} ?? ''`;
 }
 
-export function regexLiteral(source: string): string {
-  return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/`;
+export function regexLiteral(source: string, flags = ''): string {
+  return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/${flags}`;
+}
+
+/**
+ * Thrown when an emitter would write a toHaveText or toContainText whose
+ * expected value is an empty string (invariant 77, run 59540f D7b: a dataset
+ * case shipped toContainText(c.errorText ?? '') with no errorText, which
+ * passes on any element that exists). Standing rule 2: never emit a check
+ * that looks real and proves nothing.
+ */
+export class EmptyTextExpectationError extends Error {
+  constructor(where: string) {
+    super(`refusing to emit an empty text expectation (${where}): toHaveText('') and toContainText('') prove nothing`);
+    this.name = 'EmptyTextExpectationError';
+  }
+}
+
+/**
+ * The expected value a toHaveText / toContainText emits: the recorded
+ * pattern as a RegExp literal, else the literal text. An empty literal with
+ * no pattern throws EmptyTextExpectationError. Shared by both emitters.
+ */
+export function textExpectation(a: { type: string; text: string; pattern?: string; target: SelectorRecord }): string {
+  if (a.pattern) return regexLiteral(a.pattern);
+  // Whitespace only is as empty as '': the tool refuses it the same way.
+  if (a.text.trim() === '') throw new EmptyTextExpectationError(`${a.type} on ${a.target.intent}`);
+  return JSON.stringify(a.text);
 }
 
 /** Render the selectOption(...) argument for the recorded match mode. */

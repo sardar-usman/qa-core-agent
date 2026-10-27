@@ -2,6 +2,7 @@ import type { Assertion, Scenario, SelectorRecord, TraceStep } from './trace.js'
 import { ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
 import { generatedIdFragment } from './volatile-id.js';
 import { currencyAmountIn } from './parse-number.js';
+import { typedValueForPattern } from './all-items.js';
 
 /**
  * Static validation gate — runs after the Explorer closes a scenario and
@@ -48,7 +49,10 @@ import { currencyAmountIn } from './parse-number.js';
  *           quantity, qty, count or counter target, COUNTER_TARGET_RE) is a
  *           literal count too (run 44cb3d: "cart badge shows 1", three
  *           reworks); the steer is capture the counter's text, act,
- *           assert_compare.
+ *           assert_compare. An all-items assertion (allItemsMatch,
+ *           invariant 77) passes only when its pattern is a value the
+ *           scenario typed earlier (a fill or a search term), compared
+ *           case-insensitively after escaping.
  *   RULE 9: A counter is read by its text, never by its element count. A
  *           capture with source "count" on a counter target counts badge
  *           elements (0 before the add, 1 after) and proves the badge
@@ -709,6 +713,13 @@ export function counterCountCaptureReason(t: SelectorRecord, source: string): st
  */
 export function catalogueLiteralReason(a: Assertion, priorSteps: TraceStep[], knownNames?: Iterable<string>): string | null {
   const steer = 'capture the value, act, assert_compare (changed, greater, less, before, after) or assert a heading, a message, a format (assert with regex), toHaveCount with atLeast 1, or count 0 or 1';
+  if (a.type === 'allItemsMatch') {
+    // Every item of a list against a pattern (invariant 77): the pattern must
+    // be a value this scenario typed (a fill or a search term), compared
+    // case-insensitively after escaping. Any other literal is catalogue data.
+    if (typedValueForPattern(a.pattern, priorSteps) !== null) return null;
+    return `${JSON.stringify(a.pattern)} on ${targetWords(a.target).trim()} is catalogue data that changes when the data reseeds: an all-items pattern must be a value this scenario typed earlier (a fill or a search term); ${steer}`;
+  }
   if (a.type === 'toHaveCount') {
     // A minimum of one is the structural "at least one card" doctrine rule 6
     // names; a higher minimum on a catalogue target still pins the count.
