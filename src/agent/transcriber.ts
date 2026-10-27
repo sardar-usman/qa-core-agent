@@ -226,11 +226,11 @@ function emitAssertion(a: Assertion): string[] {
     }
     case 'toHaveText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toHaveText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toHaveText(${textExpectation(a)}${opts});`];
     }
     case 'toContainText': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
-      return [`await expect(${loc(a.target)}).toContainText(${a.pattern ? regexLiteral(a.pattern) : q(a.text)}${opts});`];
+      return [`await expect(${loc(a.target)}).toContainText(${textExpectation(a)}${opts});`];
     }
     case 'toBeChecked': {
       const opts = [a.checked ? '' : 'checked: false', a.timeout ? `timeout: ${a.timeout}` : ''].filter(Boolean).join(', ');
@@ -254,6 +254,14 @@ function emitAssertion(a: Assertion): string[] {
       }
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       return [`await expect(${loc(a.target)}).toHaveCount(${a.count}${opts});`];
+    }
+    case 'allItemsMatch': {
+      // No item fails to match the typed value (invariant 77): the items
+      // whose text does not match number 0, on the multi-match locator. The
+      // minimum (at least 1) is the next recorded step.
+      const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
+      const re = regexLiteral(a.pattern, a.flags);
+      return [`await expect(${locCount(a.target)}.filter({ hasNotText: ${re} })).toHaveCount(0${opts}); // every item matches ${re}: none fails to match`];
     }
     case 'toHaveAttribute': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
@@ -328,8 +336,34 @@ export function credentialEnvExpr(marker: CredentialMarker): string {
   return `process.env.${marker === 'user' ? AUTH_ENV_USER : AUTH_ENV_PASS} ?? ''`;
 }
 
-export function regexLiteral(source: string): string {
-  return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/`;
+export function regexLiteral(source: string, flags = ''): string {
+  return `/${source.replace(/(^|[^\\])\//g, '$1\\/')}/${flags}`;
+}
+
+/**
+ * Thrown when an emitter would write a toHaveText or toContainText whose
+ * expected value is an empty string (invariant 77, run 59540f D7b: a dataset
+ * case shipped toContainText(c.errorText ?? '') with no errorText, which
+ * passes on any element that exists). Standing rule 2: never emit a check
+ * that looks real and proves nothing.
+ */
+export class EmptyTextExpectationError extends Error {
+  constructor(where: string) {
+    super(`refusing to emit an empty text expectation (${where}): toHaveText('') and toContainText('') prove nothing`);
+    this.name = 'EmptyTextExpectationError';
+  }
+}
+
+/**
+ * The expected value a toHaveText / toContainText emits: the recorded
+ * pattern as a RegExp literal, else the literal text. An empty literal with
+ * no pattern throws EmptyTextExpectationError. Shared by both emitters.
+ */
+export function textExpectation(a: { type: string; text: string; pattern?: string; target: SelectorRecord }): string {
+  if (a.pattern) return regexLiteral(a.pattern);
+  // Whitespace only is as empty as '': the tool refuses it the same way.
+  if (a.text.trim() === '') throw new EmptyTextExpectationError(`${a.type} on ${a.target.intent}`);
+  return JSON.stringify(a.text);
 }
 
 /** Render the selectOption(...) argument for the recorded match mode. */

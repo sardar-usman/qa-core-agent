@@ -400,6 +400,8 @@ export async function runExploreRequest(input: RunExploreInput): Promise<RunExpl
         const frameworkDir = path.join(tmp, zipRootName);
         const scaffoldOpts = { outDir: frameworkDir, siteName: hostnameOf(url), features: req.features, ...(prepared.requirements ? { requirements: prepared.requirements } : {}) };
         scaffoldResult = scaffold({ report, ...scaffoldOpts });
+        // One line per data case left out of a data file (invariant 77), once.
+        for (const line of scaffoldResult.pomResult.datasetNotes) { const e: AgentEvent = { type: 'message', text: line }; appendRunEvent(outDir, e); input.onEvent?.(e); }
         // Emitted-spec check before the zip: the same stage the CLI runs.
         await emittedCheckStage({
           report,
@@ -558,6 +560,8 @@ export function runTranscribeRequest(req: TranscribeRequest, projectRoot: string
   try {
     const frameworkDir = path.join(tmp, rootName);
     const result = scaffold({ report, outDir: frameworkDir, siteName: hostnameOf(report.url), ...(requirements ? { requirements } : {}) });
+    // One line per data case left out of a data file (invariant 77).
+    notes.push(...result.pomResult.datasetNotes);
     // No test-account value ships (invariant 70). A regenerate writes only the
     // zip, so only the tree it zips is checked; a hit refuses the zip.
     assertNoCredentialLeak({ frameworkDir });

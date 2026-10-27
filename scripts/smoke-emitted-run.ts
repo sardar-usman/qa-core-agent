@@ -41,6 +41,7 @@ import { scaffold } from '../src/agent/scaffold.js';
 import { transcribe } from '../src/agent/transcriber.js';
 import type { RunReport, Scenario, SelectorRecord } from '../src/agent/trace.js';
 import { SAME_VALUE_CASES } from './lib/same-value-cases.js';
+import { readTree, emptyTextHits } from './lib/emitted-runner.js';
 
 let pass = 0;
 let fail = 0;
@@ -538,6 +539,10 @@ for (const language of ['ts', 'js'] as const) {
   try {
     const report = buildReport(language);
     scaffold({ report, outDir, siteName: 'toolshop-fixture' });
+    // Rule 2 (invariant 77, run 59540f D7b): no emitted file asserts an
+    // empty text, and the old dataset fallback c.errorText ?? '' is gone.
+    const emptyHits = emptyTextHits(readTree(outDir));
+    check(`${language}: no file of the POM framework holds toContainText('') / toHaveText('') or toContainText(c.errorText ?? '')`, emptyHits.length === 0, emptyHits.join(' | '));
     const catalogueSpec = fs.readFileSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`), 'utf8');
     check(`${language}: the emitted toHaveURL carries the recorded timeout`, /toHaveURL\(new RegExp\("detail"\), \{ timeout: 15000 \}\)/.test(catalogueSpec), catalogueSpec.split('\n').filter((l) => /toHaveURL/.test(l)).join(' | '));
     // Field identity: the two intent-less assertions on different locators
@@ -576,6 +581,8 @@ for (const language of ['ts', 'js'] as const) {
     const singleDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-emitted-single-${language}-`));
     try {
       const single = transcribe({ report, outDir: singleDir, name: 'cart-fixture' });
+      const singleEmptyHits = emptyTextHits(readTree(singleDir));
+      check(`${language}: no line of the single-file spec asserts an empty text`, singleEmptyHits.length === 0, singleEmptyHits.join(' | '));
       const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => d.name === 'node_modules' ? [] : d.isDirectory() ? walk(path.join(dir, d.name)) : [path.join(dir, d.name)]);
       const emitted = [...walk(outDir).filter((f) => /\.(ts|js)$/.test(f)), single.specPath];
       const hits = emitted.flatMap((f) => fs.readFileSync(f, 'utf8').split('\n').filter((l) => (/\.goto\(/.test(l) || /\burl\s*=/.test(l)) && l.includes(REVEALED_PATH)).map((l) => `${path.basename(f)}: ${l.trim()}`));
@@ -652,6 +659,8 @@ for (const language of ['ts', 'js'] as const) {
     const singleRunDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-emitted-single-run-${language}-`));
     try {
       scaffold({ report: buildMixedReport(language), outDir: mixedDir, siteName: 'mixed-fixture' });
+      const mixedEmptyHits = emptyTextHits(readTree(mixedDir));
+      check(`${language}: no file of the mixed framework asserts an empty text`, mixedEmptyHits.length === 0, mixedEmptyHits.join(' | '));
       const mixedConfig = fs.readFileSync(path.join(mixedDir, `playwright.config.${language}`), 'utf8');
       const mixedPage = fs.readFileSync(path.join(mixedDir, `pages/mixed-page.${language}`), 'utf8');
       console.log(`  ${language} test-id lock (mixed): playwright.config: ${testIdLines(mixedConfig).join(' | ') || '(no test-id line)'}`);

@@ -283,6 +283,18 @@ export type Assertion =
    * card" that polls, never a literal catalogue count.
    */
   | { type: 'toHaveCount'; target: SelectorRecord; count: number; atLeast?: boolean; timeout?: number }
+  /**
+   * Every item of a list matches a value the scenario typed (invariant 77,
+   * run 59540f D5: a test named "only matching product names" checked the
+   * first card only). `target` is the multi-match ITEM locator; the check is
+   * that the items whose text does NOT match /pattern/flags number exactly 0:
+   * `locator.filter({ hasNotText: /pattern/flags })` with `toHaveCount(0)`.
+   * `pattern` is the escaped typed value (a fill or a search term), never a
+   * literal the model wrote, and `flags` is 'i'. The tool records it right
+   * before a toHaveCount atLeast 1 on the same target, so an empty list can
+   * never pass (all-items.ts).
+   */
+  | { type: 'allItemsMatch'; target: SelectorRecord; pattern: string; flags: string; timeout?: number }
   /** With `pattern` set the attribute must MATCH the regex source and `value` is ''. */
   | { type: 'toHaveAttribute'; target: SelectorRecord; attribute: string; value: string; pattern?: string; timeout?: number }
   /** Checkbox or radio state, the property Playwright's toBeChecked reads. checked false asserts NOT checked. */

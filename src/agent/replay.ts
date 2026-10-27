@@ -567,6 +567,22 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number, credent
       await pollUntil(effectiveTimeout, async () => (await loc.count()) === a.count, `toHaveCount: expected ${a.count}`);
       return;
     }
+    case 'allItemsMatch': {
+      // No item fails to match the typed value (invariant 77): the items
+      // whose text does not match number 0, the same filter the tool checked
+      // and the emitted spec writes. The minimum (at least 1) is its own step.
+      // The multi-match item locator, never .first(): a filter on one item
+      // would check one item.
+      const notMatching = baseLocator(page, a.target).filter({ hasNotText: new RegExp(a.pattern, a.flags) });
+      const effectiveTimeout = a.timeout ?? timeoutMs;
+      let left: number | null = null;
+      try {
+        await pollUntil(effectiveTimeout, async () => (left = await notMatching.count()) === 0, 'allItemsMatch');
+      } catch {
+        throw new Error(`allItemsMatch: ${left === null ? 'the item count could not be read' : `${left} item(s)`} of "${a.target.intent}" do not match /${a.pattern}/${a.flags}`);
+      }
+      return;
+    }
     case 'toHaveAttribute': {
       const loc = locatorFromRecord(page, a.target).first();
       const effectiveTimeout = a.timeout ?? timeoutMs;

@@ -10,7 +10,7 @@
  *
  * Pure fixtures. No network. No LLM. No browser.
  */
-import { deriveDatasets, renderDatasetJson, GENERATOR_MARKERS, isCredentialFill } from '../src/agent/datasets.js';
+import { deriveDatasets, renderDatasetJson, GENERATOR_MARKERS, isCredentialFill, RULE_DERIVED_ERROR_UNCARRIABLE } from '../src/agent/datasets.js';
 import type { RunReport, Scenario, TraceStep } from '../src/agent/trace.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
 
@@ -76,8 +76,8 @@ check('A1. the contact feature yields a dataset', contact !== undefined && conta
 const valid = contact?.cases.find((c) => c.expect === 'success' && !c.name.startsWith('boundary:'));
 check('A2. the happy scenario becomes a valid case', valid?.values['message textarea'] === 'A perfectly reasonable inquiry.');
 const invalid = contact?.cases.find((c) => c.expect === 'error');
-check('A3. the negative scenario carries its asserted error text',
-  invalid?.errorText === 'Please enter a valid email' && invalid.values['email'] === 'nope@', JSON.stringify(invalid));
+check('A3. the negative scenario carries its recorded error check: the literal, on its own error element',
+  invalid?.errors?.length === 1 && invalid.errors[0]!.check === 'contains' && invalid.errors[0]!.text === 'Please enter a valid email' && invalid.errors[0]!.target.arg === '.error' && invalid.values['email'] === 'nope@' && invalid.uncarriable === undefined, JSON.stringify(invalid));
 const boundary = contact?.cases.find((c) => c.name.startsWith('boundary:'));
 check('A4. the edge scenario probing a limit becomes a boundary case',
   boundary !== undefined && boundary.values['message textarea']?.length === 200 && boundary.expect === 'success');
@@ -126,8 +126,13 @@ check('D4. rules matching no recorded field are skipped (captcha, navigation)',
   !JSON.stringify(enriched).includes('R3') && !JSON.stringify(enriched).includes('R4'));
 check('D5. non-message fields in synthesized cases keep the valid baseline', minInvalid?.values['name'] === 'Ada Lovelace');
 
+check('D6. a rule-derived invalid case has no recording, so it is marked uncarriable, never given an empty error expectation (invariant 77)',
+  minInvalid?.uncarriable === RULE_DERIVED_ERROR_UNCARRIABLE && minInvalid.errors === undefined, JSON.stringify(minInvalid));
+
 /* ─── E. serialization ─────────────────────────────────────────────────────── */
-const json = renderDatasetJson({ feature: 'contact', cases: enriched!.cases });
+// Only carried cases are written; the POM emitter leaves the others out with a line.
+const carried = enriched!.cases.filter((c) => !c.uncarriable);
+const json = renderDatasetJson({ feature: 'contact', cases: carried });
 const parsed = JSON.parse(json) as Array<Record<string, unknown>>;
 check('E1. the data file parses and is pretty-printed', Array.isArray(parsed) && json.includes('\n  '));
 check('E2. case keys come in a stable order (name, values, expect, ...)',
@@ -136,7 +141,22 @@ check('E2. case keys come in a stable order (name, values, expect, ...)',
 check('E3. value keys are sorted alphabetically',
   JSON.stringify(Object.keys((parsed[0] as { values: Record<string, string> }).values)) ===
   JSON.stringify(Object.keys((parsed[0] as { values: Record<string, string> }).values).sort()));
-check('E4. serialization is deterministic', json === renderDatasetJson({ feature: 'contact', cases: enriched!.cases }));
+check('E4. serialization is deterministic', json === renderDatasetJson({ feature: 'contact', cases: carried }));
+const errorRow = parsed.find((c) => c['expect'] === 'error') as { errors?: Array<Record<string, unknown>>; errorText?: unknown } | undefined;
+check('E5. an error case is written with its own checks (element, check, text), never an errorText',
+  errorRow?.errorText === undefined && JSON.stringify(errorRow?.errors) === JSON.stringify([{ element: 'error message', check: 'contains', text: 'Please enter a valid email' }]), JSON.stringify(errorRow));
+let threw = '';
+try { renderDatasetJson({ feature: 'contact', cases: enriched!.cases }); } catch (e) { threw = (e as Error).name + ': ' + (e as Error).message; }
+check('E6. writing a case that cannot be carried throws EmptyDatasetExpectationError naming it and its reason',
+  threw === `EmptyDatasetExpectationError: refusing to write data case "invalid: message textarea one character under the 20-character minimum": ${RULE_DERIVED_ERROR_UNCARRIABLE}`, threw);
+// An uncarriable case that does carry checks (its select value could not be
+// carried) is refused for that reason, not written with the wrong select.
+let threwSelect = '';
+try { renderDatasetJson({ feature: 'contact', cases: [{ name: 'select gap', values: { a: 'b' }, expect: 'error', errors: [{ target: { level: 'css', arg: '.e', intent: 'e' }, check: 'visible' }], uncarriable: 'it selects "subject" twice with different values' }] }); } catch (e) { threwSelect = (e as Error).message; }
+check('E8. an uncarriable case with checks is refused for its own reason', threwSelect === 'refusing to write data case "select gap": it selects "subject" twice with different values', threwSelect);
+let threwEmpty = '';
+try { renderDatasetJson({ feature: 'contact', cases: [{ name: 'empty', values: { a: 'b' }, expect: 'error', errors: [{ target: { level: 'css', arg: '.e', intent: 'e' }, check: 'contains', text: '' }] }] }); } catch (e) { threwEmpty = (e as Error).name; }
+check('E7. writing a text check with an empty expected text throws', threwEmpty === 'EmptyDatasetExpectationError', threwEmpty);
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);

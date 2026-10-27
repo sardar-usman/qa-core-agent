@@ -8,6 +8,15 @@
  * hard-coded catalogue value), which cost a repair pass on three scenarios.
  * smoke-critic-parse locks that both prompts contain this block verbatim.
  */
+/**
+ * One rule for a scenario name that claims every item of a list (invariant
+ * 77, run 59540f D5: "search for term filtered list to only matching product
+ * names" checked the first card only, and the Critic passed it). Doctrine rule
+ * 11 is this text, and the Critic's flagging rule 6 quotes it word for word;
+ * smoke-prompt-agreement pins both.
+ */
+export const UNIVERSAL_CLAIM_RULE = `A scenario name that uses a universal word (only, all, every, each, none, no) about a list claims something about every item: it needs an all-items assertion (assert allItemsMatch on the item locator with the value the scenario typed, which records "no item fails to match" and "at least 1 item") or a count-0 absence assertion on the items that must not appear. An assertion on the first item proves one item, not the claim.`;
+
 export const ASSERTION_DOCTRINE = `ASSERTION DOCTRINE, the recurring weaknesses that cost a repair pass. The Explorer records against these rules and the Critic judges against them, in these same words:
 1. Every assertion after a state-changing action carries an explicit timeout (10000-15000 for async outcomes; the gate floors any assertion after an action at 10000ms and caps any at 15000ms, so say what you expect).
 2. Proving a sort or a re-order needs a comparable relation between values read from the page: capture the first value (the first cell, price, or name) BEFORE the action, perform the sort, then assert_compare the re-read against the captured value with greater or less for numbers, before or after for text (locale order), or changed when only a re-order is claimed. Never assert a literal expected first item ($4.92, "Phillips Screwdriver"): a catalogue value changes when the data reseeds, so a literal proves nothing durable. "The first item changed" on its own proves a shuffle, not an order; when the values are comparable, use greater or less. Formatted numbers are fine: greater and less parse the first number out of text such as $1,299.00 or 42%. To compare two DIFFERENT elements (the first price against the second after a sort, the listing name against the detail heading), pass the second element's hints (css, testid, role, label) to assert_compare and it re-reads that element.
@@ -18,4 +27,5 @@ export const ASSERTION_DOCTRINE = `ASSERTION DOCTRINE, the recurring weaknesses 
 7. Never navigate directly to a URL that carries a generated id (product/<long-id>). Reach a detail page the way a user does: navigate to the listing, click the item by its VISIBLE NAME. The recorded trace replays that durable path; a hardcoded GUID URL breaks on the next data reseed.
 8. Falsifiability. The main assertion of every scenario must be able to FAIL if the feature breaks. Banned as the primary assertion: visibility of an element that was already visible before the action, a bare "URL did not change" check, "the element is still present", and any check of a pre-condition rather than an outcome. Each of those passes even when the feature is broken, so it proves nothing on its own; use it only as a secondary sanity check. Before end_scenario ask what bug would turn this red; if the answer is nothing specific, the assertion is too weak.
 9. Success signals come from the recordings, not from expectations. A navigation to a different page after a submit is a valid success signal when a negative scenario in the same set asserts the stay-on-page URL after a failed submit; never require a message, toast or element that no recording in the set shows.
-10. A timeout at or above the gate floor (10000ms after an action) is never a rework reason by itself.`;
+10. A timeout at or above the gate floor (10000ms after an action) is never a rework reason by itself.
+11. ${UNIVERSAL_CLAIM_RULE}`;

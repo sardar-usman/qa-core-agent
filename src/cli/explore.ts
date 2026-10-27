@@ -386,6 +386,9 @@ async function main(): Promise<void> {
     const frameworkDir = path.join(emitTmp, zipRootName);
     const scaffoldOpts = { outDir: frameworkDir, siteName: hostnameOf(url), features: args.features, ...(requirements ? { requirements } : {}) };
     let scaffoldResult = scaffold({ report: result, ...scaffoldOpts });
+    // One line per data case left out of a data file (invariant 77), printed
+    // once here; a re-scaffold after the emitted-spec check prints nothing.
+    for (const line of scaffoldResult.pomResult.datasetNotes) { console.log(line); appendRunEvent(outDir, { type: 'message', text: line }); }
     // Emitted-spec check: the written framework runs once with Playwright
     // against the live site before the zip. A test that fails twice is
     // dropped and named (emitted_failed); the report files are rewritten

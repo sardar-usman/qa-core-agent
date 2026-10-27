@@ -560,9 +560,37 @@ using the qa-core-heal evaluation report as the template.
   RELATION captured", greater as re-read > captured and less as re-read <
   captured (invariant 76). Locked by smoke-prompt-agreement.
   docs/audit/run-59540f-diagnosis.md, D7g.
-- D5 (run 7): OPEN. A shipped test name claims "only matching" while the
-  recording checks the first card only; the Critic passed it.
-  docs/audit/run-59540f-diagnosis.md, D5.
+- D5 (run 7): ADDRESSED (PR #NN, engine/emitter-assertions, not merged).
+  A shipped test name claims "only matching" while the recording checks
+  the first card only; the Critic passed it. Now the assert tool records
+  allItemsMatch: the items that do not match the value the scenario typed
+  number 0 (filter hasNotText, count 0), then at least 1 item, in the tool,
+  replay and both emitters; RULE 7 refuses a pattern the scenario did not
+  type; doctrine rule 11 and the Critic's flagging rule 6 rework a name
+  with a universal word (only, all, every, each, none, no) that has neither
+  an all-items nor a count-0 assertion (invariant 77). Locked by
+  smoke-all-items, smoke-critic-parse and smoke-prompt-agreement. The new
+  Critic rule can raise the first-pass rework count; run 8's bar is written
+  with it in place. docs/audit/run-59540f-diagnosis.md, D5.
+- D7b (run 7): ADDRESSED (PR #NN, engine/emitter-assertions, not merged).
+  The R14 data case asserted toContainText(c.errorText ?? '') with no
+  errorText (its pattern assertion was dropped) and used the happy case's
+  subject. Now a data error case carries every check its own recording made
+  on its own error element (visibility, a literal or a pattern with flags)
+  and every select value; a case that cannot be carried is left out with
+  one line and ships as its own test; no emitter writes an empty text
+  expectation (invariant 77). Locked by smoke-dataset-errors,
+  smoke-datasets, smoke-param-emit and smoke-emitted-run.
+- D7c (run 7): ADDRESSED (PR #NN, engine/emitter-assertions, not merged).
+  A count-0 check on getByTestId("contact-submit") matched nothing on a
+  data-test site and could never fail. Now an absence on a testid hint
+  reads the host's test-id attribute (css [data-test=...]), keeps testid
+  on a data-testid host, and is refused before any get_dom (invariant 77).
+  Locked by smoke-absence-testid.
+- D7h (run 7): ADDRESSED (PR #NN, engine/emitter-assertions, not merged).
+  A text probe given 15000 waited 60 s. Now toHaveText and toContainText
+  probes wait the model's timeout below the ceiling, the ceiling without
+  one (invariant 77). Locked by smoke-compare-poll.
 - D6 (run 7): reporting part ADDRESSED (PR #53, engine/discovery-seed, not
   merged), cause still OPEN. The contact first-name negative dropped at
   replay: the page showed the success message in a fresh context after the
@@ -580,8 +608,19 @@ using the qa-core-heal evaluation report as the template.
   end summary go only to the client (found in PR #53).
 - OPEN: sameValue reads "007" and "7" as the same value (leading zeros);
   kept on purpose, revisit if an id compare needs it (PR #54 review).
-- OPEN, for PR 55: The repair review has no rule for a listed fix the page
-  cannot satisfy (run 7 D3 b); only the first-pass prompt does (PR #54).
+- ADDRESSED (PR #NN, engine/emitter-assertions, not merged): The repair
+  review has no rule for a listed fix the page cannot satisfy (run 7 D3 b);
+  only the first-pass prompt does (PR #54). Now a fix a passing assertion in
+  the repair recording contradicts is judged applied, "not satisfiable: the
+  page renders ..." (invariant 77). Locked by smoke-prompt-agreement.
+- OPEN (found in PR #NN): pom.ts names a synthesized fill-and-click method
+  after the click's first intent word; when that equals a page-object field
+  name ("search submit button" next to the "search input" field), the field
+  shadows the method and the spec throws "cataloguePage.search is not a
+  function".
+- OPEN (found in PR #NN): pom.ts, in a feature whose scenarios start on
+  different URLs, emits the synthesized action method call before the
+  test's own page.goto, so the method acts on a blank page.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report

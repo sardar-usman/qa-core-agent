@@ -225,6 +225,39 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
     const attrMs = Date.now() - t1;
     console.log(`  K4 lock: toHaveAttribute "required" on an element without it: ok ${String(noAttr.ok)} after ${attrMs} ms`);
     check(`K4. a toHaveAttribute probe on an element without the attribute fails in under 12 s, not 60 s (took ${attrMs} ms)`, noAttr.ok === false && attrMs < 12000 && attrMs >= LIVE_PROBE_TIMEOUT_MS - 500, noAttr.error);
+    // A text probe honors a model timeout below the ceiling (invariant 77,
+    // run 59540f D7h: a toHaveText probe given 15000 waited 60 s on a value
+    // the recording had already shown). Without a model timeout the ceiling
+    // stays, so a slow but real settle is observed in full (invariant 55).
+    const t2 = Date.now();
+    const neverText = await runTool(tctx, { name: 'assert', input: { type: 'toHaveText', intent: 'go button', css: '#go', text: 'never shown', timeout: 15000 } });
+    const textMs = Date.now() - t2;
+    console.log(`  K5 lock: toHaveText "never shown" with timeout 15000: ok ${String(neverText.ok)} after ${textMs} ms`);
+    check(`K5. a toHaveText probe with a 15000 model timeout on text that never matches fails within 20 s, not 60 s (took ${textMs} ms)`, neverText.ok === false && textMs >= 14500 && textMs < 20000, neverText.error);
+    // The toContainText probe takes the same timeout.
+    const t3 = Date.now();
+    const neverContains = await runTool(tctx, { name: 'assert', input: { type: 'toContainText', intent: 'go button', css: '#go', regex: 'never', timeout: 3000 } });
+    const containsMs = Date.now() - t3;
+    check(`K6. a toContainText probe with a 3000 model timeout fails in about 3 s (took ${containsMs} ms)`, neverContains.ok === false && containsMs >= 2500 && containsMs < 7000, neverContains.error);
+    // No model timeout: the ceiling stays, so text that lands after 16 s (past
+    // the 10 s live probe and the 15 s a model might pass) is still observed,
+    // and the recorded timeout is the adaptive one, floored and capped by the gate.
+    // A separate element: changing the button's text would change its
+    // accessible name, and the cascade resolves it by role and name.
+    await page.evaluate(() => {
+      const p = document.createElement('p'); p.id = 'late'; p.textContent = 'waiting'; document.body.appendChild(p);
+      setTimeout(() => { p.textContent = 'late text'; }, 16000);
+    });
+    const t4 = Date.now();
+    const lateText = await runTool(tctx, { name: 'assert', input: { type: 'toHaveText', intent: 'late paragraph', css: '#late', text: 'late text' } });
+    const lateMs = Date.now() - t4;
+    const lateStep = tctx.current?.steps.filter((st) => st.kind === 'assert').at(-1);
+    check(`K7. with no model timeout a toHaveText probe keeps the ceiling: text that lands after 16 s passes (took ${lateMs} ms) and records the adaptive timeout`,
+      lateText.ok === true && lateMs >= 15500 && lateStep?.kind === 'assert' && lateStep.assertion.type === 'toHaveText' && (lateStep.assertion.timeout ?? 0) >= 16000, JSON.stringify({ lateText, lateStep }));
+    // The recorded timeout rule is unchanged: the model's value when it passed one.
+    const quick = await runTool(tctx, { name: 'assert', input: { type: 'toHaveText', intent: 'late paragraph', css: '#late', text: 'late text', timeout: 12000 } });
+    const quickStep = tctx.current?.steps.filter((st) => st.kind === 'assert').at(-1);
+    check('K8. a passing text probe records the model\'s own timeout (12000)', quick.ok === true && quickStep?.kind === 'assert' && quickStep.assertion.type === 'toHaveText' && quickStep.assertion.timeout === 12000, JSON.stringify(quickStep));
   } finally {
     await browser.close();
   }
@@ -232,4 +265,4 @@ check('J2. with no page time since the action, only the probe counts', Math.abs(
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read; recorded assertions ship floored at 10000 ms after an action and untouched before one, capped at 15000, while the live probe still gives up at 10 s, quick state probes (toHaveAttribute) included.');
+console.log('OK: assert_compare re-reads (polls) after an action until the relation holds; the emitted spec uses expect.poll, not a single immediate read; recorded assertions ship floored at 10000 ms after an action and untouched before one, capped at 15000, while the live probe still gives up at 10 s, quick state probes (toHaveAttribute) included, and a text probe waits the model\'s timeout below the ceiling, the ceiling without one.');

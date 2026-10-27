@@ -4,7 +4,7 @@ import { costOf } from './pricing.js';
 import { stageModel } from './stage-models.js';
 import { scenarioNameKey } from './rule-coverage.js';
 import { emitLocatorCall } from './selectors.js';
-import { ASSERTION_DOCTRINE } from './doctrine.js';
+import { ASSERTION_DOCTRINE, UNIVERSAL_CLAIM_RULE } from './doctrine.js';
 import { COMPARE_POLL_TIMEOUT_MS } from './replay.js';
 
 /**
@@ -133,6 +133,8 @@ A fill rendered as <credential:user> or <credential:pass> types the run's dedica
 
 5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-reading a second element (the compare line names the element it re-reads) for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
+6. Universal claim in the name (doctrine rule 11 below; cite it as rule 11): ${UNIVERSAL_CLAIM_RULE} A scenario whose name makes such a claim and whose recording holds neither assertion for it is "rework", with a required fix that names the form: "assert allItemsMatch on the item locator (every item, not the first) with text set to the value the scenario typed", or a count-0 absence assertion on the items that must not appear. An "assert every item of ... matches" line followed by "count>=1" is that assertion.
+
 ${ASSERTION_DOCTRINE}
 
 Return a JSON array with one element per scenario in the same order as the input, then a <summary> paragraph:
@@ -145,6 +147,16 @@ Return a JSON array with one element per scenario in the same order as the input
 <summary>
 One short paragraph on overall spec quality.
 </summary>`;
+
+/**
+ * How the repair review judges a fix the page cannot satisfy (invariant 77,
+ * run 59540f D3 b): the first review asked for a "$" on a price the page
+ * renders as "14.15", the repair Explorer tried it and the assertion failed
+ * on the live page, and the second review still counted the fix as not
+ * applied, so the scenario dropped on a fix nothing could apply. A passing
+ * assertion in the repair recording is what the page renders.
+ */
+export const UNSATISFIABLE_FIX_RULE = `A listed fix that a passing assertion in the repair recording contradicts (for example, "add a $" when the recorded price assertion /^\\d+\\.\\d{2}$/ passed on the live page) is judged "applied": true with the reason "not satisfiable: the page renders <what the passing assertion shows>". Any other unapplied fix stays "applied": false.`;
 
 /**
  * The second system block of a REPAIR review. The first pass listed required
@@ -176,6 +188,7 @@ Rules for this review:
 - A fix is applied when the recorded steps now do what it asked; judge the recorded steps shown, not what a browser might do.
 - A new complaint the first review did not make goes in "observations", never in "fixes" and never as the ground for a rework verdict: the scenario is kept when every listed fix is applied.
 - ${SECONDARY_CHECK_RULE} So removing a secondary check is never a required fix: a first-review fix that only asked to remove such a check, while a real outcome assertion is recorded, is judged "applied": true with the reason "allowed by doctrine rule 8".
+- ${UNSATISFIABLE_FIX_RULE}
 - "verdict" is "pass" when every listed fix is applied, "rework" when one is not.`;
 
 export async function critique(opts: {
@@ -443,6 +456,12 @@ export function describeStep(step: TraceStep): string {
           // reworked a count=0 that carried timeout 10000 as a one-shot read.
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
           return a.atLeast ? `assert ${where(a.target)} count>=${a.count} [polls]${t}` : `assert ${where(a.target)} count=${a.count}${t}`;
+        }
+        case 'allItemsMatch': {
+          // The all-items form (invariant 77): the items whose text does not
+          // match number 0. The minimum (count>=1) is the next recorded line.
+          const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
+          return `assert every item of ${where(a.target)} matches /${a.pattern}/${a.flags} (items not matching: count=0)${t}`;
         }
         case 'toHaveAttribute': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
