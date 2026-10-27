@@ -4,14 +4,28 @@ import type { DiscoveryMethod, ReachAction, ReachedBy, RobotsSkip } from './disc
 import type { StateProbe } from './state-probe.js';
 
 /**
- * One scenario the per-page cap cut from a page's plan (invariant 75): the
- * page its plan call was for, its name, and the rule ids it cited ([] when
- * it cited none).
+ * One scenario a cap cut from a page's plan (invariants 75 and 78): the page
+ * its plan call was for, its name, the rule ids it cited ([] when it cited
+ * none), and which cap cut it. A report written before the cause field holds
+ * per-page cuts only (the global cap cut silently then), so a missing cause
+ * is the per-page cap.
  */
 export interface PlanTrimmed {
   pageUrl: string;
   name: string;
   ruleIds: string[];
+  /** 'page-cap': PER_PAGE_SCENARIO_CAP; 'global-cap': GLOBAL_PLAN_CAP. */
+  cause?: 'page-cap' | 'global-cap';
+}
+
+/**
+ * A page the global plan cap left unplanned (invariant 78): its URL, and its
+ * feature tag when it had one. A rule whose feature's only pages are here
+ * reads page-not-planned-global-cap.
+ */
+export interface PlanSkippedPage {
+  url: string;
+  feature?: string;
 }
 
 /**
@@ -383,14 +397,21 @@ export interface RunReport {
     stateProbes?: StateProbe[];
   };
   /**
-   * Scenarios the per-page cap cut from a page's plan (invariant 75), each
-   * with the page its plan call was for and the rules it cited. They never
-   * reach the plan, so reconciliation.planned stays the post-trim count; a
-   * rule whose only planned scenarios were cut reads cut-by-page-cap. []
-   * when per-page planning cut nothing; absent when it never ran (a
+   * Scenarios a cap cut from a page's plan (invariants 75 and 78), each with
+   * the page its plan call was for, the rules it cited and the cap (cause
+   * page-cap or global-cap). They never reach the plan, so
+   * reconciliation.planned stays the post-trim count; a rule whose only
+   * planned scenarios were cut reads cut-by-page-cap or cut-by-global-cap.
+   * [] when per-page planning cut nothing; absent when it never ran (a
    * single-page run) and on a report written before the field.
    */
   planTrimmed?: PlanTrimmed[];
+  /**
+   * Pages the global plan cap left unplanned (invariant 78), by URL with
+   * their feature tag. [] when it left none; absent when per-page planning
+   * never ran and on a report written before the field.
+   */
+  planSkippedPages?: PlanSkippedPage[];
   scenarios: Scenario[];
   cascadeStats: Record<CascadeLevel, number>;
   cost: {

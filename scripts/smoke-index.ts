@@ -358,6 +358,27 @@ check('UC. not-reachable and not-revealed index as not_planned', UNCOVERED_STATU
     cov.rules.find((r) => r.rule_id === 'R10')?.latest_reason === 'robots-disallowed' && cov.rules.find((r) => r.rule_id === 'R10')?.latest_detail === ROBOTS &&
     cov.rules.find((r) => r.rule_id === 'R1')?.latest_reason === null && cov.not_automated.find((n) => n.rule_id === 'R3')?.uncovered_reason === 'cut-by-page-cap', JSON.stringify(cov));
   db8.close();
+  // The global plan cap's two reasons (invariant 78): no new column, the same coarse status, the precise reason and detail kept.
+  const runId4 = newRunId(new Date('2026-10-28T12:00:00Z'), 'gc');
+  const dir4 = path.join(rcRoot, 'output', 'shop-example', runId4);
+  fs.mkdirSync(dir4, { recursive: true });
+  const GCUT = 'cut by the global plan cap: "filtered by brand"';
+  const GPAGE = 'the global plan cap left its page(s) unplanned: https://shop.example/contact';
+  const rep4 = mkReport('https://shop.example/', '2026-10-28T12:00:00.000Z', { shipped: 1, planned: 1 });
+  rep4.ruleCoverage = { covered: [], uncovered: [
+    { ruleId: 'R5', text: 'Products filter by brand.', reason: 'cut-by-global-cap', detail: GCUT },
+    { ruleId: 'R6', text: 'A contact message is sent.', reason: 'page-not-planned-global-cap', detail: GPAGE },
+  ] };
+  fs.writeFileSync(path.join(dir4, 'run-report.json'), JSON.stringify(rep4));
+  const db4 = openDatabase(':memory:');
+  indexOutput(db4, rcRoot);
+  const rows4 = db4.prepare('SELECT rule_id, status, reason, detail FROM rule_coverage WHERE run_id = ? ORDER BY rule_id').all(runId4);
+  check('RC4. cut-by-global-cap and page-not-planned-global-cap index as not_planned with the precise reason and the detail (invariant 78, no new column)',
+    JSON.stringify(rows4) === JSON.stringify([
+      { rule_id: 'R5', status: 'not_planned', reason: 'cut-by-global-cap', detail: GCUT },
+      { rule_id: 'R6', status: 'not_planned', reason: 'page-not-planned-global-cap', detail: GPAGE },
+    ]) && UNCOVERED_STATUS['cut-by-global-cap'] === 'not_planned' && UNCOVERED_STATUS['page-not-planned-global-cap'] === 'not_planned', JSON.stringify(rows4));
+  db4.close();
   // A v7 database gains the two columns by ADD COLUMN, its rows kept; a database built from the current schema.sql already has them.
   const v7File = path.join(rcRoot, 'v7.sqlite');
   const v7 = new Database(v7File);

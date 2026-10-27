@@ -92,8 +92,11 @@ fl.forEach((id, i) => {
     { ruleId: 'R2', text: 'Products sort by name.', reason: 'cut-by-page-cap', detail: 'cut by the per-page cap: "sorted by name"' },
     { ruleId: 'R3', text: 'The cart lists added items.', reason: 'not-reachable', detail: 'no discovered page carries this feature' },
     { ruleId: 'R4', text: 'Reset link expires.', reason: 'not-planned' },
+    // The global plan cap's two reasons (invariant 78).
+    { ruleId: 'R5', text: 'Products filter by brand.', reason: 'cut-by-global-cap', detail: 'cut by the global plan cap: "filtered by brand"' },
+    { ruleId: 'R6', text: 'A contact message is sent.', reason: 'page-not-planned-global-cap', detail: 'the global plan cap left its page(s) unplanned: https://flaky.example/contact' },
   ] };
-  writeRun('flaky-example', id, rep, i === 3 ? { 'requirements-map.json': JSON.stringify({ features: [{ name: 'account', rules: [{ id: 'R1', text: 'A registered user can log in.', type: 'behavior' }, { id: 'R2', text: 'Products sort by name.', type: 'behavior' }, { id: 'R3', text: 'The cart lists added items.', type: 'behavior' }, { id: 'R4', text: 'Reset link expires.', type: 'behavior' }] }], roles: [] }) } : {});
+  writeRun('flaky-example', id, rep, i === 3 ? { 'requirements-map.json': JSON.stringify({ features: [{ name: 'account', rules: [{ id: 'R1', text: 'A registered user can log in.', type: 'behavior' }, { id: 'R2', text: 'Products sort by name.', type: 'behavior' }, { id: 'R3', text: 'The cart lists added items.', type: 'behavior' }, { id: 'R4', text: 'Reset link expires.', type: 'behavior' }, { id: 'R5', text: 'Products filter by brand.', type: 'behavior' }, { id: 'R6', text: 'A contact message is sent.', type: 'behavior' }] }], roles: [] }) } : {});
 });
 // demoqa.com: pre-v2 records only.
 fs.writeFileSync(path.join(root, '.qa-core', 'sites', 'demoqa.com.json'), JSON.stringify({ host: 'demoqa.com', recentRuns: [
@@ -410,12 +413,14 @@ await page.waitForSelector('[data-testid="coverage-project"]');
 const covPage = await page.evaluate(() => Array.from(document.querySelectorAll('[data-testid="coverage-project"]')).map((s) => ({ id: s.getAttribute('data-project-id'), rules: s.querySelectorAll('[data-testid="rule-row"]').length, noSrs: !!s.querySelector('[data-testid="no-srs"]') })));
 check('Z3. /coverage shows the SRS project\'s rules and the no-SRS message for the others; Unassigned is not listed', covPage.find((c) => c.id === 'shop-example')?.rules === 4 && covPage.find((c) => c.id === 'plain-example')?.noSrs === true && covPage.find((c) => c.id === 'demoqa-com')?.noSrs === true && !covPage.some((c) => c.id === 'unassigned'), JSON.stringify(covPage));
 const flRules = await page.evaluate(() => Array.from(document.querySelectorAll('[data-testid="coverage-project"][data-project-id="flaky-example"] [data-testid="rule-row"]')).map((r) => ({ id: r.getAttribute('data-rule-id'), status: r.getAttribute('data-status'), reason: r.getAttribute('data-reason'), label: r.querySelector('[data-testid="rule-status"]')?.textContent, detail: r.querySelector('[data-testid="rule-detail"]')?.textContent ?? null })));
-check('Z5. the rule table never shows robots-disallowed or cut-by-page-cap as "not planned": each shows its own label and the recorded detail (invariant 75); a plain not-planned rule still reads "not planned"',
+check('Z5. the rule table never shows robots-disallowed, cut-by-page-cap, cut-by-global-cap or page-not-planned-global-cap as "not planned": each shows its own label and the recorded detail (invariants 75 and 78); a plain not-planned rule still reads "not planned"',
   JSON.stringify(flRules) === JSON.stringify([
     { id: 'R1', status: 'not_planned', reason: 'robots-disallowed', label: 'blocked by robots.txt', detail: ROBOTS_DETAIL },
     { id: 'R2', status: 'not_planned', reason: 'cut-by-page-cap', label: 'cut by page cap', detail: 'cut by the per-page cap: "sorted by name"' },
     { id: 'R3', status: 'not_planned', reason: 'not-reachable', label: 'no page found', detail: 'no discovered page carries this feature' },
     { id: 'R4', status: 'not_planned', reason: 'not-planned', label: 'not planned', detail: null },
+    { id: 'R5', status: 'not_planned', reason: 'cut-by-global-cap', label: 'cut by plan cap', detail: 'cut by the global plan cap: "filtered by brand"' },
+    { id: 'R6', status: 'not_planned', reason: 'page-not-planned-global-cap', label: 'page left unplanned by plan cap', detail: 'the global plan cap left its page(s) unplanned: https://flaky.example/contact' },
   ]), JSON.stringify(flRules));
 check('Z4. zero console errors', errors.filter((e) => !/404|WebSocket/.test(e)).length === 0, errors.join(' | '));
 

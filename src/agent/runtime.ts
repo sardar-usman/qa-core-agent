@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createContext, runTool, TOOL_DEFS, dominantTestIdAttribute, type ToolContext } from './tools.js';
 import { elementLookedFor, findingKindOf, type Finding } from './finding-kind.js';
-import type { PlanTrimmed, RunReport, Scenario, TraceStep } from './trace.js';
+import type { PlanSkippedPage, PlanTrimmed, RunReport, Scenario, TraceStep } from './trace.js';
 import { renderMemoryBlock, saveRun, type RunSummary } from './memory.js';
 import { plan, pageFitRejectionLine, lockoutScenarioNames, knownAccountIdentifiers, unreachableFeatures, unreachableFeatureLine, reachActionsText, RULE_RETRY_CAP, type PlannedScenario } from './planner.js';
 import { alignVerdictNames, critique, decideRepairPass, finalCriticSummary, describeStep, repairOutcome, repairDoneEvent, repairScenarioEvents, splitCarriedVerdicts, splitGate, verdictFor, type RepairDoneEvent, type RepairScenarioEvent, type RepairStartedEvent, type ScenarioVerdict } from './critic.js';
@@ -12,13 +12,13 @@ import { replay, replayReportBlock, type ReplayEvent } from './replay.js';
 import { stability, stabilityReportBlock, type StabilityEvent } from './stability.js';
 import { reconcile } from './reconcile.js';
 import { attachDroppedTraces, traceStoreForRun } from './dropped-traces.js';
-import { attachRuleIds, computeDerivation, computeRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures } from './rule-coverage.js';
+import { attachRuleIds, computeDerivation, computeRuleCoverage, scenarioNameKey, claimPlanned, matchPlanned, notRevealedFeatures, pageNotPlannedFeatures } from './rule-coverage.js';
 import type { RequirementsMap } from './requirements.js';
 import { totalCost, COST_CLOSEOUT_GRACE_USD } from './cost-total.js';
 import { costOf } from './pricing.js';
 import { exploreStageModels, unknownModelRefusal } from './stage-models.js';
 import { discoverPages, discoveryFeatureList, fetchRobots, robotsBlockedFeatures, robotsDisallowedDetails, writeDiscoveryJson } from './discovery.js';
-import { detectStateFeatures, runStateProbes } from './state-probe.js';
+import { detectStateFeatures, probeRuleReasons, runStateProbes } from './state-probe.js';
 import type { PlannedPageEntry } from './planned-page.js';
 import { buildPlanTargets, planAcrossPages, ruleRetryLine, PER_PAGE_SCENARIO_CAP, GLOBAL_PLAN_CAP } from './plan-pages.js';
 import { filterPages, FILTERED_SOURCES, MAX_PAGES_WITH_FEATURES } from './page-filter.js';
@@ -841,6 +841,8 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // per-page planning ran; undefined when it never ran (a single-page run,
     // or a checkpoint written before the field).
     planTrimmed: opts.resume?.planTrimmed as PlanTrimmed[] | undefined,
+    // The pages the global cap left unplanned (invariant 78), the same way.
+    planSkippedPages: opts.resume?.planSkippedPages as PlanSkippedPage[] | undefined,
     completed: [...restoredCompleted],
     verdicts: opts.resume?.verdicts as ScenarioVerdict[] | undefined,
     spend: opts.resume
@@ -868,6 +870,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     ...(opts.requirements ? { requirementsMap: opts.requirements } : {}),
     plan: cpState.plan,
     ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
+    ...(cpState.planSkippedPages ? { planSkippedPages: cpState.planSkippedPages } : {}),
     fillableFields: cpState.fillableFields,
     completedScenarios: cpState.completed,
     ...(cpState.verdicts && cpState.verdicts.length > 0 ? { verdicts: cpState.verdicts } : {}),
@@ -1009,9 +1012,9 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
           robots: disc.robots ?? await fetchRobots(new URL(opts.url)),
           ...(probeTokens ? { featureTokens: probeTokens } : {}),
         })
-      : { probes: [], revealed: [], lines: [] };
+      : { probes: [], revealed: [], blocked: [], lines: [] };
     for (const line of probes.lines) opts.onEvent?.({ type: 'message', text: line });
-    const planned = buildPlanTargets({ pages, map: opts.requirements, features: opts.features, revealed: probes.revealed, candidates: disc.pages });
+    const planned = buildPlanTargets({ pages, map: opts.requirements, features: opts.features, revealed: probes.revealed, blocked: probes.blocked, candidates: disc.pages });
     pages = planned.pages;
     discoveryInfo = { method: disc.method, pages, candidates, warnings: disc.warnings, ...(disc.robotsSkipped ? { robotsSkipped: disc.robotsSkipped } : {}), ...(probes.probes.length > 0 ? { stateProbes: probes.probes } : {}) };
     try {
@@ -1032,6 +1035,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     const planned2 = await planAcrossPages({
       targets: planned.targets,
       planFn: (a) => plan({ ...a, apiKey, ruleRetryBudget }),
+      ...(probeTokens ? { featureTokens: probeTokens } : {}),
       onMessage: (text) => opts.onEvent?.({ type: 'message', text }),
       onPlanError: (err, _t, partial) => {
         // Billing/credit exhaustion or a persistent API failure must not be
@@ -1060,6 +1064,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     plannerUsd += planned2.plannerUsd;
     if (planned2.planCapHit) planCapHit = true;
     cpState.planTrimmed = planned2.planTrimmed;
+    cpState.planSkippedPages = planned2.planSkippedPages;
 
     if (combined.length === 0) {
       throw new Error(
@@ -1072,7 +1077,11 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     // carry either (no scenario tagged with it, none citing its rules) can
     // only report not-planned; say so after planning, never invent a URL for
     // it, and never say it of a feature the plan carries (invariant 72).
-    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes, combined, robotsBlocked.map((b) => b.feature))) {
+    // A feature whose pages the global cap left unplanned has its own line
+    // (the cap line names the pages) and its own coverage reason
+    // (page-not-planned-global-cap, invariant 78), never "no discovered page".
+    const capSkipped = opts.requirements ? Object.keys(pageNotPlannedFeatures(opts.requirements.features.map((f) => f.name), pages, planned2.planSkippedPages, probeTokens)) : [];
+    for (const f of unreachableFeatures(opts.requirements, pages, probes.probes, combined, [...robotsBlocked.map((b) => b.feature), ...capSkipped])) {
       opts.onEvent?.({ type: 'message', text: unreachableFeatureLine(f) });
     }
     // Phase boundary: plan done.
@@ -1886,6 +1895,7 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
     ...(stopped ? { stopped } : {}),
     ...(discoveryInfo ? { discovery: discoveryInfo } : {}),
     ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
+    ...(cpState.planSkippedPages ? { planSkippedPages: cpState.planSkippedPages } : {}),
     ...(orientationCalls !== undefined ? { orientationCalls } : {}),
     scenarios: emittedScenarios,
     cascadeStats,
@@ -1962,9 +1972,16 @@ export async function explore(opts: ExploreOptions): Promise<RunReport | ReviewP
         // A feature robots.txt kept out of reach: its uncited rules read
         // robots-disallowed with the paths and the rule (invariant 75).
         robotsDisallowed: robotsDisallowedDetails(opts.requirements, discoveryInfo, opts.url),
-        // A rule whose only planned scenarios the per-page cap cut reads
-        // cut-by-page-cap, naming them, never not-planned (invariant 75).
+        // A rule whose only planned scenarios a cap cut reads cut-by-page-cap
+        // or cut-by-global-cap, naming them, never not-planned (invariants
+        // 75 and 78).
         ...(cpState.planTrimmed ? { planTrimmed: cpState.planTrimmed } : {}),
+        // A feature whose every page the global cap left unplanned reads
+        // page-not-planned-global-cap, never not-planned (invariant 78).
+        ...(discoveryInfo && cpState.planSkippedPages ? { pageNotPlanned: pageNotPlannedFeatures(opts.requirements.features.map((f) => f.name), discoveryInfo.pages, cpState.planSkippedPages, featureTokenMap(opts.requirements)) } : {}),
+        // A robots-blocked state probe: its revealed-side rules read
+        // robots-disallowed, its origin-side rules were planned on the origin.
+        ...(discoveryInfo?.stateProbes ? { probeRules: probeRuleReasons(discoveryInfo.stateProbes) } : {}),
       }),
       // Derivation: which checklist categories produced scenarios per feature
       // and which were skipped, with the reason. The considered-not-automated

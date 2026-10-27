@@ -780,10 +780,34 @@ function synthesizeMethods(scenarios: Scenario[], pc: PageClassPlan): ActionMeth
     if (occurrences < 2) continue;
 
     seenSignatures.add(sig);
-    methods.push(buildMethodFromLead(lead, pc, sig));
+    const method = buildMethodFromLead(lead, pc, sig);
+    // A field is an instance property, so a method of the same name is
+    // shadowed by it and the spec throws "<page>.search is not a function"
+    // (found in PR #55: "search submit button" beside the "search input"
+    // field). The name never equals a field, a class member or an earlier
+    // method.
+    method.name = distinctMethodName(method.name, new Set([...pc.fields.map((f) => f.name), ...methods.map((m) => m.name)]));
+    methods.push(method);
   }
 
   return methods;
+}
+
+/**
+ * A synthesized method's name, distinct from every field, every class member
+ * of the page object and every earlier method: the derived name when it is
+ * free, else the derived name plus "Action", else that plus 2, 3, ... until
+ * it is free. Deterministic: the fields and the earlier methods are fixed
+ * before the name is chosen. Exported for the smoke.
+ */
+export function distinctMethodName(base: string, taken: Set<string>): string {
+  const busy = (n: string): boolean => taken.has(n) || RESERVED_FIELD_NAMES.has(n);
+  if (!busy(base)) return base;
+  const withAction = `${base}Action`;
+  if (!busy(withAction)) return withAction;
+  let n = 2;
+  while (busy(`${withAction}${n}`)) n++;
+  return `${withAction}${n}`;
 }
 
 /** A step's action signature keys on the LOCATOR, so two fields never share a method slot. */
@@ -1232,6 +1256,12 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
   const matched = pc.methods.find((m) => m.signatureKey === leadSig);
 
   const consumed = new Set<TraceStep>();
+  // The method call is emitted at the position of the first step it
+  // replaces, so every step before it (the test's own page.goto in a feature
+  // whose scenarios start on different URLs) runs first. It used to be
+  // emitted before the goto, and the method acted on a blank page (found in
+  // PR #55).
+  let methodCall: string | null = null;
   if (matched) {
     // Emit the action method call with the fill values as arguments.
     const fillValues = matched.steps
@@ -1247,7 +1277,7 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
         if (env) return `process.env.${env} ?? ''`;
         return realFill.generate ? uniqueCallExpr(realFill.generate) : q(realFill.value);
       });
-    out.push(`  await ${handle}.${matched.name}(${fillValues.join(', ')});`);
+    methodCall = `  await ${handle}.${matched.name}(${fillValues.join(', ')});`;
     // Mark the lead steps consumed so we don't re-emit them below.
     for (const step of lead) consumed.add(step);
   }
@@ -1267,7 +1297,10 @@ function renderScenario(scenario: Scenario, pc: PageClassPlan, ext: 'ts' | 'js',
   // grace exactly where replay applies it (invariant 39).
   const relations = relationsByVarName(scenario.steps);
   for (const step of scenario.steps) {
-    if (consumed.has(step)) continue;
+    if (consumed.has(step)) {
+      if (methodCall && step === lead[0]) { out.push(methodCall); methodCall = null; }
+      continue;
+    }
     if (step.kind === 'navigate') {
       if (!initialNavSkipped) { initialNavSkipped = true; continue; }
       out.push(`  await page.goto(${q(step.url)});`);

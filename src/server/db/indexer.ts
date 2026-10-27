@@ -199,6 +199,9 @@ export const UNCOVERED_STATUS: Record<string, 'not_planned' | 'planned_but_dropp
   // Never planned either; the reason column keeps the precise label (schema v8, invariant 75).
   'robots-disallowed': 'not_planned',
   'cut-by-page-cap': 'not_planned',
+  // The global plan cap's two reasons, the same way (invariant 78; no new column).
+  'cut-by-global-cap': 'not_planned',
+  'page-not-planned-global-cap': 'not_planned',
 };
 
 /** Index one run directory: the runs row and its derived rows. */
