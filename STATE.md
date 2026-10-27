@@ -521,10 +521,29 @@ using the qa-core-heal evaluation report as the template.
   console.log in the run folder on every end, credential-masked, never in
   the zip. Gateway and MCP runs still keep events.jsonl only. Locked by
   smoke-console-log.
-- D2 (run 7): OPEN. The state probe looks for a trigger only on candidate
-  pages and never hops from a listing into an item, so "Add to cart" on a
-  product page is never found from /. docs/audit/run-59540f-diagnosis.md,
-  D2.
+- D2 (run 7): ADDRESSED (PR #56, engine/probe-planner, not merged).
+  The state probe looked for a trigger only on candidate pages and never
+  hopped from a listing into an item, so "Add to cart" on a product page
+  was never found from /. Now a candidate with no trigger whose item links
+  (generated-id paths) are none of them candidates hops to its FIRST item
+  link, a load against the page cap with the crawl delay and robots
+  checked; the item page becomes the origin, reached by clicking the item
+  on the listing and never by its URL, and its origin rules are planned
+  from its own snapshot. A revealed path robots disallows (Toolshop's
+  /checkout) keeps outcome robots, still plans the origin rules (R6) on the
+  item page, and its uncited revealed-side rules read robots-disallowed
+  (invariant 78). Locked by smoke-state-probe (L, M).
+  docs/audit/run-59540f-diagnosis.md, D2.
+- D7f (run 7): ADDRESSED (PR #56, engine/probe-planner, not merged).
+  The catalogue edge R5 scenario was planned on / and again on /privacy;
+  the names overlap 0.69, under the 0.75 rule, so both stayed and the
+  Explorer spent a call skipping one. Now the same feature, category and
+  rules on a later page that does not carry the feature by page evidence
+  is a cross-page duplicate whatever the overlap, dropped with one line
+  naming both scenarios and the overlap; a copy on a page with page
+  evidence is kept over one a model tag placed (invariant 78). Locked by
+  smoke-plan-page-fit (F9) and smoke-state-probe (L11).
+  docs/audit/run-59540f-diagnosis.md, D7f.
 - D3 (run 7): ADDRESSED (PR #54, engine/critic-compare, not merged).
   Critic errors: a compare after select_option called vacuous, "greater"
   read in the wrong direction, the capture's locator read as the polling
@@ -601,8 +620,13 @@ using the qa-core-heal evaluation report as the template.
   locator timeout (smoke-reconcile). Why the site accepted the submit is
   still unknown; reproduced on the self-hosted Toolshop before run 8
   (advisor decision Oct 23). docs/audit/run-59540f-diagnosis.md, D6.
-- OPEN: the global 20-scenario plan cap in planAcrossPages cuts without
-  naming what it cut (found in PR #53).
+- ADDRESSED (PR #56, engine/probe-planner, not merged): the global
+  20-scenario plan cap in planAcrossPages cut without naming what it cut
+  (found in PR #53). Now it names every scenario it cuts with its rules
+  and every page it leaves unplanned, records them (planTrimmed cause
+  global-cap, planSkippedPages), and coverage reads cut-by-global-cap or
+  page-not-planned-global-cap, never not-planned (invariant 78). Locked by
+  smoke-page-cap (F, G), smoke-index (RC4) and smoke-projects (Z5).
 - OPEN: a run that planned nothing deletes its folder and its console.log;
   the run that most needs its console keeps none (found in the PR #53
   review).
@@ -615,14 +639,31 @@ using the qa-core-heal evaluation report as the template.
   only the first-pass prompt does (PR #54). Now a fix a passing assertion in
   the repair recording contradicts is judged applied, "not satisfiable: the
   page renders ..." (invariant 77). Locked by smoke-prompt-agreement.
-- OPEN, for PR 56 (found in PR #55): pom.ts names a synthesized
-  fill-and-click method after the click's first intent word; when that
-  equals a page-object field name ("search submit button" next to the
-  "search input" field), the field shadows the method and the spec throws
-  "cataloguePage.search is not a function".
-- OPEN, for PR 56 (found in PR #55): pom.ts, in a feature whose scenarios
-  start on different URLs, emits the synthesized action method call before
-  the test's own page.goto, so the method acts on a blank page.
+- ADDRESSED (PR #56, engine/probe-planner, not merged) (found in PR
+  #55): pom.ts named a synthesized fill-and-click method after the click's
+  first intent word; when that equals a page-object field name ("search
+  submit button" next to the "search input" field), the field shadowed the
+  method and the spec threw "cataloguePage.search is not a function". Now
+  a taken name gets "Action", then a number (searchAction) (invariant 78).
+  Locked by smoke-pom-methods.
+- ADDRESSED (PR #56, engine/probe-planner, not merged) (found in PR
+  #55): pom.ts, in a feature whose scenarios start on different URLs,
+  emitted the synthesized action method call before the test's own
+  page.goto, so the method acted on a blank page. Now the call sits where
+  the first step it replaces sits, after the goto (invariant 78). Locked
+  by smoke-pom-methods.
+- OPEN (found in PR #56): the dataset loop of a parameterized spec asserts
+  the representative's own literal for every success case (a second happy
+  case "Results for hose" was checked against "Results for pliers"), and in
+  a feature whose scenarios start on different URLs it opens the
+  representative's first URL for every case. The emitted-spec check would
+  drop such a case; the emitter should carry each case's own expected text
+  and page.
+- OPEN (found in PR #56): the cross-page overlap rule (invariant 73) also
+  compares scenarios planned on the same page, so two same-page scenarios
+  with the same rules and names overlapping 0.75 are dropped as a
+  "cross-page duplicate ... kept on <the same page>". The new evidence rule
+  compares other pages only.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report
