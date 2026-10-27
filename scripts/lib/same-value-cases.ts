@@ -25,4 +25,11 @@ export const SAME_VALUE_CASES: readonly SameValueCase[] = [
   { captured: 'Hammer', current: 'Hammer', equal: true, why: 'plain text, exact' },
   { captured: '12,50', current: '12.50', equal: false, why: 'a comma that is not a thousands group: text compare' },
   { captured: '$14.15', current: '14.15 USD', equal: false, why: 'a currency code is letters: text compare' },
+  { captured: 'Hammer', current: 'hammer', equal: false, why: 'plain text is case sensitive' },
+  { captured: '$5', current: '5%', equal: false, why: 'a currency amount against a percent: text compare (PR #54 review)' },
+  { captured: '5%', current: '$5', equal: false, why: 'the same pair the other way round' },
+  // Known looseness, kept on purpose and listed in the STATE.md backlog:
+  // leading zeros parse away, so "007" and "7" are the same number. Revisit
+  // if a compare on an id that keeps its zeros needs it.
+  { captured: '007', current: '7', equal: true, why: 'known looseness: leading zeros parse away' },
 ];

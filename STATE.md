@@ -578,6 +578,10 @@ using the qa-core-heal evaluation report as the template.
   review).
 - OPEN: gateway and MCP runs keep no console copy; their prepare notes and
   end summary go only to the client (found in PR #53).
+- OPEN: sameValue reads "007" and "7" as the same value (leading zeros);
+  kept on purpose, revisit if an id compare needs it (PR #54 review).
+- OPEN, for PR 55: The repair review has no rule for a listed fix the page
+  cannot satisfy (run 7 D3 b); only the first-pass prompt does (PR #54).
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report

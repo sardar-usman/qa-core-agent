@@ -110,8 +110,10 @@ export function inlineParseNumberFn(): string {
  * percent sign around it; a comma counts only as a thousands separator
  * ("1,299.00") and a dot only as the decimal point. Anything else ("Item 3",
  * "3 items", "Hammer", "12,50", "14.15 USD") compares the trimmed text exactly,
- * as before. A side that does not parse falls back to the text compare, never
- * to "holds".
+ * as before. A percent on one side and a currency symbol on the other are two
+ * kinds of value, so "$5" against "5%" compares as text too (PR #54 review).
+ * A side that does not parse falls back to the text compare, never to
+ * "holds".
  *
  * One source. The body is JavaScript that is also valid TypeScript, with no
  * inner function and no type annotation. The agent's sameValue (tools.ts and
@@ -125,7 +127,8 @@ const SAME_VALUE_BODY_LINES: readonly string[] = [
   `const b = String(current ?? '').trim();`,
   `const ma = plain.exec(a);`,
   `const mb = plain.exec(b);`,
-  `if (ma && mb) return Number((ma[1] + ma[2]).replace(/,/g, '')) === Number((mb[1] + mb[2]).replace(/,/g, ''));`,
+  String.raw`const mixed = (a.includes('%') && /[$€£¥₹]/.test(b)) || (b.includes('%') && /[$€£¥₹]/.test(a));`,
+  `if (ma && mb && !mixed) return Number((ma[1] + ma[2]).replace(/,/g, '')) === Number((mb[1] + mb[2]).replace(/,/g, ''));`,
   `return a === b;`,
 ];
 
@@ -133,7 +136,8 @@ const SAME_VALUE_DOC_LINES: readonly string[] = [
   'True when the captured and the re-read value are the same value. Both plain',
   'numbers ("$14.15", "14.15", "1,299.00", "1.5%"): compared as numbers, so',
   '"$14.15" equals "14.15". Anything else ("Item 3", "Hammer"): the trimmed',
-  'text must match exactly. equal and unchanged hold when this is true, changed',
+  'text must match exactly, and so does a percent against a currency amount',
+  '("$5" is not "5%"). equal and unchanged hold when this is true, changed',
   'holds when it is false. The agent verified the recording with the same logic.',
 ];
 
