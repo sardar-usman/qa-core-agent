@@ -129,11 +129,12 @@ const assertDesc = assertTool?.description ?? '';
 const assertEnum = ((assertTool?.input_schema as { properties: { type: { enum: string[] } } } | undefined)?.properties.type.enum) ?? [];
 check('C6. the assert tool offers allItemsMatch and its description names it for an "only matching" or "all items" outcome',
   assertEnum.includes('allItemsMatch') && /for an "only matching" or "all items" outcome[^.]*use allItemsMatch/.test(assertDesc), assertDesc);
-// The line flagging rule 6 names is the line the Critic is shown.
+// The line flagging rule 6 names is the line the Critic is shown: one step,
+// no separate minimum (the PR #55 review: two checks read at different
+// moments passed a list that cleared while loading).
 const allItemsLine = describeStep({ kind: 'assert', name: 'a', assertion: { type: 'allItemsMatch', target: { level: 'css', arg: '[data-test="product-name"]', intent: 'product names' }, pattern: 'Pliers', flags: 'i', timeout: 10000 } });
-const minLine = describeStep({ kind: 'assert', name: 'b', assertion: { type: 'toHaveCount', target: { level: 'css', arg: '[data-test="product-name"]', intent: 'product names' }, count: 1, atLeast: true, timeout: 10000 } });
-check('C7. the recorded pair renders as rule 6 names it: "assert every item of ... matches" followed by "count>=1"',
-  allItemsLine.startsWith('assert every item of product names = ') && allItemsLine.includes(' matches /Pliers/i ') && minLine.includes('count>=1') && flag6.includes('An "assert every item of ... matches" line followed by "count>=1" is that assertion.'), `${allItemsLine} | ${minLine}`);
+check('C7. the one recorded step renders as rule 6 names it: "assert every item of ... matches", at least 1 item, in one read',
+  allItemsLine.startsWith('assert every item of product names = ') && allItemsLine.includes(' matches /Pliers/i, at least 1 item, in one read of the list ') && flag6.includes('An "assert every item of ... matches" line is that assertion.') && !flag6.includes('count>=1'), allItemsLine);
 // The wire: a first review call carries rule 6 and the user message the line.
 const firstSent: Anthropic.MessageCreateParamsNonStreaming[] = [];
 const firstClient: CriticClient = {

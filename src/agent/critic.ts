@@ -133,7 +133,7 @@ A fill rendered as <credential:user> or <credential:pass> types the run's dedica
 
 5. Volatile values: an assertion or capture pinned to a literal catalogue value or a generated id (a specific price, a specific product name, a literal item count other than 0 for absence, a generated test id like product-01JX8F2K or sku-8842) is "rework": such values rot when the data reseeds. Doctrine rules 2 and 6 below state the durable shape (capture the value from the page, act, assert_compare with a relation; a format; a structural fact; a stable structural id) and the required_fix names that shape in the Explorer's own tool forms: assert with regex (a format: "has text matching /.../"), toHaveCount with atLeast (a minimum: "count>=1"), toBeChecked (a filter state), assert_compare re-reading a second element (the compare line names the element it re-reads) for two-element comparisons, and greater / less on formatted numbers (prices parse). A line already in one of those forms is not volatile.
 
-6. Universal claim in the name (doctrine rule 11 below; cite it as rule 11): ${UNIVERSAL_CLAIM_RULE} A scenario whose name makes such a claim and whose recording holds neither assertion for it is "rework", with a required fix that names the form: "assert allItemsMatch on the item locator (every item, not the first) with text set to the value the scenario typed", or a count-0 absence assertion on the items that must not appear. An "assert every item of ... matches" line followed by "count>=1" is that assertion.
+6. Universal claim in the name (doctrine rule 11 below; cite it as rule 11): ${UNIVERSAL_CLAIM_RULE} A scenario whose name makes such a claim and whose recording holds neither assertion for it is "rework", with a required fix that names the form: "assert allItemsMatch on the item locator (every item, not the first) with text set to the value the scenario typed", or a count-0 absence assertion on the items that must not appear. An "assert every item of ... matches" line is that assertion.
 
 ${ASSERTION_DOCTRINE}
 
@@ -458,10 +458,10 @@ export function describeStep(step: TraceStep): string {
           return a.atLeast ? `assert ${where(a.target)} count>=${a.count} [polls]${t}` : `assert ${where(a.target)} count=${a.count}${t}`;
         }
         case 'allItemsMatch': {
-          // The all-items form (invariant 77): the items whose text does not
-          // match number 0. The minimum (count>=1) is the next recorded line.
+          // The all-items form (invariant 77): one read of the whole list
+          // holds at least 1 item and every item matches.
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';
-          return `assert every item of ${where(a.target)} matches /${a.pattern}/${a.flags} (items not matching: count=0)${t}`;
+          return `assert every item of ${where(a.target)} matches /${a.pattern}/${a.flags}, at least 1 item, in one read of the list${t}`;
         }
         case 'toHaveAttribute': {
           const t = a.timeout ? ` [timeout:${a.timeout}ms]` : ' [no-timeout]';

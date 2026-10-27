@@ -229,6 +229,7 @@ export function recordedErrorChecks(s: Scenario): { checks: DatasetErrorCheck[] 
       checks.push({ target: a.target, check: 'visible', ...timeout });
     } else if (a.type === 'toHaveText' || a.type === 'toContainText') {
       const check = a.type === 'toHaveText' ? 'text' : 'contains';
+      if (a.pattern !== undefined && a.pattern !== '' && a.pattern.trim() === '') return { reason: `step ${i + 1} asserts an empty pattern, which proves nothing` };
       if (a.pattern) checks.push({ target: a.target, check, pattern: a.pattern, flags: '', ...timeout });
       else if (a.text.trim()) checks.push({ target: a.target, check, text: a.text, ...timeout });
       else return { reason: `step ${i + 1} asserts an empty text, which proves nothing` };
@@ -457,6 +458,9 @@ export function renderDatasetJson(dataset: FeatureDataset, elementName: (target:
     if (c.uncarriable) throw new EmptyDatasetExpectationError(c.name, c.uncarriable);
     if (c.expect === 'error' && (!c.errors || c.errors.length === 0)) throw new EmptyDatasetExpectationError(c.name, 'an error case with no recorded error assertion');
     for (const e of c.errors ?? []) {
+      // An empty or whitespace pattern matches every text, so it is as empty
+      // as an empty literal (new RegExp('') passes on anything).
+      if (e.pattern !== undefined && e.pattern.trim() === '') throw new EmptyDatasetExpectationError(c.name, 'a text check with an empty pattern');
       if (e.check !== 'visible' && e.pattern === undefined && !(e.text ?? '').trim()) throw new EmptyDatasetExpectationError(c.name, 'a text check with an empty expected text');
     }
     return {

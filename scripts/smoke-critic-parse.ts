@@ -254,10 +254,10 @@ check('L6d. a minimum count renders as count>=N', l6d.includes('count>=1'), l6d)
 const l6e = describeStep({ kind: 'assert', name: 'k', assertion: { type: 'toBeChecked', target: { level: 'css', arg: '#eco', intent: 'eco filter' }, checked: true, timeout: 5000 } });
 check('L6e. a checked assertion renders its state', l6e.includes('eco filter = page.locator("#eco") checked'), l6e);
 // The all-items form (invariant 77, run 59540f D5) renders with its typed
-// pattern, its flags and the zero count of non-matching items, then its minimum.
+// pattern, its flags, and that one read decides at least 1 item and every match.
 const l6g = describeStep({ kind: 'assert', name: 'all', assertion: { type: 'allItemsMatch', target: { level: 'css', arg: '[data-test="product-name"]', intent: 'product names' }, pattern: 'Pliers', flags: 'i', timeout: 10000 } });
-check('L6g. an all-items assertion renders as every item matching the typed pattern, items not matching count=0',
-  l6g === 'assert every item of product names = page.locator("[data-test=\\"product-name\\"]") matches /Pliers/i (items not matching: count=0) [timeout:10000ms]', l6g);
+check('L6g. an all-items assertion renders as every item matching the typed pattern, at least 1 item, in one read of the list',
+  l6g === 'assert every item of product names = page.locator("[data-test=\\"product-name\\"]") matches /Pliers/i, at least 1 item, in one read of the list [timeout:10000ms]', l6g);
 check('L6f. the Critic prompt says a compare line polls and never needs a timeout, and names the tool forms', CRITIC_SYSTEM_PROMPT.includes('[polls Nms]') && CRITIC_SYSTEM_PROMPT.includes('toHaveCount with atLeast') && CRITIC_SYSTEM_PROMPT.includes('toBeChecked'));
 // Run 591732: the Critic reworked two scenarios for what it could not see. A
 // toHaveCount with timeout 10000 rendered as a bare count=0, a toHaveURL

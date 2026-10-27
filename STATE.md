@@ -563,15 +563,17 @@ using the qa-core-heal evaluation report as the template.
 - D5 (run 7): ADDRESSED (PR #55, engine/emitter-assertions, not merged).
   A shipped test name claims "only matching" while the recording checks
   the first card only; the Critic passed it. Now the assert tool records
-  allItemsMatch: the items that do not match the value the scenario typed
-  number 0 (filter hasNotText, count 0), then at least 1 item, in the tool,
-  replay and both emitters; RULE 7 refuses a pattern the scenario did not
+  allItemsMatch: one read of every item's text holds at least 1 item and
+  every item matches the value the scenario typed, in the tool, replay and
+  both emitters; RULE 7 refuses a pattern the scenario did not
   type; doctrine rule 11 and the Critic's flagging rule 6 rework a name
   with a universal word (only, all, every, each, none, no) that has neither
   an all-items nor a count-0 assertion (invariant 77). Locked by
   smoke-all-items, smoke-critic-parse and smoke-prompt-agreement. The new
   Critic rule can raise the first-pass rework count; run 8's bar is written
-  with it in place. docs/audit/run-59540f-diagnosis.md, D5.
+  with it in place. Fixed in review: the two checks read at different
+  moments passed a list that cleared while loading; now one snapshot
+  decides both (PR #55 review). docs/audit/run-59540f-diagnosis.md, D5.
 - D7b (run 7): ADDRESSED (PR #55, engine/emitter-assertions, not merged).
   The R14 data case asserted toContainText(c.errorText ?? '') with no
   errorText (its pattern assertion was dropped) and used the happy case's
@@ -613,14 +615,14 @@ using the qa-core-heal evaluation report as the template.
   only the first-pass prompt does (PR #54). Now a fix a passing assertion in
   the repair recording contradicts is judged applied, "not satisfiable: the
   page renders ..." (invariant 77). Locked by smoke-prompt-agreement.
-- OPEN (found in PR #55): pom.ts names a synthesized fill-and-click method
-  after the click's first intent word; when that equals a page-object field
-  name ("search submit button" next to the "search input" field), the field
-  shadows the method and the spec throws "cataloguePage.search is not a
-  function".
-- OPEN (found in PR #55): pom.ts, in a feature whose scenarios start on
-  different URLs, emits the synthesized action method call before the
-  test's own page.goto, so the method acts on a blank page.
+- OPEN, for PR 56 (found in PR #55): pom.ts names a synthesized
+  fill-and-click method after the click's first intent word; when that
+  equals a page-object field name ("search submit button" next to the
+  "search input" field), the field shadows the method and the spec throws
+  "cataloguePage.search is not a function".
+- OPEN, for PR 56 (found in PR #55): pom.ts, in a feature whose scenarios
+  start on different URLs, emits the synthesized action method call before
+  the test's own page.goto, so the method acts on a blank page.
 - Test credentials: superseded Oct 8 by phase item 3 (client-supplied
   account through .env).
 - A login-preflight stop lists as Empty run on the dashboard; the report

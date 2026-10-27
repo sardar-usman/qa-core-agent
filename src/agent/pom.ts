@@ -4,6 +4,7 @@ import { emitLocatorCall, type CascadeLevel } from './selectors.js';
 import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
 import { regexLiteral, textExpectation } from './transcriber.js';
+import { allItemsPollLine } from './all-items.js';
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { sameValuePoll } from './parse-number.js';
 import { captureWaitNeeded } from './capture-ready.js';
@@ -1112,8 +1113,9 @@ function renderDataHelpers(param: ParamPlan, ext: 'ts' | 'js'): string[] {
     out.push(`    if (!el) throw new Error(\`data case "\${c.name}": no error element named "\${e.element}"\`);`);
     out.push(`    const timeout = e.timeout ?? ${COMPARE_POLL_TIMEOUT_MS};`);
     out.push(`    if (e.check === 'visible') { await expect(el).toBeVisible({ timeout }); continue; }`);
+    out.push(`    // An empty or whitespace pattern matches every text, as empty as an empty literal.`);
+    out.push(`    if ((e.pattern !== undefined ? e.pattern : (e.text ?? '')).trim() === '') throw new Error(\`data case "\${c.name}": an empty expected text or pattern proves nothing\`);`);
     out.push(`    const expected = e.pattern !== undefined ? new RegExp(e.pattern, e.flags ?? '') : (e.text ?? '');`);
-    out.push(`    if (typeof expected === 'string' && expected.trim() === '') throw new Error(\`data case "\${c.name}": an empty expected text proves nothing\`);`);
     out.push(`    if (e.check === 'text') await expect(el).toHaveText(expected, { timeout });`);
     out.push(`    else await expect(el).toContainText(expected, { timeout });`);
     out.push(`  }`);
@@ -1450,18 +1452,16 @@ function emitAssertion(a: Assertion, pc: PageClassPlan, handle: string): string 
       return `await expect(${loc}).toHaveCount(${a.count}${opts});`;
     }
     case 'allItemsMatch': {
-      // No item fails to match the typed value (invariant 77): the items
-      // whose text does not match number 0, on the multi-match locator (a
-      // field that ever took .first() is bypassed, as for toHaveCount). The
-      // minimum (at least 1) is the next recorded step.
+      // One read of every item's text decides both facts (invariant 77): at
+      // least 1 item and every item matches, on the multi-match locator (a
+      // field that ever took .first() is bypassed, as for toHaveCount).
       const field = fieldFor(pc, a.target);
       const fieldRec = field ? pc.fields.find((f) => f.name === field)?.record : undefined;
       const loc = field && fieldRec && fieldRec.ambiguous !== true
         ? `${handle}.${field}`
         : emitLocatorCall(a.target.level, a.target.arg, false, a.target.frameChain, a.target.filterText);
-      const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
       const re = regexLiteral(a.pattern, a.flags);
-      return `await expect(${loc}.filter({ hasNotText: ${re} })).toHaveCount(0${opts}); // every item matches ${re}: none fails to match`;
+      return allItemsPollLine(loc, re, a.flags, a.timeout ?? COMPARE_POLL_TIMEOUT_MS);
     }
     case 'toHaveAttribute': {
       const field = fieldFor(pc, a.target);

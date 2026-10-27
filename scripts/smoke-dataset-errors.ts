@@ -24,6 +24,9 @@
  *      as its own test; a rule-derived error case is left out, not emitted.
  *   D. the rule 2 guard: an empty toHaveText / toContainText throws a named
  *      error in both emitters and both languages, and the tool refuses one.
+ *   E. an empty or whitespace pattern counts as empty: the data file writer
+ *      and the recorded-check reader refuse it, and the emitted guard throws
+ *      at run time on a hand-edited data file (TS and JS).
  * No network beyond 127.0.0.1, no model call.
  */
 import fs from 'node:fs';
@@ -38,6 +41,7 @@ import { createContext, runTool } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import type { RunReport, Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
+import { renderDatasetJson, recordedErrorChecks } from '../src/agent/datasets.js';
 import { emitFramework, emptyTextHits, runPlaywright, cleanup, type Emitted } from './lib/emitted-runner.js';
 
 let pass = 0;
@@ -171,6 +175,47 @@ try {
     check(`B3. ${e.language}: the other two data cases still pass`, others.length === 2 && others.every((s) => s.status === 'expected'), others.map((s) => `${s.title}: ${s.status} ${s.error}`).join(' | '));
   }
   emailError = EMAIL_ERROR_MATCHING;
+
+  /* ─── E. an empty pattern is as empty as an empty text ─────────────── */
+  // new RegExp('') matches any text and new RegExp(' ') any text with a
+  // space, so an empty or whitespace pattern proves nothing. The data file
+  // writer, the recorded-check reader and the emitted guard all refuse it.
+  const patternCase = (pattern: string) => [{ name: 'empty pattern', values: { a: 'b' }, expect: 'error' as const, errors: [{ target: emailAlert, check: 'contains' as const, pattern, flags: '' }] }];
+  const throwsFor = (pattern: string): string => { try { renderDatasetJson({ feature: 'contact', cases: patternCase(pattern) }); return ''; } catch (e) { return `${(e as Error).name}: ${(e as Error).message}`; } };
+  check('E1. writing a data case whose pattern is empty or whitespace throws, the same as an empty text',
+    throwsFor('') === 'EmptyDatasetExpectationError: refusing to write data case "empty pattern": a text check with an empty pattern' &&
+    throwsFor('   ') === 'EmptyDatasetExpectationError: refusing to write data case "empty pattern": a text check with an empty pattern' && throwsFor('[Ee]mail') === '',
+    `${throwsFor('')} | ${throwsFor('   ')} | ${throwsFor('[Ee]mail')}`);
+  const wsRecorded = recordedErrorChecks({ name: 'ws', category: 'negative', steps: [
+    ...form('not-an-email', 'warranty', 'Hello, a question about tools'),
+    assertStep({ type: 'toContainText', target: emailAlert, text: '', pattern: '  ', timeout: 10000 }),
+  ] });
+  check('E2. a recording whose pattern is whitespace cannot be carried, with the reason', 'reason' in wsRecorded && wsRecorded.reason === 'step 7 asserts an empty pattern, which proves nothing', JSON.stringify(wsRecorded));
+  // The emitted guard, at run time: the data file hand-edited to an empty
+  // pattern on the email case and a single-space pattern on the message case.
+  // Without the guard both would pass (anything matches '', and "Message is
+  // required" contains a space).
+  for (const e of emitted) {
+    const dataPath = path.join(e.dir, 'data', 'contact.json');
+    const cases = JSON.parse(fs.readFileSync(dataPath, 'utf8')) as Array<{ name: string; errors?: Array<Record<string, unknown>> }>;
+    const emailRow = cases.find((c) => c.name === emailNegative.name)!;
+    const messageRow = cases.find((c) => c.name === messageNegative.name)!;
+    emailRow.errors![1] = { element: 'emailError', check: 'contains', pattern: '', flags: '', timeout: 10000 };
+    messageRow.errors![1] = { element: 'messageError', check: 'text', pattern: ' ', flags: '', timeout: 10000 };
+    fs.writeFileSync(dataPath, JSON.stringify(cases, null, 2) + '\n');
+  }
+  const guarded = await Promise.all(emitted.map(async (e) => ({ e, res: await runPlaywright(e.dir, '\\[data\\]') })));
+  for (const { e, res } of guarded) {
+    const emailRun = res.specs.find((sp) => sp.title.includes(emailNegative.name));
+    const messageRun = res.specs.find((sp) => sp.title.includes(messageNegative.name));
+    const happyRun = res.specs.find((sp) => sp.title.includes(happy.name));
+    console.log(`   ${e.language} with an empty and a whitespace pattern in the data file: playwright exit ${String(res.status)}; email ${emailRun?.status ?? 'missing'}; message ${messageRun?.status ?? 'missing'}; happy ${happyRun?.status ?? 'missing'}`);
+    const guardMsg = (name: string) => `data case "${name}": an empty expected text or pattern proves nothing`;
+    check(`E3. ${e.language}: the emitted guard throws on an empty pattern and on a whitespace pattern, so both cases FAIL; the happy case still passes`,
+      res.status !== 0 && emailRun?.status === 'unexpected' && emailRun.error.includes(guardMsg(emailNegative.name)) &&
+      messageRun?.status === 'unexpected' && messageRun.error.includes(guardMsg(messageNegative.name)) && happyRun?.status === 'expected',
+      JSON.stringify({ emailRun, messageRun, happyRun }));
+  }
 
   /* ─── C. cases that cannot be carried are left out and named ────────── */
   const ariaNegative: Scenario = { name: 'rejected a blank first name', category: 'negative', feature: 'contact', steps: [

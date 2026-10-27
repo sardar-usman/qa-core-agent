@@ -9,6 +9,7 @@ import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
+import { pollAllItems } from './all-items.js';
 
 /**
  * Reality check.
@@ -568,18 +569,12 @@ async function runAssertion(page: Page, a: Assertion, timeoutMs: number, credent
       return;
     }
     case 'allItemsMatch': {
-      // No item fails to match the typed value (invariant 77): the items
-      // whose text does not match number 0, the same filter the tool checked
-      // and the emitted spec writes. The minimum (at least 1) is its own step.
-      // The multi-match item locator, never .first(): a filter on one item
-      // would check one item.
-      const notMatching = baseLocator(page, a.target).filter({ hasNotText: new RegExp(a.pattern, a.flags) });
-      const effectiveTimeout = a.timeout ?? timeoutMs;
-      let left: number | null = null;
-      try {
-        await pollUntil(effectiveTimeout, async () => (left = await notMatching.count()) === 0, 'allItemsMatch');
-      } catch {
-        throw new Error(`allItemsMatch: ${left === null ? 'the item count could not be read' : `${left} item(s)`} of "${a.target.intent}" do not match /${a.pattern}/${a.flags}`);
+      // ONE read decides both facts, polled until that read holds: at least
+      // 1 item and every item's text matches (invariant 77; pollAllItems, the
+      // tool's own poll). The multi-match item locator, never .first().
+      const read = await pollAllItems(baseLocator(page, a.target), new RegExp(a.pattern, a.flags), a.timeout ?? timeoutMs);
+      if (!read.held) {
+        throw new Error(`allItemsMatch: "${a.target.intent}" ${read.last === null ? 'could not be read' : `has ${read.last.items} item(s); not matching /${a.pattern}/${a.flags}: ${JSON.stringify(read.last.notMatching)}`}`);
       }
       return;
     }

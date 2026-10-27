@@ -11,7 +11,7 @@ import { detectUniqueField, generateUnique, isEmailField } from './unique-data.j
 import { runGate, gateRuleLabel, gateBrokenReason, catalogueLiteralReason, counterLiteralReason, counterCountCaptureReason, generatedIdReason, fragileCompareReason, fragileAssertReason, priceInNameReason, type GateViolation } from './gate.js';
 import { captureActualState } from './actual-state.js';
 import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
-import { ALL_ITEMS_FLAGS, escapeForPattern, typedValueForPattern } from './all-items.js';
+import { ALL_ITEMS_FLAGS, escapeForPattern, pollAllItems, typedValueForPattern } from './all-items.js';
 import { scenarioNameKey, claimPlanned } from './rule-coverage.js';
 import { plannedPageViolation, plannedPageRefusal, plannedPageBrokenReason, type PlannedPageEntry } from './planned-page.js';
 import { adaptiveTimeout, ADAPTIVE_CEILING_MS, ADAPTIVE_FLOOR_MS } from './adaptive-timeout.js';
@@ -652,7 +652,7 @@ export const TOOL_DEFS = [
       'To assert the CURRENT value of a form field (an input you filled, a textarea, a select), use toHaveValue with the expected value, NOT toHaveAttribute("value", ...). Typed text lives on the value PROPERTY, so toHaveAttribute reads empty; toHaveValue reads the property. ' +
       'FORMAT instead of literal: toHaveText, toContainText and toHaveAttribute take `regex` (a regex source such as "^\\$\\d+\\.\\d{2}$" for a price, "^\\S+ \\S+$" for a name-shaped string, "\\S" for non-empty) in place of text/value; the element must MATCH it. Use this for catalogue data (a price is rendered, a name is present) where a literal would rot. ' +
       'MINIMUM count: toHaveCount with `atLeast` (e.g. atLeast: 1) proves at least that many elements and polls; it never pins the catalogue count. ' +
-      'EVERY ITEM: for an "only matching" or "all items" outcome (a search or filter shows only items with the term), use allItemsMatch with the hints for the ITEM locator (every product name, not the first) and `text` set to the value you typed (the search term); it records "no item fails to match" plus "at least 1 item", so checking the first item is never needed. ' +
+      'EVERY ITEM: for an "only matching" or "all items" outcome (a search or filter shows only items with the term), use allItemsMatch with the hints for the ITEM locator (every product name, not the first) and `text` set to the value you typed (the search term); it checks, in one read of the whole list, that there is at least 1 item and every item matches, so checking the first item is never needed. ' +
       'CHECKED state: toBeChecked asserts a checkbox or radio is checked (pass checked: false for not checked). ' +
       'ALWAYS pass `intent`: a short name for the element ("thank you message", "first product price"). It becomes the page-object field name in the emitted framework. When you omit it, one is derived from the hints (the testid words, the label, the role and its name, the text, the css testid / id / words) and recorded; "element" is never recorded.',
     input_schema: {
@@ -2573,31 +2573,30 @@ async function executeAssertion(
       const items = baseLocator(ctx.page, shape.target);
       const re = new RegExp(shape.pattern, shape.flags);
       const t0 = Date.now();
-      // The filter check first: the items that do not match number 0. A
-      // failure here is an outcome failure, counted by the retry cap.
-      await expect(items.filter({ hasNotText: re })).toHaveCount(0, countProbe);
+      // ONE read decides both facts, polled until that read holds: at least
+      // 1 item and every item's text matches (pollAllItems). Two checks read
+      // at different moments passed a list that cleared while loading (the
+      // PR #55 review).
+      const read = await pollAllItems(items, re, countProbe.timeout);
       const observed = recordedTimeout(ctx, input.timeout, t0);
-      // Then the minimum: an empty list makes the filter check pass on
-      // nothing, so it is refused with that reason and nothing is recorded.
-      try {
-        await expect.poll(async () => items.count(), countProbe).toBeGreaterThanOrEqual(1);
-      } catch (err) {
-        return {
-          ok: false,
-          error: `allItemsMatch refused: ${shape.target.intent} matches no item, so "no item fails to match /${shape.pattern}/${shape.flags}" would pass on an empty list (${String((err as Error).message ?? err).split('\n')[0]}). Point the hints at the items the list shows (every product name), or, when the list should not be empty, assert toHaveCount with atLeast 1 to record that outcome.`,
-        };
+      if (!read.held) {
+        // An empty list is refused, nothing recorded and nothing counted:
+        // "every item matches" proves nothing on no items.
+        if (read.last && read.last.items === 0) {
+          return {
+            ok: false,
+            error: `allItemsMatch refused: ${shape.target.intent} matches no item, and "every item matches /${shape.pattern}/${shape.flags}" proves nothing on an empty list (last read: 0 items). Point the hints at the items the list shows (every product name), or, when the list should not be empty, assert toHaveCount with atLeast 1 to record that outcome.`,
+          };
+        }
+        // Items that do not match are an outcome failure, counted by the retry cap.
+        throw new Error(`allItemsMatch: ${shape.target.intent} ${read.last === null ? 'could not be read' : `has ${read.last.items} item(s); not matching /${shape.pattern}/${shape.flags}: ${JSON.stringify(read.last.notMatching)}`}`);
       }
       pushStep(ctx, {
         kind: 'assert',
-        name: `every ${shape.target.intent} item matches /${shape.pattern}/${shape.flags} (none fails to match)`,
+        name: `every ${shape.target.intent} item matches /${shape.pattern}/${shape.flags} (at least 1 item, one read)`,
         assertion: { ...shape, timeout: observed },
       });
-      pushStep(ctx, {
-        kind: 'assert',
-        name: `${shape.target.intent} count is at least 1`,
-        assertion: { type: 'toHaveCount', target: shape.target, count: 1, atLeast: true, timeout: observed },
-      });
-      return { ok: true, data: { pattern: `/${shape.pattern}/${shape.flags}`, recorded: ['no item fails to match', 'at least 1 item'] } };
+      return { ok: true, data: { pattern: `/${shape.pattern}/${shape.flags}`, items: read.last!.items, checked: 'at least 1 item and every item matches, in one read of the list' } };
     }
     case 'toBeHidden': {
       // Absence form: do NOT resolve — the element may not exist at all. Build
@@ -2735,7 +2734,7 @@ function describeAssertion(input: AssertionInput): string {
     case 'toBeHidden': return `${who} to be hidden`;
     case 'toBeChecked': return `${who} to be ${input.checked === false ? 'not checked' : 'checked'}`;
     case 'toHaveCount': return input.atLeast != null ? `${who} to match at least ${input.atLeast} element(s)` : `${who} to match ${input.count} element(s)`;
-    case 'allItemsMatch': return `every item of ${who} to contain "${input.text ?? input.regex ?? ''}" (no item failing to match)`;
+    case 'allItemsMatch': return `at least 1 item of ${who}, every one containing "${input.text ?? input.regex ?? ''}", in one read`;
     default: return `assertion ${input.type}`;
   }
 }

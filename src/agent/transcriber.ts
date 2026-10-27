@@ -9,6 +9,7 @@ import { inlineParseNumberFn, inlineSameValueFn, sameValuePoll } from './parse-n
 // so the spec and the in-process check agree.
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
 import { captureWaitNeeded, inlineAwaitCaptureReadyFn } from './capture-ready.js';
+import { allItemsPollLine } from './all-items.js';
 import type { Assertion, CaptureSource, CredentialMarker, RunReport, Scenario, SelectorRecord, TraceStep } from './trace.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER } from './auth-emit.js';
 
@@ -256,12 +257,10 @@ function emitAssertion(a: Assertion): string[] {
       return [`await expect(${loc(a.target)}).toHaveCount(${a.count}${opts});`];
     }
     case 'allItemsMatch': {
-      // No item fails to match the typed value (invariant 77): the items
-      // whose text does not match number 0, on the multi-match locator. The
-      // minimum (at least 1) is the next recorded step.
-      const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';
+      // One read of every item's text decides both facts (invariant 77): at
+      // least 1 item and every item matches, on the multi-match locator.
       const re = regexLiteral(a.pattern, a.flags);
-      return [`await expect(${locCount(a.target)}.filter({ hasNotText: ${re} })).toHaveCount(0${opts}); // every item matches ${re}: none fails to match`];
+      return [allItemsPollLine(locCount(a.target), re, a.flags, a.timeout ?? COMPARE_POLL_TIMEOUT_MS)];
     }
     case 'toHaveAttribute': {
       const opts = a.timeout ? `, { timeout: ${a.timeout} }` : '';

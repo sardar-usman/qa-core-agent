@@ -15,7 +15,7 @@
  * 11 is this text, and the Critic's flagging rule 6 quotes it word for word;
  * smoke-prompt-agreement pins both.
  */
-export const UNIVERSAL_CLAIM_RULE = `A scenario name that uses a universal word (only, all, every, each, none, no) about a list claims something about every item: it needs an all-items assertion (assert allItemsMatch on the item locator with the value the scenario typed, which records "no item fails to match" and "at least 1 item") or a count-0 absence assertion on the items that must not appear. An assertion on the first item proves one item, not the claim.`;
+export const UNIVERSAL_CLAIM_RULE = `A scenario name that uses a universal word (only, all, every, each, none, no) about a list claims something about every item: it needs an all-items assertion (assert allItemsMatch on the item locator with the value the scenario typed, which checks in one read of the whole list that there is at least 1 item and every item matches) or a count-0 absence assertion on the items that must not appear. An assertion on the first item proves one item, not the claim.`;
 
 export const ASSERTION_DOCTRINE = `ASSERTION DOCTRINE, the recurring weaknesses that cost a repair pass. The Explorer records against these rules and the Critic judges against them, in these same words:
 1. Every assertion after a state-changing action carries an explicit timeout (10000-15000 for async outcomes; the gate floors any assertion after an action at 10000ms and caps any at 15000ms, so say what you expect).
