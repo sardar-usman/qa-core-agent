@@ -8,7 +8,7 @@ import { generateUnique } from './unique-data.js';
 import { installEvalShim } from './eval-shim.js';
 import { frameLocatorForChain } from './selectors.js';
 import { captureActualState } from './actual-state.js';
-import { parseNumber, noNumberMessage } from './parse-number.js';
+import { parseNumber, noNumberMessage, sameValue } from './parse-number.js';
 
 /**
  * Reality check.
@@ -467,11 +467,15 @@ function absenceLocatorFor(
   return scope.getByText(captured, { exact: true });
 }
 
-function compareHolds(relation: string, captured: string, current: string): boolean {
+// Exported for smoke-capture-compare, which drives one table of sameValue
+// cases through this decision, the tool's relationHolds and both emitters.
+export function compareHolds(relation: string, captured: string, current: string): boolean {
   switch (relation) {
-    case 'changed': return current !== captured;
+    // The tool's decision (sameValue, invariant 76): plain numbers by value,
+    // anything else by exact text, and changed is its negation.
+    case 'changed': return !sameValue(captured, current);
     case 'unchanged':
-    case 'equal': return current === captured;
+    case 'equal': return sameValue(captured, current);
     // Numbers are parsed out of formatted text ($48.41, 1,299.00, 42%); a side
     // with no number never holds, and the caller reports it loudly.
     case 'greater': {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { emitLocatorCall } from './selectors.js';
 import { applyTestIdAttribute } from './test-id-emit.js';
 import { uniqueCallExpr, inlineUniqueDataFns } from './unique-data.js';
-import { inlineParseNumberFn } from './parse-number.js';
+import { inlineParseNumberFn, inlineSameValueFn, sameValuePoll } from './parse-number.js';
 // How long the emitted assert_compare poll waits for an async state change (a
 // sort, a re-render) to settle before failing: the replay engine's own value,
 // so the spec and the in-process check agree.
@@ -67,6 +67,13 @@ export function transcribe(opts: TranscribeOptions): TranscribeResult {
   const usesNumeric = report.scenarios.some((s) => s.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'greater' || st.relation === 'less')));
   if (usesNumeric) {
     lines.push(inlineParseNumberFn());
+    lines.push('');
+  }
+  // Inline sameValue when an equal, unchanged or changed compare exists, so
+  // "$14.15" against "14.15" decides the way the agent verified it.
+  const usesSameValue = report.scenarios.some((s) => s.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'equal' || st.relation === 'unchanged' || st.relation === 'changed')));
+  if (usesSameValue) {
+    lines.push(inlineSameValueFn());
     lines.push('');
   }
   // Inline the capture readiness grace when a count capture a compare reads
@@ -175,11 +182,11 @@ function emitStep(step: TraceStep, relations: Map<string, string> = new Map()): 
       const lines: string[] = [];
       switch (step.relation) {
         case 'changed':
-          lines.push(`await expect.poll(async () => ${rhs}, ${pollOpts}).not.toBe(${step.varName}); // value changed after the action`);
+          lines.push(`await expect.poll(${sameValuePoll(step.varName, rhs)}, ${pollOpts}).not.toBe(${step.varName}); // value changed after the action (sameValue: a format change alone is no change)`);
           break;
         case 'unchanged':
         case 'equal':
-          lines.push(`await expect.poll(async () => ${rhs}, ${pollOpts}).toBe(${step.varName}); // value held`);
+          lines.push(`await expect.poll(${sameValuePoll(step.varName, rhs)}, ${pollOpts}).toBe(${step.varName}); // value held (sameValue: "$14.15" is "14.15")`);
           if (step.bounds) {
             const locExpr = locFirst(step.target);
             lines.push(

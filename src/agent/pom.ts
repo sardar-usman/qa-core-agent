@@ -5,6 +5,7 @@ import { selectOptionExpr, filesArg } from './transcriber.js';
 import { uniqueCallExpr, uniqueFnName } from './unique-data.js';
 import { regexLiteral } from './transcriber.js';
 import { COMPARE_POLL_TIMEOUT_MS, relationsByVarName } from './replay.js';
+import { sameValuePoll } from './parse-number.js';
 import { captureWaitNeeded } from './capture-ready.js';
 import { deriveDatasets, renderDatasetJson, type DatasetCase, type FeatureDataset } from './datasets.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, envVarForFill, loginFeatureOf, recordedCredentials, stripLeadingLogin, type AuthCredentials } from './auth-emit.js';
@@ -682,6 +683,9 @@ export function canonicalIntent(intent: string): string {
 }
 
 /** RHS expression for a capture/compare read, emitted inline. */
+/** The compare relations that decide through sameValue (invariant 76). */
+const SAME_VALUE_RELATIONS = new Set<string>(['equal', 'unchanged', 'changed']);
+
 function captureRhs(source: CaptureSource, target: SelectorRecord, attribute?: string): string {
   if (source === 'count') {
     return `await ${emitLocatorCall(target.level, target.arg, false, target.frameChain, target.filterText)}.count()`;
@@ -938,6 +942,9 @@ function renderSpec(
   // A numeric compare (greater / less) reads "$1,299.00" through the shipped
   // helpers/parse-number, the same parser the agent verified with.
   const usesNumeric = pc.scenarios.some((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && (st.relation === 'greater' || st.relation === 'less')));
+  // equal, unchanged and changed decide through the shipped helpers/same-value,
+  // the same text the agent verified with ("$14.15" is "14.15", invariant 76).
+  const usesSameValue = pc.scenarios.some((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && SAME_VALUE_RELATIONS.has(st.relation)));
   // A count capture a compare reads waits for its target through the shipped
   // helpers/assertions, the same grace replay applies (invariant 39).
   const usesCaptureWait = pc.scenarios.some((sc) => {
@@ -949,6 +956,7 @@ function renderSpec(
     out.push(`import { ${pc.className} } from '${importPath}';`);
     if (genFns.length > 0) out.push(`import { ${genFns.join(', ')} } from '../../helpers/unique-data';`);
     if (usesNumeric) out.push(`import { parseNumber } from '../../helpers/parse-number';`);
+    if (usesSameValue) out.push(`import { sameValue } from '../../helpers/same-value';`);
     if (usesCaptureWait) out.push(`import { awaitCaptureReady } from '../../helpers/assertions';`);
     if (param) out.push(`import rawCases from '../../data/${pc.feature}.json';`);
   } else {
@@ -956,6 +964,7 @@ function renderSpec(
     out.push(`const { ${pc.className} } = require('${importPath}');`);
     if (genFns.length > 0) out.push(`const { ${genFns.join(', ')} } = require('../../helpers/unique-data');`);
     if (usesNumeric) out.push(`const { parseNumber } = require('../../helpers/parse-number');`);
+    if (usesSameValue) out.push(`const { sameValue } = require('../../helpers/same-value');`);
     if (usesCaptureWait) out.push(`const { awaitCaptureReady } = require('../../helpers/assertions');`);
     if (param) out.push(`const rawCases = require('../../data/${pc.feature}.json');`);
   }
@@ -1246,11 +1255,11 @@ function emitStepCall(step: TraceStep, pc: PageClassPlan, handle: string, creds:
       const lines: string[] = [];
       switch (step.relation) {
         case 'changed':
-          lines.push(`await expect.poll(async () => ${readRhs}, ${pollOpts}).not.toBe(${step.varName}); // value changed after the action`);
+          lines.push(`await expect.poll(${sameValuePoll(step.varName, readRhs)}, ${pollOpts}).not.toBe(${step.varName}); // value changed after the action (sameValue: a format change alone is no change)`);
           break;
         case 'unchanged':
         case 'equal':
-          lines.push(`await expect.poll(async () => ${readRhs}, ${pollOpts}).toBe(${step.varName}); // value held`);
+          lines.push(`await expect.poll(${sameValuePoll(step.varName, readRhs)}, ${pollOpts}).toBe(${step.varName}); // value held (sameValue: "$14.15" is "14.15")`);
           if (step.bounds) {
             const locFirst = emitLocatorCall(step.target.level, step.target.arg, true, step.target.frameChain, step.target.filterText);
             lines.push(

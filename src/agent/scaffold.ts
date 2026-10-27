@@ -5,7 +5,7 @@ import type { RequirementsMap } from './requirements.js';
 import { transcribePOM, type POMTranscribeResult } from './pom.js';
 import { applyTestIdAttribute, type EmittedTestIdAttribute } from './test-id-emit.js';
 import { renderUniqueDataHelper } from './unique-data.js';
-import { renderParseNumberHelper } from './parse-number.js';
+import { renderParseNumberHelper, renderSameValueHelper } from './parse-number.js';
 import { renderAwaitCaptureReadyTs, renderAwaitCaptureReadyJs } from './capture-ready.js';
 import { redactCredentialValues } from './datasets.js';
 import {
@@ -142,6 +142,7 @@ export function scaffold(opts: ScaffoldOptions): ScaffoldResult {
   writeFile(`helpers/assertions.${ext}`, renderAssertionsHelper(lang));
   writeFile(`helpers/unique-data.${ext}`, renderUniqueDataHelper(lang));
   writeFile(`helpers/parse-number.${ext}`, renderParseNumberHelper(lang));
+  writeFile(`helpers/same-value.${ext}`, renderSameValueHelper(lang));
   // The README quotes the Critic's summary: free text, rendered from the
   // credential-redacted report like the run-report copy (invariant 70).
   writeFile('README.md', renderReadme({ ...opts, report: redactCredentialValues(opts.report) }, pomResult, lang));
@@ -729,7 +730,8 @@ ${tsconfigLine}├── pages/                      # Page Object Model classes
 ├── helpers/
 │   ├── assertions.${ext}           # Reusable custom matchers
 │   ├── unique-data.${ext}          # Per-run unique email / token / password
-│   └── parse-number.${ext}         # The number inside formatted text, for numeric compares
+│   ├── parse-number.${ext}         # The number inside formatted text, for numeric compares
+│   └── same-value.${ext}           # equal / changed compares: plain numbers by value ("$14.15" is "14.15")
 └── run-report.json             # Original QA-Core run report (cost, cascade, verdicts)
 \`\`\`
 

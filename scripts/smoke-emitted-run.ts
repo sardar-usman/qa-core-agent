@@ -7,7 +7,9 @@
  *      and generated unique data), click, select_option, set_checked,
  *      toHaveURL, toHaveText literal and pattern, toContainText, toHaveValue,
  *      toHaveAttribute pattern, toBeChecked, toHaveCount 0 and atLeast,
- *      capture plus assert_compare with changed, greater on a currency string
+ *      capture plus assert_compare with changed, greater on a currency string,
+ *      equal and changed on every row of the shared sameValue table plus run
+ *      59540f's "$14.15" listing against "14.15" detail (invariant 76),
  *      and on a cart badge's text (run 44cb3d: a counter is read by its text,
  *      never as a literal or an element count), equal against a different
  *      target, and a frame chain. A cart feature reached by action
@@ -38,6 +40,7 @@ import type { AddressInfo } from 'node:net';
 import { scaffold } from '../src/agent/scaffold.js';
 import { transcribe } from '../src/agent/transcriber.js';
 import type { RunReport, Scenario, SelectorRecord } from '../src/agent/trace.js';
+import { SAME_VALUE_CASES } from './lib/same-value-cases.js';
 
 let pass = 0;
 let fail = 0;
@@ -211,6 +214,24 @@ const mixedHtml = `<!doctype html>
   });
 </script></body></html>`;
 
+// equal, unchanged and changed on formatted numbers (invariant 76): one pair
+// of elements per row of the shared sameValue table, and run 59540f's shape,
+// a listing that shows "$14.15" and a detail page that shows "14.15".
+const escapeHtml = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const valuesHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Values</title></head>
+<body><main><h1>Values</h1>
+${SAME_VALUE_CASES.map((c, i) => `  <p><span id="cap-${i}">${escapeHtml(c.captured)}</span> <span id="now-${i}">${escapeHtml(c.current)}</span></p>`).join('\n')}
+</main></body></html>`;
+const priceListHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Price list</title></head>
+<body><main><h1>Pliers</h1>
+  <a href="/price-detail.html" data-test="price-card"><h5>Combination Pliers</h5><span data-test="listing-price">$14.15</span></a>
+</main></body></html>`;
+const priceDetailHtml = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Combination Pliers</title></head>
+<body><main><h1>Combination Pliers</h1><span data-test="unit-price">14.15</span></main></body></html>`;
+
 const sanderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#888"/></svg>`;
 
 const routes: Record<string, { body: string; type: string }> = {
@@ -225,6 +246,9 @@ const routes: Record<string, { body: string; type: string }> = {
   '/item.html': { body: itemHtml, type: 'text/html; charset=utf-8' },
   '/checkout': { body: checkoutHtml, type: 'text/html; charset=utf-8' },
   '/mixed.html': { body: mixedHtml, type: 'text/html; charset=utf-8' },
+  '/values.html': { body: valuesHtml, type: 'text/html; charset=utf-8' },
+  '/price-list.html': { body: priceListHtml, type: 'text/html; charset=utf-8' },
+  '/price-detail.html': { body: priceDetailHtml, type: 'text/html; charset=utf-8' },
 };
 
 const server = http.createServer((req, res) => {
@@ -279,6 +303,9 @@ const itemLink: SelectorRecord = { level: 'role', arg: { role: 'link', name: 'Co
 const addToCart: SelectorRecord = { level: 'css', arg: '[data-test="add-to-cart"]', intent: 'add to cart button' };
 const navCart: SelectorRecord = { level: 'css', arg: '[data-test="nav-cart"]', intent: 'cart link in header' };
 const quantityInput: SelectorRecord = { level: 'label', arg: 'Quantity', intent: 'quantity input' };
+const listingPrice: SelectorRecord = { level: 'css', arg: '[data-test="listing-price"]', intent: 'listing price' };
+const priceCard: SelectorRecord = { level: 'css', arg: '[data-test="price-card"]', intent: 'price card' };
+const unitPrice: SelectorRecord = { level: 'css', arg: '[data-test="unit-price"]', intent: 'detail price' };
 // The cart page is revealed by an add (invariant 71) and is reached by these
 // clicks from the shop page, never by its URL.
 const REVEALED_PATH = '/checkout';
@@ -385,6 +412,25 @@ function scenarios(): Scenario[] {
       { kind: 'assert', name: 'cu', assertion: { type: 'toHaveURL', pattern: 'checkout', timeout: 10000 } },
       { kind: 'assert', name: 'cq', assertion: { type: 'toHaveValue', target: quantityInput, value: '1', timeout: 10000 } },
     ] },
+    // Run 59540f (D4): "$14.15" on the listing, "14.15" on the detail page.
+    // The recorded equal compare passes in the emitted framework too.
+    { name: 'the detail page shows the same price as the listing', category: 'edge', feature: 'prices', steps: [
+      { kind: 'navigate', url: `${base}/price-list.html` },
+      { kind: 'capture', varName: 'cap_listingPrice', source: 'text', target: listingPrice, intent: 'listing price' },
+      { kind: 'click', target: priceCard },
+      { kind: 'assert', name: 'pu', assertion: { type: 'toHaveURL', pattern: 'price-detail', timeout: 10000 } },
+      { kind: 'assert_compare', varName: 'cap_listingPrice', relation: 'equal', source: 'text', target: listingPrice, intent: 'listing price', readVar: 'cap_listingPrice_now', readTarget: unitPrice },
+    ] },
+    // The shared sameValue table: a row whose two values are the same value
+    // ships as equal, a row whose values differ ships as changed, and both
+    // must pass, so each row's answer is executed in the shipped framework.
+    ...SAME_VALUE_CASES.map((c, i): Scenario => ({
+      name: `value row ${i + 1} compares as ${c.equal ? 'the same value' : 'different values'}`, category: 'edge', feature: 'prices', steps: [
+        { kind: 'navigate', url: `${base}/values.html` },
+        { kind: 'capture', varName: `cap_row${i + 1}`, source: 'text', target: { level: 'css', arg: `#cap-${i}`, intent: `row ${i + 1} captured value` }, intent: `row ${i + 1} captured value` },
+        { kind: 'assert_compare', varName: `cap_row${i + 1}`, relation: c.equal ? 'equal' : 'changed', source: 'text', target: { level: 'css', arg: `#cap-${i}`, intent: `row ${i + 1} captured value` }, intent: `row ${i + 1} captured value`, readVar: `cap_row${i + 1}_now`, readTarget: { level: 'css', arg: `#now-${i}`, intent: `row ${i + 1} other value` } },
+      ],
+    })),
     { name: 'the create account link on the landing page opens the registration form', category: 'happy', feature: 'registration', steps: [
       { kind: 'navigate', url: `${base}/` },
       { kind: 'click', target: createAccountLink },
@@ -541,6 +587,14 @@ for (const language of ['ts', 'js'] as const) {
     } finally {
       fs.rmSync(singleDir, { recursive: true, force: true });
     }
+    // sameValue (invariant 76): the helper is shipped and the prices spec
+    // polls every equal and changed compare through it.
+    const pricesSpec = fs.readFileSync(path.join(outDir, `tests/prices/prices.spec.${language}`), 'utf8');
+    const sameValueImport = language === 'ts' ? `import { sameValue } from '../../helpers/same-value';` : `const { sameValue } = require('../../helpers/same-value');`;
+    const sameValuePolls = (pricesSpec.match(/return sameValue\(cap_\w+, now\) \? cap_\w+ : now; \}, \{ timeout: 10000 \}\)\.(?:not\.)?toBe\(cap_\w+\);/g) ?? []).length;
+    check(`${language}: helpers/same-value is shipped, the prices spec imports it and polls all ${SAME_VALUE_CASES.length + 1} equal / changed compares through it`,
+      fs.existsSync(path.join(outDir, `helpers/same-value.${language}`)) && fs.readFileSync(path.join(outDir, `helpers/same-value.${language}`), 'utf8').includes('function sameValue(captured') && pricesSpec.includes(sameValueImport) && sameValuePolls === SAME_VALUE_CASES.length + 1,
+      `polls=${sameValuePolls} | ` + pricesSpec.split('\n').filter((l) => /sameValue/.test(l)).slice(0, 3).join(' | '));
     check(`${language}: scaffold wrote the config, a spec per feature and the a11y spec`,
       fs.existsSync(path.join(outDir, `playwright.config.${language}`))
       && fs.existsSync(path.join(outDir, `tests/catalogue/catalogue.spec.${language}`))
@@ -587,6 +641,8 @@ for (const language of ['ts', 'js'] as const) {
     check(`${language}: every scenario plus the a11y check passed (${SCENARIO_COUNT + 1} expected)`, json.stats.expected === SCENARIO_COUNT + 1 && json.stats.skipped === 0, JSON.stringify({ stats: json.stats, specs: specs.map((s) => `${s.status}:${s.title}`) }));
     check(`${language}: the a11y spec ran and passed`, a11y.length === 1 && a11y[0]!.ok && a11y[0]!.status === 'expected', JSON.stringify(a11y));
     check(`${language}: no spec is reported as failed`, specs.every((s) => s.ok && s.status === 'expected'), specs.filter((s) => !s.ok).map((s) => `${s.file}: ${s.title}`).join(' | '));
+    const priceSpecs = specs.filter((s) => /prices[\\/]prices\.spec/.test(s.file));
+    check(`${language}: the run 59540f price pair and all ${SAME_VALUE_CASES.length} sameValue rows executed and passed (${SAME_VALUE_CASES.length + 1} tests)`, priceSpecs.length === SAME_VALUE_CASES.length + 1 && priceSpecs.every((s) => s.ok && s.status === 'expected'), JSON.stringify(priceSpecs.map((s) => `${s.status}:${s.title}`)));
 
     // Mixed attributes (invariant 73): one data-test step, one data-testid
     // step. No testIdAttribute, the data-test selector stays css, the testid
@@ -620,6 +676,9 @@ for (const language of ['ts', 'js'] as const) {
       const singleJson = fs.existsSync(path.join(singleRunDir, 'results.json')) ? JSON.parse(fs.readFileSync(path.join(singleRunDir, 'results.json'), 'utf8')) as PwJson : null;
       console.log(`${language} single file: playwright exit ${String(singleRes.status)}: ${singleJson ? JSON.stringify(singleJson.stats) : '(no JSON report)'}`);
       check(`${language}: the single-file spec runs green with no config file`, singleRes.status === 0 && singleJson !== null && singleJson.stats.unexpected === 0 && singleJson.stats.flaky === 0, (singleRes.stdout + '\n' + singleRes.stderr).trim().split('\n').slice(-25).join('\n'));
+      const singleSpecs = singleJson ? flattenSpecs(singleJson.suites) : [];
+      const singleValueSpecs = singleSpecs.filter((sp) => /value row \d+ compares as|same price as the listing/.test(sp.title));
+      check(`${language}: the single-file spec inlines sameValue and its ${SAME_VALUE_CASES.length + 1} price and value tests passed`, /^function sameValue\(captured, current\)/m.test(singleText) && singleValueSpecs.length === SAME_VALUE_CASES.length + 1 && singleValueSpecs.every((sp) => sp.ok && sp.status === 'expected'), JSON.stringify(singleValueSpecs.map((sp) => `${sp.status}:${sp.title}`)));
     } finally {
       fs.rmSync(mixedDir, { recursive: true, force: true });
       fs.rmSync(singleRunDir, { recursive: true, force: true });

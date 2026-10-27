@@ -18,10 +18,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { createContext, runTool } from '../src/agent/tools.js';
+import http from 'node:http';
+import { execFileSync, spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import type { AddressInfo } from 'node:net';
+import { createContext, runTool, relationHolds } from '../src/agent/tools.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
 import { transcribe } from '../src/agent/transcriber.js';
-import { COMPARE_POLL_TIMEOUT_MS, awaitCaptureReady, replayScenarioOnce } from '../src/agent/replay.js';
+import { COMPARE_POLL_TIMEOUT_MS, awaitCaptureReady, compareHolds, replayScenarioOnce } from '../src/agent/replay.js';
+import { transcribePOM } from '../src/agent/pom.js';
+import { scaffold } from '../src/agent/scaffold.js';
+import { sameValue, renderSameValueHelper } from '../src/agent/parse-number.js';
+import { SAME_VALUE_CASES } from './lib/same-value-cases.js';
 import type { RunReport, Scenario, SelectorRecord, TraceStep } from '../src/agent/trace.js';
 
 let pass = 0;
@@ -280,6 +288,71 @@ check('K4. equal after an action is falsifiable and passes', cmpK4.ok === true, 
 const endK = await runTool(ctx, { name: 'end_scenario', input: {} });
 check('K5. end_scenario accepts the scenario', endK.ok === true, endK.error);
 
+/* ─── S. equal, unchanged and changed compare plain numbers by value ─────── */
+// Run 59540f (D4): the listing showed "$14.15", the detail page "14.15", and
+// assert_compare(equal) compared the raw text and failed while greater and
+// less, which parse the number, agreed the two are the same. One table of
+// cases (scripts/lib/same-value-cases.ts) goes through every place that
+// decides: sameValue itself, the tool's relationHolds, replay's compareHolds,
+// and (below, after F) the helpers both emitters ship.
+{
+  const rowName = (c: { captured: string; current: string }): string => `${JSON.stringify(c.captured)} vs ${JSON.stringify(c.current)}`;
+  const bad = (fn: (relation: string, captured: string, current: string) => boolean): string[] => SAME_VALUE_CASES.flatMap((c) => {
+    const out: string[] = [];
+    if (fn('equal', c.captured, c.current) !== c.equal) out.push(`${rowName(c)} equal`);
+    if (fn('unchanged', c.captured, c.current) !== c.equal) out.push(`${rowName(c)} unchanged`);
+    if (fn('changed', c.captured, c.current) !== !c.equal) out.push(`${rowName(c)} changed`);
+    return out;
+  });
+  const svBad = SAME_VALUE_CASES.filter((c) => sameValue(c.captured, c.current) !== c.equal).map(rowName);
+  check(`S1. sameValue answers every row of the table (${SAME_VALUE_CASES.length} rows)`, svBad.length === 0, svBad.join(' | '));
+  const toolBad = bad((r, a, b) => relationHolds(r as 'equal', a, b));
+  check('S2. the tool (relationHolds): equal and unchanged hold exactly when sameValue does, changed exactly when it does not', toolBad.length === 0, toolBad.join(' | '));
+  const replayBad = bad(compareHolds);
+  check('S3. replay (compareHolds) decides every row the same way', replayBad.length === 0, replayBad.join(' | '));
+  check('S3a. a number that does not parse falls back to the text compare, never to "holds"', !sameValue('3 items', '3') && !relationHolds('equal', 'Item 3', '3') && !compareHolds('unchanged', '12,50', '12.50') && relationHolds('changed', '3 items', '3'));
+
+  // Live: the run 7 shape on a served listing and detail page. The tool
+  // records the compare, changed fails on the same pair (a format change is
+  // no change), and replay passes the recording in a fresh context.
+  const listing = '<!doctype html><html><body><a class="card" href="/detail"><h5>Combination Pliers</h5><span data-test="product-price">$14.15</span></a></body></html>';
+  const detail = '<!doctype html><html><body><h1>Combination Pliers</h1><span data-test="unit-price">14.15</span></body></html>';
+  const server = http.createServer((req, res) => {
+    const body = req.url === '/detail' ? detail : listing;
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const sBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const sBegin = await runTool(ctx, { name: 'begin_scenario', input: { name: 'clicked a product and the detail page showed the listing price', category: 'edge', feature: 'catalogue' } });
+    const sNav = await runTool(ctx, { name: 'navigate', input: { url: `${sBase}/` } });
+    check('S4. begin_scenario and navigate to the served listing succeed', sBegin.ok === true && sNav.ok === true, JSON.stringify([sBegin, sNav]));
+    const sCap = await runTool(ctx, { name: 'capture', input: { name: 'listingPrice', source: 'text', css: '[data-test="product-price"]', intent: 'listing price' } });
+    check('S5. captured the listing price "$14.15"', sCap.ok === true && (sCap.data as { value?: string }).value === '$14.15', JSON.stringify(sCap));
+    const sClick = await runTool(ctx, { name: 'click', input: { intent: 'product card', css: 'a.card' } });
+    check('S6. clicked through to the detail page', sClick.ok === true, JSON.stringify(sClick));
+    const sChanged = await runTool(ctx, { name: 'assert_compare', input: { name: 'listingPrice', relation: 'changed', css: '[data-test="unit-price"]', intent: 'detail price' } });
+    check('S7. changed FAILS on "$14.15" against "14.15": a format change alone is no change', sChanged.ok === false && /relation does not hold/.test(sChanged.error ?? '') && /now "14\.15"/.test(sChanged.error ?? ''), JSON.stringify(sChanged));
+    const sEqual = await runTool(ctx, { name: 'assert_compare', input: { name: 'listingPrice', relation: 'equal', css: '[data-test="unit-price"]', intent: 'detail price' } });
+    check('S8. equal passes on "$14.15" against "14.15" in the tool', sEqual.ok === true, JSON.stringify(sEqual));
+    // runTool mutates ctx.current; read it through a cast so control-flow
+    // narrowing from the earlier `ctx.current = null` lines does not apply.
+    const sSteps = (ctx.current as { steps: TraceStep[] } | null)?.steps ?? [];
+    const sStep = sSteps.find((st) => st.kind === 'assert_compare');
+    check('S9. one compare is recorded (the failed changed records nothing): equal, re-reading the detail price', sSteps.filter((st) => st.kind === 'assert_compare').length === 1 && sStep?.kind === 'assert_compare' && sStep.relation === 'equal' && String(sStep.readTarget?.arg) === '[data-test="unit-price"]', JSON.stringify(sSteps));
+    const sEnd = await runTool(ctx, { name: 'end_scenario', input: {} });
+    check('S10. end_scenario accepts the scenario', sEnd.ok === true, sEnd.error);
+    const sRecorded = ctx.scenarios[ctx.scenarios.length - 1]!;
+    const sReplay = await replayScenarioOnce(browser, sRecorded, undefined, 8000);
+    check('S11. replay passes the recorded equal compare on a fresh context ("$14.15" is "14.15")', sReplay.passed === true, JSON.stringify(sReplay));
+    const sFlipped: Scenario = { ...sRecorded, steps: sRecorded.steps.map((st) => st.kind === 'assert_compare' ? { ...st, relation: 'changed' as const } : st) };
+    const sReplayChanged = await replayScenarioOnce(browser, sFlipped, undefined, 1500);
+    check('S12. replay fails the same recording read as changed, naming both values', sReplayChanged.passed === false && /assert_compare\(changed\)/.test(sReplayChanged.error ?? '') && /captured "\$14\.15", now "14\.15"/.test(sReplayChanged.error ?? ''), JSON.stringify(sReplayChanged));
+  } finally {
+    server.close();
+  }
+}
+
 await browser.close();
 
 /* ─── F. the emitted spec reads real values and asserts relationships ─────── */
@@ -301,8 +374,10 @@ check('F3. spec reads a count and polls until it is greater (through parseNumber
 check('F5. spec polls the text order with localeCompare for the before relation', /await expect\.poll\(async \(\) => String\(.+\)\.localeCompare\(cap_\w+\), \{ timeout: \d+ \}\)\.toBeLessThan\(0\)/.test(spec), spec.split('\n').filter((l) => /localeCompare/.test(l)).join(' | '));
 check('F4. spec asserts the old value is absent via a value selector + count 0', /page\.locator\(`\[id="\$\{cap_\w+\}"\]`\)\)\.toHaveCount\(0\)/.test(spec));
 check('F5. spec contains NO invented placeholder id strings', !/button-fixed-id|previously-captured-id|placeholder/i.test(spec));
-check('F6. the cross-element compare in the spec reads the heading locator, not the card',
-  /await expect\.poll\(async \(\) => \(await page\.locator\("h1"\)\.first\(\)\.textContent\(\)\)\?\.trim\(\) \?\? '', \{ timeout: \d+ \}\)\.toBe\(cap_listingName\)/.test(spec),
+// Pin changed in PR engine/critic-compare (invariant 76): the polled read now
+// goes through sameValue, so "$14.15" against "14.15" decides as in the tool.
+check('F6. the cross-element compare in the spec reads the heading locator, not the card, through sameValue',
+  spec.includes(`await expect.poll(async () => { const now = (await page.locator("h1").first().textContent())?.trim() ?? ''; return sameValue(cap_listingName, now) ? cap_listingName : now; }, { timeout: ${COMPARE_POLL_TIMEOUT_MS} }).toBe(cap_listingName);`),
   spec.split('\n').filter((l) => /cap_listingName/.test(l)).join(' | '));
 check('F7. the spec never re-reads "a.card h5" for the cross-element compare', !/expect\.poll\(async \(\) => \(await page\.locator\("a\.card h5"\)/.test(spec));
 check('F8. numeric compares in the spec go through parseNumber, and the parser is inlined',
@@ -366,6 +441,144 @@ check('F9. the inlined parser throws on text with no number (loud in the shipped
   check('G10. the helper is inlined once in the single-file spec and never throws (bounded loop, no expect.poll)', (gSpec.match(/^async function awaitCaptureReady\(locator, timeoutMs\)/gm) ?? []).length === 1 && /if \(Date\.now\(\) >= deadline\) return;/.test(gSpec) && !/expect\.poll\([^\n]*\)\.catch/.test(gSpec), gSpec.split('\n').filter((l) => /awaitCaptureReady|deadline/.test(l)).slice(0, 6).join(' | '));
 }
 
+/* ─── S (emitted). the helpers both emitters ship decide the same table ──── */
+// The framework's copy of sameValue is rendered from the same body the agent
+// runs (parse-number.ts), so each rendering must answer every row too: the
+// TS helper (imported), the JS helper (required as CommonJS), and the copy
+// inlined into the single-file spec (evaluated from the spec text).
+{
+  const svDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-same-value-'));
+  try {
+    fs.writeFileSync(path.join(svDir, 'package.json'), '{ "type": "commonjs" }\n');
+    fs.writeFileSync(path.join(svDir, 'same-value.ts'), renderSameValueHelper('ts'));
+    fs.writeFileSync(path.join(svDir, 'same-value.js'), renderSameValueHelper('js'));
+    const tsHelper = (await import(path.join(svDir, 'same-value.ts'))) as { sameValue: (a: string, b: string) => boolean };
+    const jsHelper = createRequire(path.join(svDir, 'index.js'))('./same-value.js') as { sameValue: (a: string, b: string) => boolean };
+    // The inline copy, read back out of a real single-file spec.
+    const eqReport = { ...report, scenarios: (report.scenarios as Scenario[]).filter((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && st.relation === 'equal')) };
+    const eqOut = transcribe({ report: eqReport, outDir: svDir, name: 'same-value' });
+    const eqSpec = fs.readFileSync(eqOut.specPath, 'utf8');
+    const inlineSrc = /^function sameValue\(captured, current\) \{[\s\S]*?^\}/m.exec(eqSpec)?.[0] ?? '';
+    // No inlined copy found: a stand-in that answers no row, so S13 fails by name instead of crashing.
+    const inlineFn = inlineSrc ? new Function(`${inlineSrc}\nreturn sameValue;`)() as (a: string, b: string) => boolean : (): boolean | null => null;
+    const renderings: Array<[string, (a: string, b: string) => boolean | null]> = [['TS helper', tsHelper.sameValue], ['JS helper', jsHelper.sameValue], ['inlined copy', inlineFn]];
+    const helperBad = renderings.flatMap(([label, fn]) => SAME_VALUE_CASES.filter((c) => fn(c.captured, c.current) !== c.equal).map((c) => `${label}: ${JSON.stringify(c.captured)} vs ${JSON.stringify(c.current)}`));
+    check(`S13. the TS helper, the JS helper and the inlined copy answer every row of the table`, inlineSrc.length > 0 && helperBad.length === 0, helperBad.join(' | ') || (inlineSrc ? '' : 'no inlined sameValue in the spec'));
+    check('S14. the single-file spec inlines sameValue once and polls the equal compare through it', (eqSpec.match(/^function sameValue\(captured, current\)/gm) ?? []).length === 1 && /return sameValue\(cap_listingName, now\) \? cap_listingName : now; \}, \{ timeout: \d+ \}\)\.toBe\(cap_listingName\)/.test(eqSpec), eqSpec.split('\n').filter((l) => /sameValue/.test(l)).join(' | '));
+    // The single-file changed compare goes through sameValue too (PR #54
+    // review: no smoke caught a changed compare emitted as the raw read).
+    const chReport = { ...report, scenarios: (report.scenarios as Scenario[]).filter((sc) => sc.steps.some((st) => st.kind === 'assert_compare' && st.relation === 'changed')) };
+    const chOut = transcribe({ report: chReport, outDir: svDir, name: 'same-value-changed' });
+    const chSpec = fs.readFileSync(chOut.specPath, 'utf8');
+    const chLines = chSpec.split('\n').filter((l) => /\.not\.toBe\(/.test(l));
+    check('S14b. the single-file changed compare polls through sameValue: "return sameValue(<var>, now) ? <var> : now" then .not.toBe(<var>)',
+      chLines.length > 0 && chLines.every((l) => /return sameValue\((cap_\w+), now\) \? \1 : now; \}, \{ timeout: \d+ \}\)\.not\.toBe\(\1\);/.test(l)), chLines.join(' | ') || '(no changed compare line in the spec)');
+    check('S15. a spec with no equal, unchanged or changed compare does not inline sameValue', (() => {
+      const noEq = { ...report, scenarios: (report.scenarios as Scenario[]).filter((sc) => !sc.steps.some((st) => st.kind === 'assert_compare' && ['equal', 'unchanged', 'changed'].includes(st.relation))) };
+      const o = transcribe({ report: noEq, outDir: svDir, name: 'no-same-value' });
+      return !/sameValue/.test(fs.readFileSync(o.specPath, 'utf8'));
+    })());
+    // The shipped TS helper type-checks under the framework's strict settings.
+    let tscOut = '';
+    try {
+      execFileSync(path.join(process.cwd(), 'node_modules/.bin/tsc'), ['--noEmit', '--strict', '--target', 'ES2022', '--module', 'commonjs', '--lib', 'ES2022', path.join(svDir, 'same-value.ts')], { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      tscOut = String((e as { stdout?: string }).stdout ?? e);
+    }
+    check('S16. the shipped TS helper passes tsc --strict', tscOut === '', tscOut);
+    // POM in both languages: the compare goes through the imported helper.
+    for (const language of ['ts', 'js'] as const) {
+      const pomDir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-same-value-pom-${language}-`));
+      try {
+        const pom = transcribePOM({ report: { ...eqReport, language }, outDir: pomDir, name: 'same-value' });
+        const pomSpec = fs.readFileSync(pom.specFiles[0]!, 'utf8');
+        const imp = language === 'ts' ? `import { sameValue } from '../../helpers/same-value';` : `const { sameValue } = require('../../helpers/same-value');`;
+        check(`S17. ${language}: the POM spec imports sameValue from helpers/same-value and polls the equal compare through it`, pomSpec.includes(imp) && /return sameValue\(cap_listingName, now\) \? cap_listingName : now; \}, \{ timeout: \d+ \}\)\.toBe\(cap_listingName\)/.test(pomSpec), pomSpec.split('\n').filter((l) => /sameValue/.test(l)).join(' | '));
+      } finally {
+        fs.rmSync(pomDir, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    fs.rmSync(svDir, { recursive: true, force: true });
+  }
+}
+
+/* ─── S18 and S19. the emitted changed compare goes red on "$14.15" against "14.15" ── */
+// A shape check cannot see a changed compare that reads the raw text: it
+// would pass on "$14.15" against "14.15", a format change alone. Each
+// emitted framework (single file and POM, TS and JS) holds two recordings
+// of the same click-through: equal, which must pass, and changed, which must
+// FAIL, run with Playwright against served fixture pages. The equal test
+// passing proves the run itself worked; the changed test failing proves the
+// compare decides by value. node_modules is this repo's, linked in.
+{
+  const listing = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Listing</title></head><body><main><h1>Pliers</h1><a id="card" href="/detail"><h5>Combination Pliers</h5><span id="listing-price">$14.15</span></a></main></body></html>';
+  const detail = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Combination Pliers</title></head><body><main><h1>Combination Pliers</h1><span id="unit-price">14.15</span></main></body></html>';
+  const server = http.createServer((req, res) => {
+    const body = req.url === '/detail' ? detail : listing;
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const pBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const listingPrice: SelectorRecord = { level: 'css', arg: '#listing-price', intent: 'listing price' };
+  const unitPrice: SelectorRecord = { level: 'css', arg: '#unit-price', intent: 'detail price' };
+  const priceScenario = (name: string, relation: 'equal' | 'changed', varName: string): Scenario => ({ name, category: 'edge', feature: 'prices', steps: [
+    { kind: 'navigate', url: `${pBase}/` },
+    { kind: 'capture', varName, source: 'text', target: listingPrice, intent: 'listing price' },
+    { kind: 'click', target: { level: 'css', arg: '#card', intent: 'product card' } },
+    { kind: 'assert_compare', varName, relation, source: 'text', target: listingPrice, intent: 'listing price', readVar: `${varName}_now`, readTarget: unitPrice },
+  ] });
+  const priceReport = (language: 'ts' | 'js'): RunReport => ({
+    url: `${pBase}/`, language,
+    scenarios: [priceScenario('listing price equals the detail price', 'equal', 'cap_same'), priceScenario('listing price changed on the detail page', 'changed', 'cap_moved')],
+    cascadeStats: { role: 0, label: 0, placeholder: 0, text: 0, alt: 0, title: 0, testid: 0, css: 0, xpath: 0 },
+    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
+    steps: 0, startedAt: '', finishedAt: '',
+  });
+  interface PwSuite { specs?: Array<{ title: string; tests: Array<{ status: string; results?: Array<{ error?: { message?: string } }> }> }>; suites?: PwSuite[] }
+  const walk = (suites: PwSuite[] = []): Array<{ title: string; status: string; error: string }> => suites.flatMap((su) => [
+    ...(su.specs ?? []).map((sp) => ({ title: sp.title, status: sp.tests[0]?.status ?? 'missing', error: (sp.tests[0]?.results?.[0]?.error?.message ?? '').replace(/\u001b\[[0-9;]*m/g, '') })),
+    ...walk(su.suites),
+  ]);
+  // Spawned asynchronously so this process keeps serving the fixture pages.
+  const runPlaywright = (cwd: string): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+    const env = { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: 'results.json' } as NodeJS.ProcessEnv;
+    delete env.CI;
+    const child = spawn('npx', ['playwright', 'test', '--reporter=json', '--workers=2', '--grep', 'listing price'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += String(d); });
+    child.stderr.on('data', (d) => { out += String(d); });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); out += '\n(killed after 180s)'; }, 180_000);
+    child.on('close', (status) => { clearTimeout(timer); resolve({ status, out }); });
+  });
+  const dirs: string[] = [];
+  try {
+    const jobs = (['ts', 'js'] as const).flatMap((language) => (['single file', 'POM'] as const).map((shape) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `qa-changed-red-${shape === 'POM' ? 'pom' : 'single'}-${language}-`));
+      dirs.push(dir);
+      if (shape === 'POM') scaffold({ report: priceReport(language), outDir: dir, siteName: 'prices-fixture' });
+      else transcribe({ report: priceReport(language), outDir: dir, name: 'prices' });
+      fs.symlinkSync(path.join(process.cwd(), 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+      return { language, shape, dir };
+    }));
+    const runs = await Promise.all(jobs.map(async (j) => ({ ...j, res: await runPlaywright(j.dir) })));
+    for (const r of runs) {
+      const jsonPath = path.join(r.dir, 'results.json');
+      const specs = fs.existsSync(jsonPath) ? walk((JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as { suites?: PwSuite[] }).suites) : [];
+      const equal = specs.find((sp) => /listing price equals the detail price/.test(sp.title));
+      const changed = specs.find((sp) => /listing price changed on the detail page/.test(sp.title));
+      const label = r.shape === 'POM' ? 'S19' : 'S18';
+      console.log(`   ${r.language} ${r.shape}: playwright exit ${String(r.res.status)}; equal ${equal?.status ?? 'missing'}; changed ${changed?.status ?? 'missing'}`);
+      check(`${label}. ${r.language} ${r.shape}: the equal compare of "$14.15" against "14.15" passes when run, so the run itself worked`, equal?.status === 'expected', JSON.stringify(equal) + ' | ' + r.res.out.slice(-600));
+      check(`${label}. ${r.language} ${r.shape}: the changed compare of "$14.15" against "14.15" FAILS when run (a format change alone is no change), and Playwright exits non-zero`,
+        r.res.status !== 0 && changed?.status === 'unexpected' && /not\.toBe/.test(changed.error) && changed.error.includes('"$14.15"'), JSON.stringify(changed) + ' | ' + r.res.out.slice(-600));
+    }
+  } finally {
+    server.close();
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  }
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: capture-and-compare — real values captured, changed/greater/absent asserted, cross-element compares read the named element, numbers parse out of formatted text, circular compares are refused, no placeholder strings.');
+console.log('OK: capture-and-compare: real values captured, changed/greater/absent asserted, cross-element compares read the named element, numbers parse out of formatted text, circular compares are refused, no placeholder strings, and equal, unchanged and changed read plain numbers by value through one sameValue in the tool, replay and both emitters, where an emitted changed compare goes red on a format change alone.');

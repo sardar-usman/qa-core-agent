@@ -98,3 +98,105 @@ export function inlineParseNumberFn(): string {
     `}`,
   ].join('\n');
 }
+
+/**
+ * The one decision equal, unchanged and changed share (invariant 76).
+ *
+ * Run 59540f captured "$14.15" on the listing and re-read "14.15" on the
+ * detail page; equal compared the raw text and failed, while greater and less,
+ * which parse the number, both agreed the two are the same value. Now, when
+ * BOTH sides are a plain number, the parsed numbers compare. A plain number is
+ * exactly one number with only currency symbols, whitespace and a trailing
+ * percent sign around it; a comma counts only as a thousands separator
+ * ("1,299.00") and a dot only as the decimal point. Anything else ("Item 3",
+ * "3 items", "Hammer", "12,50", "14.15 USD") compares the trimmed text exactly,
+ * as before. A percent on one side and a currency symbol on the other are two
+ * kinds of value, so "$5" against "5%" compares as text too (PR #54 review).
+ * A side that does not parse falls back to the text compare, never to
+ * "holds".
+ *
+ * One source. The body is JavaScript that is also valid TypeScript, with no
+ * inner function and no type annotation. The agent's sameValue (tools.ts and
+ * replay.ts) is built from it below, and the framework's copy
+ * (helpers/same-value in the POM output, inlined in the single-file spec) is
+ * the same text, so the agent and the shipped test cannot drift.
+ */
+const SAME_VALUE_BODY_LINES: readonly string[] = [
+  String.raw`const plain = /^[\s$€£¥₹]*(-?)[\s$€£¥₹]*(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)[\s%$€£¥₹]*$/;`,
+  `const a = String(captured ?? '').trim();`,
+  `const b = String(current ?? '').trim();`,
+  `const ma = plain.exec(a);`,
+  `const mb = plain.exec(b);`,
+  String.raw`const mixed = (a.includes('%') && /[$€£¥₹]/.test(b)) || (b.includes('%') && /[$€£¥₹]/.test(a));`,
+  `if (ma && mb && !mixed) return Number((ma[1] + ma[2]).replace(/,/g, '')) === Number((mb[1] + mb[2]).replace(/,/g, ''));`,
+  `return a === b;`,
+];
+
+const SAME_VALUE_DOC_LINES: readonly string[] = [
+  'True when the captured and the re-read value are the same value. Both plain',
+  'numbers ("$14.15", "14.15", "1,299.00", "1.5%"): compared as numbers, so',
+  '"$14.15" equals "14.15". Anything else ("Item 3", "Hammer"): the trimmed',
+  'text must match exactly, and so does a percent against a currency amount',
+  '("$5" is not "5%"). equal and unchanged hold when this is true, changed',
+  'holds when it is false. The agent verified the recording with the same logic.',
+];
+
+// Built from the body above: the agent runs the exact text the framework ships.
+const sameValueImpl = new Function('captured', 'current', SAME_VALUE_BODY_LINES.join('\n')) as (captured: unknown, current: unknown) => boolean;
+
+/** True when both sides are the same value: plain numbers by value, anything else by exact trimmed text. */
+export function sameValue(captured: string | number, current: string | number): boolean {
+  return sameValueImpl(captured, current) === true;
+}
+
+/** The helper the POM framework ships at helpers/same-value.{ts,js}. */
+export function renderSameValueHelper(lang: 'ts' | 'js'): string {
+  const body = SAME_VALUE_BODY_LINES.map((l) => `  ${l}`);
+  if (lang === 'js') {
+    return [
+      '// @ts-check',
+      '/**',
+      ...SAME_VALUE_DOC_LINES.map((l) => ` * ${l}`),
+      ' * @param {string | number | null | undefined} captured',
+      ' * @param {string | number | null | undefined} current',
+      ' * @returns {boolean}',
+      ' */',
+      'function sameValue(captured, current) {',
+      ...body,
+      '}',
+      '',
+      'module.exports = { sameValue };',
+      '',
+    ].join('\n');
+  }
+  return [
+    '/**',
+    ...SAME_VALUE_DOC_LINES.map((l) => ` * ${l}`),
+    ' */',
+    'export function sameValue(captured: string | number | null | undefined, current: string | number | null | undefined): boolean {',
+    ...body,
+    '}',
+    '',
+  ].join('\n');
+}
+
+/** The same helper inlined into the single-file spec (transcriber.ts). */
+export function inlineSameValueFn(): string {
+  return [
+    ...SAME_VALUE_DOC_LINES.map((l) => `// ${l}`),
+    'function sameValue(captured, current) {',
+    ...SAME_VALUE_BODY_LINES.map((l) => `  ${l}`),
+    '}',
+  ].join('\n');
+}
+
+/**
+ * The polled read both emitters write for an equal, unchanged or changed
+ * compare. It yields the captured value itself when sameValue says the re-read
+ * is the same value, else the re-read, so .toBe(captured) and
+ * .not.toBe(captured) decide exactly as the agent did, and a failure prints
+ * the real re-read value instead of "Expected: true".
+ */
+export function sameValuePoll(varName: string, readRhs: string): string {
+  return `async () => { const now = ${readRhs}; return sameValue(${varName}, now) ? ${varName} : now; }`;
+}
