@@ -3,6 +3,7 @@ import {
   CRAWL_DELAY_MS,
   DISCOVERY_UA,
   robotsAllows,
+  robotsRuleFor,
   waitForAnchors,
   type DiscoveredPage,
   type ReachAction,
@@ -12,7 +13,8 @@ import { pagesCarryingFeature, segmentMatchesTokens, tokensFor } from './page-fi
 import { normalizeWords, settleForSnapshot, snapshotPage, type PageSnapshot } from './planner.js';
 import type { RequirementFeature, RequirementRule, RequirementsMap } from './requirements.js';
 import { emitLocatorCall } from './selectors.js';
-import { isVolatilePath } from './volatile-id.js';
+import { currencyAmountIn } from './parse-number.js';
+import { generatedIdFragment, isVolatilePath } from './volatile-id.js';
 
 /**
  * State probe: the action-first discovery rung for pages that exist only
@@ -111,6 +113,22 @@ export interface StateProbe {
   rulesSplit: Array<{ ruleId: string; side: 'origin' | 'revealed' }>;
   /** Set when a cap stopped the probe with candidates left: the cap and every candidate path it did not try. */
   capped?: string;
+  /**
+   * Set when the trigger was found by the item hop (invariant 78): a
+   * candidate with no trigger linked to item pages none of which was a
+   * candidate, the probe followed the first one, and that item page is the
+   * origin. `listing` is the page hopped from, `item` the item page used,
+   * `control` the item link clicked. The item page is reached by that click
+   * and never navigated to by its URL.
+   */
+  hop?: { listing: string; item: string; control: string };
+  /**
+   * Set when a trigger click revealed a link whose path robots.txt
+   * disallows (invariant 78): the origin found, the revealed path and the
+   * Disallow rule. The origin rules are still planned on that origin; the
+   * revealed-side rules still uncited after planning read robots-disallowed.
+   */
+  robotsBlocked?: { origin: string; path: string; rule: string };
 }
 
 /** A page handle in a fresh browser context. */
@@ -311,6 +329,8 @@ export interface ProbeCandidate {
   volatile?: boolean;
   linkedFrom?: string;
   controls?: PageControl[];
+  /** Set on an item page the probe reached by the item hop: the item link clicked on the listing (linkedFrom). */
+  hopControl?: string;
 }
 
 export interface ProbeOptions {
@@ -340,6 +360,20 @@ export interface ProbeResult {
   snapshot?: PageSnapshot;
   /** The trigger phrase that fired. */
   phrase?: string;
+  /**
+   * The origin when it is an item page the hop reached (revealed or robots):
+   * source 'action', reachedBy the item click from the listing, and its
+   * snapshot before the trigger click (in memory only).
+   */
+  originPage?: OriginPage;
+  /** The origin a robots-blocked reveal found (outcome robots), so its origin rules are still planned there. */
+  blocked?: { origin: string; originPage?: OriginPage };
+}
+
+/** An item page the hop made the origin: reached by clicking the item on the listing, never by its URL. */
+export interface OriginPage {
+  page: DiscoveredPage & { reachedBy: NonNullable<DiscoveredPage['reachedBy']> };
+  snapshot: PageSnapshot;
 }
 
 interface Qualified {
@@ -353,6 +387,55 @@ interface Qualified {
   index: number;
   snapshot: PageSnapshot;
   phrase: string;
+  /** Set when the trigger page was reached by the item hop. */
+  hop?: { listing: string; item: string; control: string; snapshot: PageSnapshot };
+}
+
+/** A robots-blocked reveal: the origin found, the path and the rule, and the hop when the origin is an item page. */
+interface Blocked {
+  triggerVolatile: boolean;
+  origin: string;
+  path: string;
+  rule: string;
+  depth: number;
+  index: number;
+  hop?: { listing: string; item: string; control: string; snapshot: PageSnapshot };
+}
+
+/**
+ * The item links on a page, in document order: same-origin anchors whose
+ * path carries a generated id (isVolatilePath, the kind discovery tags
+ * volatile, such as /product/<ulid>). Category and other stable listings are
+ * never item links, so a hop never lands on another listing.
+ */
+export function itemLinks(controls: PageControl[], pageUrl: string): PageControl[] {
+  let origin = '';
+  try { origin = new URL(pageUrl).origin; } catch { return []; }
+  const seen = new Set<string>();
+  return controls.filter((c) => {
+    if (c.role !== 'link' || !c.href) return false;
+    let u: URL;
+    try { u = new URL(c.href); } catch { return false; }
+    if (u.origin !== origin || !isVolatilePath(u.pathname)) return false;
+    const key = pageKey(c.href);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * The locator an item link is clicked by: its test id when the test id holds
+ * no generated id, else its role and visible name (gate RULE 6 refuses a
+ * selector that embeds a generated id). A card's name often ends with its
+ * price ("Combination Pliers $14.15"); the name is cut before the first
+ * currency amount, because gate RULE 8 refuses a price in a locator name.
+ */
+export function itemLinkLocator(c: Pick<PageControl, 'label' | 'testid'>): string {
+  const testid = c.testid && !generatedIdFragment(c.testid) ? c.testid : undefined;
+  const price = currencyAmountIn(c.label);
+  const name = price ? c.label.slice(0, c.label.indexOf(price)).trim() || c.label : c.label;
+  return controlLocator({ role: 'link', label: name, ...(testid ? { testid } : {}) });
 }
 
 /** The nearest stable page up the linkedFrom chain, or null. */
@@ -400,10 +483,24 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
   const revealWaitMs = opts.revealWaitMs ?? STATE_PROBE_REVEAL_WAIT_MS;
   const tried: StateProbe['tried'] = [];
   const qualified: Qualified[] = [];
+  const blocked: Blocked[] = [];
   const byUrl = new Map(opts.candidates.map((c) => [c.url, c]));
+  const candidateKeys = new Set(opts.candidates.map((c) => pageKey(c.url)));
   const ordered = opts.candidates
     .map((c, i) => ({ c, i, volatile: c.volatile ?? (() => { try { return isVolatilePath(new URL(c.url).pathname); } catch { return false; } })(), depth: pathOf(c.url).split('/').filter(Boolean).length }))
     .sort((a, b) => Number(a.volatile) - Number(b.volatile) || a.depth - b.depth || a.i - b.i);
+  // The item hop (invariant 78): a page with no trigger whose item links are
+  // none of them candidates gets its FIRST item link tried right after it,
+  // as a page of its own (a load against the page cap, after the delay,
+  // robots checked). When an item page is already a candidate it is probed
+  // on its own, as before.
+  const hopFrom = (c: ProbeCandidate, controls: PageControl[], volatile: boolean): { item: PageControl; control: string } | null => {
+    // One hop, from a stable listing only: an item page never hops again.
+    if (c.hopControl || volatile) return null;
+    const items = itemLinks(controls, c.url);
+    if (items.length === 0 || items.some((l) => candidateKeys.has(pageKey(l.href!)))) return null;
+    return { item: items[0]!, control: itemLinkLocator(items[0]!) };
+  };
 
   let loads = 0;
   let clicks = 0;
@@ -427,8 +524,22 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
   const pageCapUntried: string[] = [];
   let clickCapUntried: string[] = [];
 
+  /** The item page a hop made the origin, reached by clicking the item on the listing. */
+  const originPageOf = (feature: string, hop: NonNullable<Qualified['hop']>): OriginPage => ({
+    page: {
+      url: pageKey(hop.item),
+      source: 'action',
+      feature,
+      volatile: true,
+      reachedBy: { origin: hop.listing, feature, actions: [{ kind: 'click', via: 'item-link', control: hop.control }] },
+    },
+    snapshot: hop.snapshot,
+  });
+  const hopRecord = (hop: Qualified['hop']): Pick<StateProbe, 'hop'> => (hop ? { hop: { listing: hop.listing, item: pageKey(hop.item), control: hop.control } } : {});
+
   const finish = (globalError?: string): ProbeResult => {
     qualified.sort((a, b) => Number(a.triggerVolatile) - Number(b.triggerVolatile) || b.tokensMatched - a.tokensMatched || a.depth - b.depth || a.index - b.index);
+    blocked.sort((a, b) => Number(a.triggerVolatile) - Number(b.triggerVolatile) || a.depth - b.depth || a.index - b.index);
     const best = qualified[0];
     const triedPaths = tried.map((t) => pathOf(t.url)).filter((p, i, a) => a.indexOf(p) === i);
     const capNotes = [
@@ -440,19 +551,26 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
     // A page that qualified is never discarded by a later failure.
     if (best) {
       const page: DiscoveredPage = { url: best.revealed, source: 'action', feature, reachedBy: { origin: best.origin, feature, actions: best.actions } };
+      // With the hop, the item page is the origin (it holds the trigger); a
+      // scenario still starts on the listing and clicks the item.
+      const originOf = (q: Qualified): string => (q.hop ? pageKey(q.hop.item) : q.origin);
       return {
         probe: {
           feature,
           outcome: 'revealed',
-          origins: qualified.map((q) => q.origin).filter((o, i, a) => a.indexOf(o) === i),
+          origins: qualified.map(originOf).filter((o, i, a) => a.indexOf(o) === i),
           tried,
           revealed: best.revealed,
-          detail: `revealed ${pathOf(best.revealed)} from ${pathOf(best.origin)}${capSuffix}`,
+          detail: best.hop
+            ? `revealed ${pathOf(best.revealed)} from item page ${pathOf(best.hop.item)}, hopped from listing ${pathOf(best.hop.listing)}${capSuffix}`
+            : `revealed ${pathOf(best.revealed)} from ${pathOf(best.origin)}${capSuffix}`,
           ...(capped ? { capped } : {}),
+          ...hopRecord(best.hop),
         },
         page,
         snapshot: best.snapshot,
         phrase: best.phrase,
+        ...(best.hop ? { originPage: originPageOf(feature, best.hop) } : {}),
       };
     }
     // Nothing qualified. robots first, then a click that completed and found
@@ -468,14 +586,24 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
       : outcome === 'error'
         ? `no page revealed: probe error on ${errored.map((e) => `${pathOf(e.url)} (${e.result})`).join(', ')}; ${triedText}${capSuffix}`
         : `no page revealed: ${triedText}${outcome === 'robots' && robotsHit ? `; ${robotsHit.result}` : ''}${capSuffix}`;
-    return { probe: { feature, outcome, origins: [], tried, detail, ...(capped ? { capped } : {}) } };
+    // A robots-blocked reveal still found an origin: its origin rules are
+    // planned there (invariant 78), the hop's item page reached by action.
+    const b = outcome === 'robots' ? blocked[0] : undefined;
+    return {
+      probe: {
+        feature, outcome, origins: [], tried, detail, ...(capped ? { capped } : {}),
+        ...(b ? { robotsBlocked: { origin: b.hop ? pageKey(b.hop.item) : b.origin, path: b.path, rule: b.rule }, ...hopRecord(b.hop) } : {}),
+      },
+      ...(b ? { blocked: { origin: b.origin, ...(b.hop ? { originPage: originPageOf(feature, b.hop) } : {}) } } : {}),
+    };
   };
 
   /** One line of a Playwright error: its first line, without the trailing full stop. */
   const brief = (err: unknown): string => ((err as Error)?.message ?? String(err)).split('\n')[0]!.trim().replace(/\.$/, '');
 
   try {
-    for (const [k, { c, volatile, depth, i }] of ordered.entries()) {
+    for (let k = 0; k < ordered.length; k++) {
+      const { c, volatile, depth, i } = ordered[k]!;
       if (clicks >= STATE_PROBE_CLICK_CAP) {
         // The click cap stopped the probe: every candidate left is named.
         clickCapUntried = ordered.slice(k).map((o) => pathOf(o.c.url));
@@ -488,11 +616,22 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         robotsBlocked = true;
         continue;
       }
+      /** The tried entry for a page with no usable trigger; it queues the item hop when the page has one. */
+      const noTrigger = (controls: PageControl[], triggers: TriggerControl[]): void => {
+        const result = disabledResult(disabledTriggers(controls, phrases)) ?? deniedResult(triggers) ?? 'no trigger';
+        const hop = result === 'no trigger' ? hopFrom(c, controls, volatile) : null;
+        if (!hop) { tried.push({ url: c.url, result }); return; }
+        const itemUrl = pageKey(hop.item.href!);
+        tried.push({ url: c.url, result: `no trigger; hopped to item page ${pathOf(itemUrl)} by ${hop.control}` });
+        let itemDepth = 0;
+        try { itemDepth = new URL(itemUrl).pathname.split('/').filter(Boolean).length; } catch { itemDepth = 0; }
+        ordered.splice(k + 1, 0, { c: { url: itemUrl, volatile: true, linkedFrom: c.url, hopControl: hop.control }, i, volatile: true, depth: itemDepth });
+      };
       // A page the browser crawl already read is judged from that load.
       if (c.controls) {
         const known = findTriggers(c.controls, phrases);
         if (!known.some((t) => !t.denied)) {
-          tried.push({ url: c.url, result: disabledResult(disabledTriggers(c.controls, phrases)) ?? deniedResult(known) ?? 'no trigger' });
+          noTrigger(c.controls, known);
           continue;
         }
       }
@@ -520,11 +659,16 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         const triggers = findTriggers(controls, phrases);
         const usable = triggers.filter((t) => !t.denied);
         if (usable.length === 0) {
-          tried.push({ url: c.url, result: disabledResult(disabledTriggers(controls, phrases)) ?? deniedResult(triggers) ?? 'no trigger' });
+          noTrigger(controls, triggers);
           continue;
         }
         const trigger = usable[0]!;
         clicked = trigger.control;
+        // An item page the hop reached is the origin: its snapshot before the
+        // trigger click is what its origin rules are planned from.
+        const hop = c.hopControl && c.linkedFrom
+          ? { listing: c.linkedFrom, item: c.url, control: c.hopControl, snapshot: await snapshotPage(page) }
+          : undefined;
         const before = new Set((await readControls(page)).filter((a) => a.role === 'link' && a.href).map((a) => pageKey(a.href!)));
         before.add(pageKey(page.url()));
         clicks++;
@@ -556,12 +700,15 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         const revealedPath = new URL(link.a.href!).pathname;
         const linkControl = controlLocator(link.a);
         // Only a qualifying page's entry says "revealed"; these say what appeared.
-        if (!robotsAllows(robots, revealedPath)) {
+        const originUrl = volatile ? stableAncestor(c, byUrl) : c.url;
+        const revealedRule = robotsRuleFor(robots, revealedPath);
+        if (revealedRule !== null) {
           tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, a new link to ${revealedPath} appeared, but robots.txt disallows ${revealedPath}` });
           robotsBlocked = true;
+          // The origin is still found: its origin rules are planned there.
+          if (originUrl) blocked.push({ triggerVolatile: volatile, origin: originUrl, path: revealedPath, rule: revealedRule, depth, index: i, ...(hop ? { hop } : {}) });
           continue;
         }
-        const originUrl = volatile ? stableAncestor(c, byUrl) : c.url;
         if (!originUrl) {
           tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, a new link to ${revealedPath} appeared, but no stable page links to this volatile page` });
           cleanMisses++;
@@ -578,12 +725,12 @@ export async function probeStateFeature(opts: ProbeOptions): Promise<ProbeResult
         const snapshot = await snapshotPage(page);
         const revealed = pageKey(link.a.href!);
         const actions: ReachAction[] = [
-          ...(volatile ? [{ kind: 'click', via: 'item-link' } as ReachAction] : []),
+          ...(volatile ? [(hop ? { kind: 'click', via: 'item-link', control: hop.control } : { kind: 'click', via: 'item-link' }) as ReachAction] : []),
           { kind: 'click', control: trigger.control },
           { kind: 'click', control: linkControl },
         ];
         tried.push({ url: c.url, control: trigger.control, result: `clicked ${trigger.control}, revealed ${revealedPath}` });
-        qualified.push({ triggerUrl: c.url, triggerVolatile: volatile, origin: originUrl, revealed, actions, tokensMatched: link.n, depth, index: i, snapshot, phrase: trigger.phrase });
+        qualified.push({ triggerUrl: c.url, triggerVolatile: volatile, origin: originUrl, revealed, actions, tokensMatched: link.n, depth, index: i, snapshot, phrase: trigger.phrase, ...(hop ? { hop } : {}) });
       } catch (err) {
         const result = fail(brief(err));
         tried.push({ url: c.url, ...(clicked ? { control: clicked } : {}), result });
@@ -630,9 +777,32 @@ async function defaultPageFactory(): Promise<{ open: ProbePageFactory; close: ()
 
 /* ── Lines ────────────────────────────────────────────────────────────────── */
 
-/** The actions as a reader follows them: "click an item" for the item hop, else the control. */
+/** The actions as a reader follows them: "click an item" for the item hop (with the item link the hop used, when known), else the control. */
 export function describeActions(actions: ReachAction[]): string {
-  return actions.map((a) => (a.via === 'item-link' ? 'click an item' : a.kind === 'login' ? 'sign in' : a.control ?? a.kind)).join(', ');
+  return actions.map((a) => (a.via === 'item-link' ? (a.control ? `click the item ${a.control}` : 'click an item') : a.kind === 'login' ? 'sign in' : a.control ?? a.kind)).join(', ');
+}
+
+/** The coverage detail of a revealed-side rule whose revealed page robots.txt disallows (invariant 78). */
+export function robotsBlockedRuleDetail(rb: NonNullable<StateProbe['robotsBlocked']>): string {
+  return `the action on ${pathOf(rb.origin)} reveals ${rb.path}, which robots.txt disallows (rule Disallow: ${rb.rule}); not loaded`;
+}
+
+/**
+ * Per rule, the coverage reason a robots-blocked probe gives (invariant 78):
+ * a revealed-side rule reads robots-disallowed with the path and the rule; an
+ * origin-side rule was planned on the origin, so it reads not-planned when no
+ * scenario cites it, never not-revealed. Rules of every other probe are
+ * absent. A structural type, so the report's stored probes feed it.
+ */
+export function probeRuleReasons(stateProbes: Array<Pick<StateProbe, 'robotsBlocked' | 'rulesSplit'>> | undefined): Record<string, { reason: 'robots-disallowed' | 'not-planned'; detail?: string }> {
+  const out: Record<string, { reason: 'robots-disallowed' | 'not-planned'; detail?: string }> = {};
+  for (const p of stateProbes ?? []) {
+    if (!p.robotsBlocked) continue;
+    for (const r of p.rulesSplit ?? []) {
+      out[r.ruleId] = r.side === 'revealed' ? { reason: 'robots-disallowed', detail: robotsBlockedRuleDetail(p.robotsBlocked) } : { reason: 'not-planned' };
+    }
+  }
+  return out;
 }
 
 /**
@@ -643,10 +813,19 @@ export function describeActions(actions: ReachAction[]): string {
 export function stateProbeLine(probe: StateProbe, reachedBy?: { actions: ReachAction[] }): string {
   const head = `State probe "${probe.feature}":`;
   if (probe.outcome === 'revealed' && probe.revealed && probe.origins[0]) {
-    return `${head} revealed ${pathOf(probe.revealed)} from ${pathOf(probe.origins[0])}${reachedBy ? ` (${describeActions(reachedBy.actions)})` : ''}${probe.capped ? `; ${probe.capped}` : ''}`;
+    const from = probe.hop ? `item page ${pathOf(probe.hop.item)}, hopped from listing ${pathOf(probe.hop.listing)}` : pathOf(probe.origins[0]);
+    return `${head} revealed ${pathOf(probe.revealed)} from ${from}${reachedBy ? ` (${describeActions(reachedBy.actions)})` : ''}${probe.capped ? `; ${probe.capped}` : ''}`;
   }
   const n = probe.rulesSplit.length;
-  const tail = `any of its ${n} rule${n === 1 ? '' : 's'} still uncited after planning will report not-revealed`;
+  const plural = (k: number): string => `rule${k === 1 ? '' : 's'}`;
+  // A robots-blocked reveal found its origin: the origin rules are planned
+  // there, and the rest read robots-disallowed, never not-revealed.
+  const rb = probe.robotsBlocked;
+  const originIds = probe.rulesSplit.filter((r) => r.side === 'origin').map((r) => r.ruleId);
+  const where = rb ? (probe.hop ? `item page ${pathOf(probe.hop.item)}, reached from listing ${pathOf(probe.hop.listing)} by a click` : pathOf(rb.origin)) : '';
+  const tail = rb
+    ? `${originIds.length > 0 ? `its origin ${plural(originIds.length)} ${originIds.join(', ')} ${originIds.length === 1 ? 'is' : 'are'} planned on ${where}; ` : ''}any of its ${n - originIds.length} ${originIds.length > 0 ? 'other ' : ''}${plural(n - originIds.length)} still uncited after planning will report robots-disallowed`
+    : `any of its ${n} ${plural(n)} still uncited after planning will report not-revealed`;
   if (probe.outcome === 'error') return `${head} ${probe.detail}; ${tail}`;
   const tried = probe.tried.length > 0
     ? `tried ${probe.tried.map((t) => `${pathOf(t.url)} (${t.result})`).join(', ')}`
@@ -668,11 +847,29 @@ export interface RevealedFeature {
   snapshot: PageSnapshot;
   originRuleIds: string[];
   revealedRuleIds: string[];
+  /** Set when the item hop found the trigger: the item page is the origin, planned from its own snapshot and reached by a click (invariant 78). */
+  originPage?: OriginPage;
+}
+
+/**
+ * A feature whose trigger revealed a link robots.txt disallows (invariant
+ * 78): nothing is revealed, and the origin rules are still planned on the
+ * origin. `origin` is the page a scenario starts on; `originPage` is set when
+ * the origin is an item page the hop reached.
+ */
+export interface BlockedFeature {
+  feature: string;
+  origin: string;
+  originPage?: OriginPage;
+  originRuleIds: string[];
+  revealedRuleIds: string[];
 }
 
 export interface StateProbesResult {
   probes: StateProbe[];
   revealed: RevealedFeature[];
+  /** Features whose revealed page robots.txt disallows, each with the origin its origin rules are planned on. */
+  blocked: BlockedFeature[];
   /** The console lines, in order: per feature, the probe line then the rule split line. */
   lines: string[];
 }
@@ -698,6 +895,7 @@ export async function runStateProbes(opts: {
   const features = detectStateFeatures(opts.map, opts.candidates, opts.featureTokens);
   const probes: StateProbe[] = [];
   const revealed: RevealedFeature[] = [];
+  const blocked: BlockedFeature[] = [];
   const lines: string[] = [];
   const candidates: ProbeCandidate[] = opts.candidates
     .filter((p) => p.source !== 'action')
@@ -723,15 +921,20 @@ export async function runStateProbes(opts: {
     const probe: StateProbe = { ...r.probe, rulesSplit };
     probes.push(probe);
     lines.push(stateProbeLine(probe, r.page?.reachedBy), rulesSplitLine(probe));
+    const originRuleIds = rulesSplit.filter((s) => s.side === 'origin').map((s) => s.ruleId);
+    const revealedRuleIds = rulesSplit.filter((s) => s.side === 'revealed').map((s) => s.ruleId);
     if (r.page?.reachedBy && r.snapshot) {
       revealed.push({
         feature: f.feature.name,
         page: { ...r.page, reachedBy: r.page.reachedBy },
         snapshot: r.snapshot,
-        originRuleIds: rulesSplit.filter((s) => s.side === 'origin').map((s) => s.ruleId),
-        revealedRuleIds: rulesSplit.filter((s) => s.side === 'revealed').map((s) => s.ruleId),
+        originRuleIds,
+        revealedRuleIds,
+        ...(r.originPage ? { originPage: r.originPage } : {}),
       });
+    } else if (r.blocked) {
+      blocked.push({ feature: f.feature.name, origin: r.blocked.origin, ...(r.blocked.originPage ? { originPage: r.blocked.originPage } : {}), originRuleIds, revealedRuleIds });
     }
   }
-  return { probes, revealed, lines };
+  return { probes, revealed, blocked, lines };
 }

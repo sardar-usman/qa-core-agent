@@ -67,7 +67,8 @@ export interface PlannerClient {
 
 /** The actions as the Planner and the Explorer read them: "click an item" for the item hop, else the control. */
 export function reachActionsText(actions: ReachAction[]): string {
-  return actions.map((a) => (a.via === 'item-link' ? 'click an item by its visible name' : a.kind === 'login' ? 'sign in' : `click ${a.control ?? 'the control'}`)).join(', then ');
+  // The item hop (invariant 78) records the item link it clicked; name it.
+  return actions.map((a) => (a.via === 'item-link' ? (a.control ? `click the item ${a.control} by its visible name` : 'click an item by its visible name') : a.kind === 'login' ? 'sign in' : `click ${a.control ?? 'the control'}`)).join(', then ');
 }
 
 /** The path of a URL, or the URL when it does not parse. */
@@ -1617,10 +1618,21 @@ function sameRuleSet(a: PlannedScenario, b: PlannedScenario): string[] | null {
   return ra;
 }
 
-/** Why two planned scenarios are one across pages, or null (invariant 61 b, invariant 73). */
-export type CrossPageBasis = { kind: 'name' } | { kind: 'overlap'; overlap: number; ruleIds: string[] };
+/**
+ * Why two planned scenarios are one across pages, or null (invariant 61 b,
+ * invariant 73, invariant 78): the same name; the same rules with names that
+ * overlap by at least 0.75; or the same rules where the later page does not
+ * carry the feature by page evidence, whatever the overlap.
+ */
+export type CrossPageBasis =
+  | { kind: 'name' }
+  | { kind: 'overlap'; overlap: number; ruleIds: string[] }
+  | { kind: 'evidence'; overlap: number; ruleIds: string[]; feature: string; page: string };
 
-function crossPageDuplicate(s: PlannedScenario, e: PlannedScenario): CrossPageBasis | null {
+/** Whether a page carries a feature by page evidence; given by the caller (planAcrossPages builds it from its targets). */
+export type CarriesFeature = (url: string, feature: string) => boolean;
+
+function crossPageDuplicate(s: PlannedScenario, e: PlannedScenario, evidence?: { page: string; carries: CarriesFeature }): CrossPageBasis | null {
   if (crossPageKey(s) === crossPageKey(e)) return { kind: 'name' };
   // Meaning, not exact text: the same feature, category and an identical
   // non-empty set of cited rules, with names that overlap by at least 0.75.
@@ -1631,14 +1643,28 @@ function crossPageDuplicate(s: PlannedScenario, e: PlannedScenario): CrossPageBa
   const ruleIds = sameRuleSet(s, e);
   if (!ruleIds) return null;
   const overlap = nameOverlap(s.name, e.name);
-  return overlap >= CROSS_PAGE_NAME_OVERLAP ? { kind: 'overlap', overlap, ruleIds } : null;
+  if (overlap >= CROSS_PAGE_NAME_OVERLAP) return { kind: 'overlap', overlap, ruleIds };
+  // Evidence, not only the name: the same feature, category and rules on a
+  // later page that does not carry the feature by page evidence is a copy
+  // of the earlier one, whatever the overlap. Run 59540f planned "clicked
+  // product opened detail page with same name and price as listing" on
+  // /privacy beside the same catalogue edge R5 scenario on / (overlap 0.69),
+  // and the Explorer spent a call skipping it.
+  const feature = s.feature ?? '';
+  if (evidence && feature && !evidence.carries(evidence.page, feature)) return { kind: 'evidence', overlap, ruleIds, feature, page: evidence.page };
+  return null;
+}
+
+/** The path of a URL for a line, or the URL when it does not parse. */
+function pathForLine(url: string): string {
+  try { return new URL(url).pathname || '/'; } catch { return url; }
 }
 
 /** The parenthetical a cross-page drop line ends with: why the two are one scenario. */
 export function crossPageBasisText(basis: CrossPageBasis): string {
-  return basis.kind === 'name'
-    ? 'same feature, category and intent'
-    : `same feature, category and rules ${basis.ruleIds.join(', ')}, names overlap ${basis.overlap.toFixed(2)}`;
+  if (basis.kind === 'name') return 'same feature, category and intent';
+  if (basis.kind === 'overlap') return `same feature, category and rules ${basis.ruleIds.join(', ')}, names overlap ${basis.overlap.toFixed(2)}`;
+  return `same feature, category and rules ${basis.ruleIds.join(', ')}, and ${pathForLine(basis.page)} does not carry ${basis.feature} by page evidence, names overlap ${basis.overlap.toFixed(2)}`;
 }
 
 /**
@@ -1651,32 +1677,57 @@ export function crossPageBasisText(basis: CrossPageBasis): string {
  * goes through the rename in uniqueScenarioNames. Two reworded names are one
  * scenario when they share feature, category and an identical non-empty set
  * of cited rule ids and their names overlap by at least 0.75 (nameOverlap,
- * invariant 73). Exported for the smoke.
+ * invariant 73). With `carriesFeature` (page evidence, invariant 78): the
+ * same feature, category and non-empty rule set on a later page that does
+ * not carry the feature by page evidence is a duplicate whatever the
+ * overlap, and the later copy is dropped; and when exactly one of two
+ * duplicate copies sits on a page that carries the feature by page
+ * evidence, that copy is kept over one a model tag placed. Exported for the
+ * smoke.
  */
 export function dedupeAcrossPages(
   existing: PlannedScenario[],
   incoming: PlannedScenario[],
   page: { url: string; feature?: string },
   pageFeatureOf: (url: string | undefined) => string | undefined,
+  carriesFeature?: CarriesFeature,
 ): { existing: PlannedScenario[]; incoming: PlannedScenario[]; dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario; basis: CrossPageBasis }> } {
   const all: PlannedScenario[] = [...existing];
   const fromIncoming = new Set<PlannedScenario>();
   const dropped: Array<{ scenario: PlannedScenario; duplicateOf: PlannedScenario; basis: CrossPageBasis }> = [];
+  // The evidence rule judges the incoming page only, and only against a
+  // scenario planned on another page (an incoming scenario is never a copy
+  // of one from its own page).
+  const evidence = carriesFeature ? { page: page.url, carries: carriesFeature } : undefined;
+  const onOtherPage = (e: PlannedScenario): boolean => fromIncoming.has(e) === false;
   for (const s of incoming) {
-    // An exact-name match first (the original rule), then the overlap rule.
+    // An exact-name match first (the original rule), then the overlap rule,
+    // then the evidence rule.
     let idx = all.findIndex((e) => crossPageKey(e) === crossPageKey(s));
     if (idx < 0) idx = all.findIndex((e) => crossPageDuplicate(s, e) !== null);
-    const basis = idx < 0 ? null : crossPageDuplicate(s, all[idx]!);
+    if (idx < 0 && evidence) idx = all.findIndex((e) => onOtherPage(e) && crossPageDuplicate(s, e, evidence) !== null);
+    const basis = idx < 0 ? null : crossPageDuplicate(s, all[idx]!, onOtherPage(all[idx]!) ? evidence : undefined);
     if (idx < 0 || !basis) {
       all.push(s);
       fromIncoming.add(s);
       continue;
     }
     const e = all[idx]!;
-    const incomingOnItsPage = !!s.feature && page.feature === s.feature;
-    // A scenario reached by action runs on its revealed page, whose tag is
-    // page evidence (invariant 71); its pageUrl is only the origin.
-    const existingOnItsPage = !!e.feature && pageFeatureOf(e.reachedBy?.pageUrl ?? e.pageUrl) === e.feature;
+    // A copy found by evidence is the one on the page without it: the incoming.
+    if (basis.kind === 'evidence') {
+      dropped.push({ scenario: s, duplicateOf: e, basis });
+      continue;
+    }
+    // A scenario reached by action runs on its revealed page (or the item
+    // page the hop reached), whose tag is page evidence (invariant 71); its
+    // pageUrl is only the origin.
+    const existingPage = e.reachedBy?.pageUrl ?? e.pageUrl;
+    // Page evidence beats a model tag (invariant 78): when exactly one of
+    // the two pages carries the feature by page evidence, its copy is kept.
+    const incomingEvidence = !!carriesFeature && !!s.feature && carriesFeature(page.url, s.feature);
+    const existingEvidence = !!carriesFeature && !!e.feature && !!existingPage && carriesFeature(existingPage, e.feature);
+    const incomingOnItsPage = incomingEvidence !== existingEvidence ? incomingEvidence : !!s.feature && page.feature === s.feature;
+    const existingOnItsPage = incomingEvidence !== existingEvidence ? existingEvidence : !!e.feature && pageFeatureOf(existingPage) === e.feature;
     if (incomingOnItsPage && !existingOnItsPage) {
       dropped.push({ scenario: e, duplicateOf: s, basis });
       all.splice(idx, 1);

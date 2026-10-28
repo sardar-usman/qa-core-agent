@@ -29,6 +29,10 @@
  *   - a quantity scenario is kept on a page reached by action (the probe's
  *     post-action cart snapshot) and still rejected on "/" (invariant 71)
  *
+ *   - F9: run 7's catalogue edge R5 pair on / and /privacy (overlap 0.69)
+ *     is one scenario, because /privacy does not carry catalogue by page
+ *     evidence; one line names both scenarios and the overlap (invariant 78)
+ *
  * In-code fixtures plus one local page in headless Chromium for the flags.
  * No network. No LLM.
  */
@@ -51,6 +55,8 @@ import {
   type PlannedScenario,
 } from '../src/agent/planner.js';
 import { installEvalShim } from '../src/agent/eval-shim.js';
+import { planAcrossPages, targetEvidence, type PlanTarget } from '../src/agent/plan-pages.js';
+import type { PlanResult } from '../src/agent/planner.js';
 import { computeDerivation } from '../src/agent/rule-coverage.js';
 import { reconcile } from '../src/agent/reconcile.js';
 import type { RequirementsMap } from '../src/agent/requirements.js';
@@ -342,6 +348,54 @@ const pageFeature = (map: Record<string, string | undefined>) => (url: string | 
   check('F8d. the reworded pair citing different rule ids is kept apart', otherRule.dropped.length === 0, JSON.stringify(otherRule.dropped));
   check('F8e. the reworded pair citing no rule ids is kept apart (the set must be non-empty)', noRules.dropped.length === 0, JSON.stringify(noRules.dropped));
   check('F8f. an exact-name duplicate still reads the original reason', crossPageBasisText({ kind: 'name' }) === 'same feature, category and intent');
+}
+
+/* ─── F9. cross-page duplicates by page evidence (invariant 78, run 59540f D7f) ─── */
+{
+  // Run 7 planned the catalogue edge R5 scenario on / (plan[3]) and again on
+  // /privacy (plan[8]); the names overlap 0.69, under the 0.75 rule, so both
+  // stayed and the Explorer spent a call skipping the /privacy copy.
+  const HOME = 'https://practicesoftwaretesting.com/';
+  const PRIVACY = 'https://practicesoftwaretesting.com/privacy';
+  const CATEGORY = 'https://practicesoftwaretesting.com/category/hand-tools';
+  const onHome = 'clicked product from listing, navigated to detail page showing same name and price as the listing';
+  const onPrivacy = 'clicked product opened detail page with same name and price as listing';
+  const r5 = (name: string, ruleIds = ['R5']): PlannedScenario => ({ name, category: 'edge', feature: 'catalogue', rationale: 'fails if the detail page differs', ruleIds });
+  const planOn = async (second: string, secondPlan: PlannedScenario[]) => {
+    const lines: string[] = [];
+    const targets: PlanTarget[] = [{ page: { url: HOME, source: 'sitemap' } }, { page: { url: second, source: 'sitemap' } }];
+    const planFn = async (a: { url: string }): Promise<PlanResult> => ({
+      scenarios: a.url === HOME ? [r5(onHome)] : secondPlan, fillableFields: 0, costUsd: 0, dropped: [], rejected: [], citationDrops: [], pageFitRejected: [], contradictionRejected: [], ruleRetries: [],
+    } as unknown as PlanResult);
+    const r = await planAcrossPages({ targets, planFn, onMessage: (t) => lines.push(t) });
+    return { r, lines };
+  };
+  check('F9a. run 7\'s pair overlaps by 0.69 (9 shared words of 13), under the 0.75 overlap rule', Math.abs(nameOverlap(onHome, onPrivacy) - 9 / 13) < 1e-9 && nameOverlap(onHome, onPrivacy).toFixed(2) === '0.69');
+  const before = dedupeAcrossPages([{ ...r5(onHome), pageUrl: HOME }], [{ ...r5(onPrivacy), pageUrl: PRIVACY }], { url: PRIVACY }, () => undefined);
+  check('F9b. without the page-evidence check the pair is kept apart (the overlap rule alone, as before)', before.dropped.length === 0 && before.incoming.length === 1, JSON.stringify(before.dropped));
+  const run7 = await planOn(PRIVACY, [r5(onPrivacy)]);
+  const dropLine = run7.lines.find((l) => l.startsWith('Rejected cross-page duplicate'));
+  console.log(`  F9 lock: ${dropLine}`);
+  check('F9c. planned through planAcrossPages, the /privacy copy is a cross-page duplicate: /privacy does not carry catalogue by page evidence, whatever the overlap',
+    run7.r.combined.length === 1 && run7.r.combined[0]!.name === onHome && run7.r.combined[0]!.pageUrl === HOME, JSON.stringify(run7.r.combined.map((x) => [x.name, x.pageUrl])));
+  check('F9d. one line names both scenarios and the overlap value',
+    dropLine === `Rejected cross-page duplicate: "${onPrivacy}" on ${PRIVACY} (same feature, category and rules R5, and /privacy does not carry catalogue by page evidence, names overlap 0.69, as "${onHome}" kept on ${HOME})`, dropLine);
+  const onCategory = await planOn(CATEGORY, [r5(onPrivacy)]);
+  check('F9e. on a page that carries catalogue by page evidence (/category/hand-tools) the same pair is kept apart (0.69 is under the overlap rule)',
+    onCategory.r.combined.length === 2 && !onCategory.lines.some((l) => l.startsWith('Rejected cross-page duplicate')), JSON.stringify(onCategory.lines));
+  const otherRule = await planOn(PRIVACY, [r5(onPrivacy, ['R4'])]);
+  check('F9f. a different rule set on /privacy is not a duplicate (the rule set must match and be non-empty)', otherRule.r.combined.length === 2, JSON.stringify(otherRule.lines));
+  const sameName = await planOn(PRIVACY, [r5(onHome)]);
+  check('F9g. an exact-name copy still reads the original reason, unchanged', sameName.lines.some((l) => l === `Rejected cross-page duplicate: "${onHome}" on ${PRIVACY} (same feature, category and intent as the scenario kept on ${HOME})`), JSON.stringify(sameName.lines));
+  const ev = targetEvidence([
+    { page: { url: 'https://s.example/store', source: 'srs', feature: 'catalogue' } },
+    { page: { url: 'https://s.example/checkout', source: 'action', feature: 'cart' } },
+    { page: { url: 'https://s.example/', source: 'crawl' }, originOf: ['cart'] },
+    { page: { url: 'https://s.example/', source: 'crawl', feature: 'catalogue' } },
+    { page: { url: CATEGORY, source: 'crawl' } },
+  ]);
+  check('F9h. page evidence: an SRS-tagged page, a page reached by action, a probe origin and a path token carry the feature; a model tag alone does not',
+    ev('https://s.example/store', 'catalogue') && ev('https://s.example/checkout', 'cart') && ev('https://s.example/', 'cart') && ev(CATEGORY, 'catalogue') && !ev('https://s.example/', 'catalogue') && !ev(PRIVACY, 'catalogue'));
 }
 
 /* ─── G. the funnel identity holds after the drops ────────────────────────── */

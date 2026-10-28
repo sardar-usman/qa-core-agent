@@ -4,9 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunReport } from './trace.js';
 import type { RequirementsMap } from './requirements.js';
+import { featureTokenMap } from './requirements.js';
 import { reconcile, unmatchedDropLine } from './reconcile.js';
 import { attachDroppedTraces, recordOf, storeFromDroppedTraces, storeTrace, type TraceRecord } from './dropped-traces.js';
-import { computeRuleCoverage, notRevealedFeatures } from './rule-coverage.js';
+import { computeRuleCoverage, notRevealedFeatures, pageNotPlannedFeatures } from './rule-coverage.js';
+import { probeRuleReasons } from './state-probe.js';
 import { unreachableFeatures } from './planner.js';
 import { robotsDisallowedDetails } from './discovery.js';
 import { AUTH_ENV_PASS, AUTH_ENV_USER, findHappyLoginScenario, recordedCredentials, reportUsesTestAccount, type AuthCredentials } from './auth-emit.js';
@@ -351,9 +353,11 @@ export function rebuildAccounting(
         ...(report.reconciliation ? { incomplete: report.reconciliation.incomplete } : {}),
         ...(report.discovery ? { unreachableFeatures: unreachableFeatures(requirements, report.discovery.pages, report.discovery.stateProbes, report.plan ?? []).map((f) => f.name) } : {}),
         ...(report.discovery?.stateProbes ? { notRevealed: notRevealedFeatures(report.discovery.stateProbes) } : {}),
-        // The same robots and per-page-cap reasons the runtime classified (invariant 75).
+        // The same robots and cap reasons the runtime classified (invariants 75 and 78).
         robotsDisallowed: robotsDisallowedDetails(requirements, report.discovery, report.url),
         ...(report.planTrimmed ? { planTrimmed: report.planTrimmed } : {}),
+        ...(report.discovery && report.planSkippedPages ? { pageNotPlanned: pageNotPlannedFeatures(requirements.features.map((f) => f.name), report.discovery.pages, report.planSkippedPages, featureTokenMap(requirements)) } : {}),
+        ...(report.discovery?.stateProbes ? { probeRules: probeRuleReasons(report.discovery.stateProbes) } : {}),
       }),
       ...(derivation ? { derivation } : {}),
     };

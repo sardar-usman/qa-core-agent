@@ -19,13 +19,16 @@ const STATUS_LABEL: Record<RuleStatus, string> = { covered: 'covered', planned_b
 const STATUS_VARIANT: Record<RuleStatus, 'pass' | 'rework' | 'neutral' | 'reject'> = { covered: 'pass', planned_but_dropped: 'reject', planned_not_explored: 'rework', not_planned: 'neutral' };
 /**
  * The precise reasons the index keeps beside the coarse not_planned status
- * (schema v8, invariant 75): a rule robots.txt kept out of reach, or whose
- * only planned scenarios the per-page cap cut, is never shown as "not
- * planned". The other reasons keep their status label.
+ * (schema v8, invariants 75 and 78): a rule robots.txt kept out of reach,
+ * whose only planned scenarios a cap cut, or whose feature's pages the
+ * global cap left unplanned, is never shown as "not planned". The other
+ * reasons keep their status label.
  */
 const REASON_LABEL: Record<string, { label: string; variant: 'rework' | 'neutral' }> = {
   'robots-disallowed': { label: 'blocked by robots.txt', variant: 'neutral' },
   'cut-by-page-cap': { label: 'cut by page cap', variant: 'rework' },
+  'cut-by-global-cap': { label: 'cut by plan cap', variant: 'rework' },
+  'page-not-planned-global-cap': { label: 'page left unplanned by plan cap', variant: 'rework' },
   'not-reachable': { label: 'no page found', variant: 'neutral' },
   'not-revealed': { label: 'page not revealed', variant: 'neutral' },
 };

@@ -17,7 +17,9 @@
  * A fixture search page shows a full catalogue (Pliers, Long Nose Pliers,
  * Hammer, Saw). After the search, by route:
  *   /mixed         300 ms later: Pliers, Long Nose Pliers, Hammer
- *   /pliers        300 ms later: Pliers, Long Nose Pliers
+ *   /pliers        300 ms later: Pliers, Long Nose Pliers, PLIERS SET (its
+ *                  case differs from the typed "Pliers", so only the i flag
+ *                  matches it)
  *   /empty         300 ms later: nothing
  *   /clear-mixed   (a) the old list for 500 ms (the request in flight), then
  *                  cleared, then 800 ms later Long Nose Pliers and Hammer
@@ -37,6 +39,9 @@
  *      search term the scenario opened the page with.
  *   E. the flags are exactly 'i' (a g flag is refused by replay and both
  *      emitters) and item text is whitespace-normalized.
+ *   F. pollAllItems with a fake list whose read throws: every read throwing
+ *      ends held false with no snapshot; two throws then a good read decide
+ *      on that read (held true on all-matching texts, false on a mixed list).
  * No network beyond 127.0.0.1, no model call.
  */
 import fs from 'node:fs';
@@ -51,7 +56,7 @@ import { replayScenarioOnce } from '../src/agent/replay.js';
 import { runGate } from '../src/agent/gate.js';
 import { scaffold } from '../src/agent/scaffold.js';
 import { transcribe } from '../src/agent/transcriber.js';
-import { typedValues, allItemsSnapshot, allItemsHold, allItemsPollLine } from '../src/agent/all-items.js';
+import { typedValues, allItemsSnapshot, allItemsHold, allItemsPollLine, pollAllItems } from '../src/agent/all-items.js';
 import type { RunReport, Scenario, TraceStep } from '../src/agent/trace.js';
 import { emitFramework, emptyTextHits, runPlaywright, cleanup, type Emitted } from './lib/emitted-runner.js';
 
@@ -66,7 +71,8 @@ const check = (label: string, ok: boolean, hint?: string): void => {
 interface Mode { results: string[]; clear: boolean; label: string }
 const MODES: Record<string, Mode> = {
   '/mixed': { results: ['Pliers', 'Long Nose Pliers', 'Hammer'], clear: false, label: 'Pliers, Long Nose Pliers, Hammer' },
-  '/pliers': { results: ['Pliers', 'Long Nose Pliers'], clear: false, label: 'pliers only' },
+  // PLIERS SET differs in case from the typed "Pliers": only the i flag matches it.
+  '/pliers': { results: ['Pliers', 'Long Nose Pliers', 'PLIERS SET'], clear: false, label: 'pliers only (PLIERS SET in upper case)' },
   '/empty': { results: [], clear: false, label: 'an empty list' },
   '/clear-mixed': { results: ['Long Nose Pliers', 'Hammer'], clear: true, label: '(a) cleared, then Long Nose Pliers and Hammer 800 ms later' },
   '/clear-pliers': { results: ['Pliers', 'Long Nose Pliers'], clear: true, label: '(b) cleared, then pliers only 800 ms later' },
@@ -144,8 +150,8 @@ try {
   check('A2a. the pliers search setup calls all succeeded', setupOk(pliers.calls), JSON.stringify(pliers.calls));
   const steps = pliers.ctx.current?.steps ?? [];
   const lastAction = steps.map((st) => st.kind).lastIndexOf('click');
-  check('A2. on a list of only pliers the assertion passes in the tool, reading 2 items in one read',
-    pliers.asserted.ok === true && (pliers.asserted.data as { items?: number; checked?: string }).items === 2 && (pliers.asserted.data as { checked?: string }).checked === 'at least 1 item and every item matches, in one read of the list',
+  check('A2. on a list of only pliers, one of them PLIERS SET in upper case, the assertion passes in the tool, reading 3 items in one read',
+    pliers.asserted.ok === true && (pliers.asserted.data as { items?: number; checked?: string }).items === 3 && (pliers.asserted.data as { checked?: string }).checked === 'at least 1 item and every item matches, in one read of the list',
     JSON.stringify(pliers.asserted));
   check('A3. it records ONE step right after the last action: allItemsMatch, no separate "at least 1" step',
     asserts(steps).length === 1 && lastAction === steps.length - 2 && steps.at(-1)?.kind === 'assert' && (steps.at(-1) as { assertion: { type: string } }).assertion.type === 'allItemsMatch',
@@ -309,6 +315,26 @@ try {
   }
   check('E4. item text is whitespace-normalized before the match, the way Playwright normalizes hasText',
     allItemsHold(allItemsSnapshot(['  Long\n   Nose\u200b Pliers ', 'Pli\u00adERS'], /long nose pliers|pliers/i)) && allItemsSnapshot(['Long\nNose'], /long nose/i).notMatching.length === 0);
+
+  /* ─── F. pollAllItems when the read throws (PR #55 review) ────────────── */
+  // A read that throws (the page is between documents) never decides: the
+  // next read does, and a read that never succeeds ends held false with no
+  // snapshot, never held true.
+  const throwing = (failures: number, texts: string[]) => {
+    let calls = 0;
+    return { calls: () => calls, locator: { allTextContents: async () => { calls++; if (calls <= failures) throw new Error('Execution context was destroyed, most likely because of a navigation'); return texts; } } };
+  };
+  const always = throwing(Number.POSITIVE_INFINITY, []);
+  const f1 = await pollAllItems(always.locator, /Pliers/i, 500);
+  check('F1. a read that throws on every call: held false and last null, after more than one try', f1.held === false && f1.last === null && always.calls() > 1, JSON.stringify({ ...f1, calls: always.calls() }));
+  const twiceGood = throwing(2, ['Pliers', 'PLIERS SET']);
+  const f2 = await pollAllItems(twiceGood.locator, /Pliers/i, 3000);
+  check('F2. a read that throws twice, then returns all-matching texts: decided on that third read, held true',
+    f2.held === true && f2.last?.items === 2 && f2.last.notMatching.length === 0 && twiceGood.calls() === 3, JSON.stringify({ ...f2, calls: twiceGood.calls() }));
+  const twiceMixed = throwing(2, ['Pliers', 'Hammer']);
+  const f3 = await pollAllItems(twiceMixed.locator, /Pliers/i, 600);
+  check('F3. a read that throws twice, then returns a mixed list: held false, the last read names Hammer',
+    f3.held === false && f3.last?.items === 2 && JSON.stringify(f3.last.notMatching) === '["Hammer"]' && twiceMixed.calls() >= 3, JSON.stringify({ ...f3, calls: twiceMixed.calls() }));
 } finally {
   await browser.close();
   server.close();
@@ -317,4 +343,4 @@ try {
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: allItemsMatch decides from ONE read of every item\'s text (at least 1 item and every item matches the typed value, flags exactly i): it passes on pliers only and on a list that clears then shows only pliers, and FAILS on Pliers, Long Nose Pliers and Hammer, on an empty list, on a list that clears then shows Hammer, and on a list that clears and stays empty, in the tool, replay and the emitted spec (TS and JS, POM and single file); an untyped pattern is refused by RULE 7.');
+console.log('OK: allItemsMatch decides from ONE read of every item\'s text (at least 1 item and every item matches the typed value, flags exactly i): it passes on pliers only (PLIERS SET in upper case included) and on a list that clears then shows only pliers, and FAILS on Pliers, Long Nose Pliers and Hammer, on an empty list, on a list that clears then shows Hammer, and on a list that clears and stays empty, in the tool, replay and the emitted spec (TS and JS, POM and single file); an untyped pattern is refused by RULE 7.');

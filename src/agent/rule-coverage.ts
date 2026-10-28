@@ -1,3 +1,4 @@
+import { pagesCarryingFeature } from './page-filter.js';
 import type { RequirementsMap } from './requirements.js';
 
 /**
@@ -24,17 +25,63 @@ import type { RequirementsMap } from './requirements.js';
  *   cut-by-page-cap    : the rule's only planned scenarios were cut by the
  *                         per-page cap before the plan was final (invariant
  *                         75); the detail names them
+ *   cut-by-global-cap  : the rule's only planned scenarios were cut by the
+ *                         global plan cap (invariant 78); the detail names
+ *                         them
+ *   page-not-planned-global-cap : no planned scenario cited the rule, and
+ *                         every page tagged with its feature was left
+ *                         unplanned by the global plan cap (invariant 78);
+ *                         the detail names the pages
  *
  * A run with a map ends with "X of Y rules covered" plus the named uncovered
  * rules, so a rule that was considered but not automated is reported, never
  * silently absent.
  */
 
-export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable' | 'not-revealed' | 'robots-disallowed' | 'cut-by-page-cap';
+export type UncoveredReason = 'not-planned' | 'planned-but-dropped' | 'planned-not-explored' | 'not-reachable' | 'not-revealed' | 'robots-disallowed' | 'cut-by-page-cap' | 'cut-by-global-cap' | 'page-not-planned-global-cap';
 
 /** The detail a cut-by-page-cap rule carries: the cut scenarios, by name. */
 export function cutByPageCapDetail(names: string[]): string {
   return `cut by the per-page cap: ${names.map((n) => JSON.stringify(n)).join(', ')}`;
+}
+
+/** The detail a cut-by-global-cap rule carries: the cut scenarios, by name. */
+export function cutByGlobalCapDetail(names: string[]): string {
+  return `cut by the global plan cap: ${names.map((n) => JSON.stringify(n)).join(', ')}`;
+}
+
+/** The detail a page-not-planned-global-cap rule carries: the feature's pages the cap left unplanned. */
+export function pageNotPlannedDetail(urls: string[]): string {
+  return `the global plan cap left its page(s) unplanned: ${urls.join(', ')}`;
+}
+
+/**
+ * The features whose every page the global plan cap left unplanned
+ * (report.planSkippedPages), each with the detail naming those pages. A
+ * feature's pages are the pages of the run's page set (discovery.pages, the
+ * skipped ones included) tagged with it OR carrying it by page evidence (a
+ * path segment matching its tokens, pagesCarryingFeature): a page set the
+ * filter passed through under its cap carries no tags (run 59540f). A
+ * feature with one such page that was planned is absent: its rules were
+ * planned for. A feature with no such page is absent too (it has its own
+ * reason, not-reachable).
+ */
+export function pageNotPlannedFeatures(
+  features: string[],
+  pages: Array<{ url: string; feature?: string }>,
+  skipped: Array<{ url: string; feature?: string }> | undefined,
+  featureTokens?: Record<string, string[]>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!skipped || skipped.length === 0) return out;
+  const skippedUrls = new Set(skipped.map((p) => p.url));
+  const all = [...pages, ...skipped.filter((sp) => !pages.some((p) => p.url === sp.url))];
+  for (const feature of features) {
+    const evidence = new Set(pagesCarryingFeature(all.map((p) => ({ url: p.url, source: 'crawl' as const })), feature, featureTokens).map((p) => p.url));
+    const urls = all.filter((p) => p.feature === feature || evidence.has(p.url)).map((p) => p.url).filter((u, i, a) => a.indexOf(u) === i);
+    if (urls.length > 0 && urls.every((u) => skippedUrls.has(u))) out[feature] = pageNotPlannedDetail(urls);
+  }
+  return out;
 }
 
 /** The detail every not-reachable rule carries, so the report says why. */
@@ -195,11 +242,27 @@ export function computeRuleCoverage(opts: {
    */
   robotsDisallowed?: Record<string, string>;
   /**
-   * The scenarios the per-page cap cut (report.planTrimmed). A rule that no
-   * planned scenario cites and a cut scenario did classifies cut-by-page-cap,
-   * with the cut names as the detail, never not-planned.
+   * The scenarios a cap cut (report.planTrimmed). A rule that no planned
+   * scenario cites and a cut scenario did classifies cut-by-page-cap, or
+   * cut-by-global-cap when every cut citing it was the global cap's, with
+   * the cut names as the detail, never not-planned. A cut with no cause (a
+   * report written before the field) is the per-page cap's.
    */
-  planTrimmed?: Array<{ name: string; ruleIds?: string[] }>;
+  planTrimmed?: Array<{ name: string; ruleIds?: string[]; cause?: 'page-cap' | 'global-cap' }>;
+  /**
+   * Features whose every tagged page the global plan cap left unplanned,
+   * with the detail (pageNotPlannedFeatures). A rule of such a feature that
+   * no planned scenario cited classifies page-not-planned-global-cap, never
+   * not-planned.
+   */
+  pageNotPlanned?: Record<string, string>;
+  /**
+   * Per rule, the reason a robots-blocked state probe gives (probeRuleReasons
+   * in state-probe.ts): a revealed-side rule robots-disallowed with the path
+   * and the rule, an origin-side rule (planned on the origin) not-planned.
+   * Applied to a rule no planned scenario cited, after the cap reasons.
+   */
+  probeRules?: Record<string, { reason: UncoveredReason; detail?: string }>;
 }): RuleCoverage {
   const covered: RuleCoverage['covered'] = [];
   const uncovered: RuleCoverage['uncovered'] = [];
@@ -226,36 +289,56 @@ export function computeRuleCoverage(opts: {
       const citing = opts.planned.filter((p) => (p.ruleIds ?? []).includes(rule.id));
       const notRevealedDetail = opts.notRevealed?.[feature.name];
       const robotsDetail = opts.robotsDisallowed?.[feature.name];
-      // A scenario planned for the rule and cut by the per-page cap is the
-      // most specific cause; robots.txt keeping the feature's page out of
-      // reach comes next; then the probe and the no-page reasons.
+      // A scenario planned for the rule and cut by a cap is the most
+      // specific cause; then the global cap leaving the feature's pages
+      // unplanned; then a robots-blocked state probe's own reason for this
+      // rule; then robots.txt keeping the feature's page out of reach; then
+      // the probe and the no-page reasons.
       const cut = (opts.planTrimmed ?? []).filter((t) => (t.ruleIds ?? []).includes(rule.id));
+      const globalCut = cut.filter((t) => t.cause === 'global-cap');
+      const pageCut = cut.filter((t) => t.cause !== 'global-cap');
+      const pageNotPlanned = opts.pageNotPlanned?.[feature.name];
+      const probeRule = opts.probeRules?.[rule.id];
       const reason: UncoveredReason =
         citing.length === 0
           ? cut.length > 0
-            ? 'cut-by-page-cap'
-            : robotsDetail !== undefined
-              ? 'robots-disallowed'
-              : notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
+            ? pageCut.length > 0 ? 'cut-by-page-cap' : 'cut-by-global-cap'
+            : pageNotPlanned !== undefined
+              ? 'page-not-planned-global-cap'
+              : probeRule
+                ? probeRule.reason
+                : robotsDetail !== undefined
+                  ? 'robots-disallowed'
+                  : notRevealedDetail !== undefined ? 'not-revealed' : unreachable.has(feature.name) ? 'not-reachable' : 'not-planned'
           : citing.every((p) => unexploredKeys.has(nameKey(p.name)) || midScenarioKeys.has(nameKey(p.name)))
             ? 'planned-not-explored'
             : 'planned-but-dropped';
       // The cause, not the critic's reasons: "rework, not repaired: reserve
       // funds 2 of 14" or "critic reject", one entry per distinct cause.
       const causeOf = (r: string): string => (r.startsWith('rework, not repaired:') ? r.split(':').slice(0, 2).join(':') : r.split(':')[0]!).trim();
+      // A cut rule names every cut citing it, per cap: the per-page cuts
+      // first (the reason), then the global ones.
+      const cutDetail = [
+        ...(pageCut.length > 0 ? [cutByPageCapDetail(pageCut.map((t) => t.name))] : []),
+        ...(globalCut.length > 0 ? [cutByGlobalCapDetail(globalCut.map((t) => t.name))] : []),
+      ].join('; ');
       const detail = reason === 'planned-but-dropped'
         ? citing.map((p) => reasonByKey.get(nameKey(p.name))).filter((r): r is string => !!r).map(causeOf).filter((r, i, a) => a.indexOf(r) === i).join(' | ')
-        : reason === 'not-reachable'
-          ? NOT_REACHABLE_DETAIL
-          : reason === 'not-revealed'
-            ? notRevealedDetail ?? ''
-            : reason === 'robots-disallowed'
-              ? robotsDetail ?? ''
-              : reason === 'cut-by-page-cap'
-                ? cutByPageCapDetail(cut.map((t) => t.name))
-                : reason === 'planned-not-explored' && citing.some((p) => midScenarioKeys.has(nameKey(p.name)))
-                  ? CEILING_MID_SCENARIO_DETAIL
-                  : '';
+        : citing.length === 0 && cut.length > 0
+          ? cutDetail
+          : reason === 'page-not-planned-global-cap'
+            ? pageNotPlanned ?? ''
+            : citing.length === 0 && probeRule
+              ? probeRule.detail ?? ''
+              : reason === 'not-reachable'
+                ? NOT_REACHABLE_DETAIL
+                : reason === 'not-revealed'
+                  ? notRevealedDetail ?? ''
+                  : reason === 'robots-disallowed'
+                    ? robotsDetail ?? ''
+                    : reason === 'planned-not-explored' && citing.some((p) => midScenarioKeys.has(nameKey(p.name)))
+                      ? CEILING_MID_SCENARIO_DETAIL
+                      : '';
       uncovered.push({ ruleId: rule.id, text: rule.text, reason, ...(detail ? { detail } : {}) });
     }
   }

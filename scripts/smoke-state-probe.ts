@@ -40,6 +40,22 @@
  *   J. a cap that stops the probe names every candidate it did not try
  *   K. a scenario's feature for the refusal comes from its cited rule ids,
  *      never from an exact match on the model's tag ("Shopping-Cart")
+ *   L. the item hop (invariant 78, run 59540f D2), on Toolshop's shape: a
+ *      listing of product cards with no trigger, "Add to cart" only on the
+ *      product page, the cart link only after the click, no product page
+ *      among the candidates. The probe follows the FIRST item link and the
+ *      item page becomes the origin, reached by action; with /checkout
+ *      allowed it reveals the cart, with /checkout disallowed the outcome
+ *      reads robots, the uncited revealed-side rules read robots-disallowed,
+ *      and R6 is still planned on the item page; no plan entry opens the
+ *      item's URL. An item page that is already a candidate takes no hop.
+ *      The hop's load counts against the page cap and waits the crawl
+ *      delay, robots is honored for the item page, and the emitted check's
+ *      coverage rebuild gives the same robots reason.
+ *   M. the same through explore() in process (a local stand-in for the
+ *      Anthropic API): the run's probe hops, the item page is a planned page
+ *      reached by action, R6 carries reachedBy, and rule-coverage.json reads
+ *      robots-disallowed for the uncited revealed-side rules.
  *
  * A local fixture site served in-process (node:http), headless Chromium, a
  * fixture Planner client. No network beyond 127.0.0.1. No model call.
@@ -68,10 +84,13 @@ import {
 import { buildPlanTargets, planAcrossPages } from '../src/agent/plan-pages.js';
 import { plan, unreachableFeatures, unreachableFeatureLine, reachedByBlock, type PlannerClient, type PlannedScenario } from '../src/agent/planner.js';
 import { computeRuleCoverage, renderRuleCoverage, notRevealedFeatures } from '../src/agent/rule-coverage.js';
+import { probeRuleReasons } from '../src/agent/state-probe.js';
+import { rebuildAccounting } from '../src/agent/emitted-check.js';
+import { startFakeAnthropic, type FakeContent } from './lib/fake-anthropic.js';
 import { featureTokenMap, type RequirementsMap } from '../src/agent/requirements.js';
 import { plannedPagesFor, reachedPagesOf } from '../src/agent/runtime.js';
 import { createContext, runTool } from '../src/agent/tools.js';
-import type { TraceStep, SelectorRecord } from '../src/agent/trace.js';
+import type { RunReport, TraceStep, SelectorRecord } from '../src/agent/trace.js';
 
 let pass = 0;
 let fail = 0;
@@ -85,11 +104,13 @@ delete process.env.ANTHROPIC_API_KEY;
 
 /* ─── the fixture site ──────────────────────────────────────────────────── */
 
-type Variant = 'reveal' | 'no-trigger' | 'no-link' | 'robots' | 'deals' | 'spa' | 'disabled-before' | 'disabled-after' | 'click-throws';
-const site = { variant: 'reveal' as Variant, hits: [] as string[] };
+type Variant = 'reveal' | 'no-trigger' | 'no-link' | 'robots' | 'deals' | 'spa' | 'disabled-before' | 'disabled-after' | 'click-throws' | 'cards' | 'cards-robots' | 'cards-run';
+const site = { variant: 'reveal' as Variant, hits: [] as string[], times: [] as Array<{ p: string; t: number }> };
 const PRODUCT = '/product/01HXXXXXXXXXXXXXXXXXXXXXXX';
 // An out-of-stock product: its "Add to cart" is disabled and must never be clicked.
 const PRODUCT_OOS = '/product/01HYYYYYYYYYYYYYYYYYYYYYYY';
+// The second product card of the cards variants: the hop follows the FIRST item link only.
+const PRODUCT_2 = '/product/01HZZZZZZZZZZZZZZZZZZZZZZZ';
 
 // The cart link is built by script with split strings, so the fetch crawl's
 // href regex never sees it in the page source (only a rendered DOM after an
@@ -133,7 +154,28 @@ document.addEventListener('click', function (e) {
 
 function route(p: string): { status: number; type: string; body: string } {
   const html = (body: string) => ({ status: 200, type: 'text/html; charset=utf-8', body });
-  if (p === '/robots.txt') return { status: 200, type: 'text/plain', body: site.variant === 'robots' ? 'User-agent: *\nDisallow: /checkout\n' : 'User-agent: *\nDisallow:\n' };
+  if (p === '/robots.txt') return { status: 200, type: 'text/plain', body: site.variant === 'robots' || site.variant === 'cards-robots' || site.variant === 'cards-run' ? 'User-agent: *\nDisallow: /checkout\n' : 'User-agent: *\nDisallow:\n' };
+  // Toolshop's listing (run 59540f): a category link, then product cards whose
+  // test ids carry the generated id and whose names end with the price.
+  if (p === '/' && (site.variant === 'cards' || site.variant === 'cards-robots')) {
+    const card = (href: string, id: string, name: string, price: string): string => `<a class="card" data-test="product-${id}" href="${href}"><h5>${name}</h5><span>${price}</span></a>`;
+    return html(pageHtml('Toolshop', `<h1>Toolshop</h1><nav><a href="/category/hand-tools">Hand Tools</a></nav><h2>Products</h2>${card(PRODUCT, '01HXXXXXXXXXXXXXXXXXXXXXXX', 'Combination Pliers', '$14.15')}${card(PRODUCT_2, '01HZZZZZZZZZZZZZZZZZZZZZZZ', 'Hammer', '$12.01')}`));
+  }
+  // Run 7's shape for an explore() run: the cards are rendered by script with
+  // split hrefs, so the fetch crawl finds "/" and /contact only.
+  if (p === '/' && site.variant === 'cards-run') {
+    const cards = `<div id="cards"></div><script>
+[['01HXXXXXXXXXXXXXXXXXXXXXXX', 'Combination Pliers', '$14.15'], ['01HZZZZZZZZZZZZZZZZZZZZZZZ', 'Hammer', '$12.01']].forEach(function (p) {
+  var a = document.createElement('a'); a.className = 'card'; a.setAttribute('data-test', 'product-' + p[0]);
+  a.setAttribute('hr' + 'ef', '/prod' + 'uct/' + p[0]);
+  a.innerHTML = '<h5>' + p[1] + '</h5><span>' + p[2] + '</span>';
+  document.getElementById('cards').appendChild(a);
+});
+</script>`;
+    return html(pageHtml('Toolshop', `<h1>Toolshop</h1><h2>Products</h2>${cards}`));
+  }
+  if (p === '/category/hand-tools') return html(pageHtml('Hand Tools', `<h1>Hand Tools</h1><a href="${PRODUCT}">Combination Pliers</a>`));
+  if (p === PRODUCT_2) return html(pageHtml('Hammer', `<h1>Hammer</h1><button type="button" data-test="add-to-cart">Add to cart</button>`, addScript));
   if (p === '/') {
     const good = `<a href="${PRODUCT}">Combination Pliers</a><p>$14.15</p>`;
     const oos = `<a href="${PRODUCT_OOS}">Bolt Cutters</a><p>Out of stock</p>`;
@@ -170,6 +212,7 @@ items.forEach(function (it) {
 const server = http.createServer((req, res) => {
   const p = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
   site.hits.push(p);
+  site.times.push({ p, t: Date.now() });
   const r = route(p);
   res.writeHead(r.status, { 'content-type': r.type, 'cache-control': 'no-store' });
   res.end(r.body);
@@ -296,7 +339,9 @@ for (const [variant, outcome, linePart] of [
   const line = run.probes.lines[0] ?? '';
   check(`C1 ${variant}. outcome ${outcome}, nothing revealed`, probe?.outcome === outcome && run.probes.revealed.length === 0 && probe.origins.length === 0, JSON.stringify(probe));
   check(`C2 ${variant}. the whole line names every page tried and what happened`,
-    line.startsWith('State probe "cart": no page revealed; tried / (no trigger), /contact (no trigger), /product/') && line.includes(linePart) && line.endsWith('any of its 4 rules still uncited after planning will report not-revealed') && line.length > 240, line);
+    line.startsWith('State probe "cart": no page revealed; tried / (no trigger), /contact (no trigger), /product/') && line.includes(linePart)
+    // A robots-blocked reveal found its origin (invariant 78): R6 is planned there, the rest report robots-disallowed.
+    && line.endsWith(variant === 'robots' ? 'its origin rule R6 is planned on /; any of its 3 other rules still uncited after planning will report robots-disallowed' : 'any of its 4 rules still uncited after planning will report not-revealed') && line.length > 240, line);
   const cov = computeRuleCoverage({ map, planned: [], scenarios: [], notRevealed: notRevealedFeatures(run.probes.probes) });
   const r8 = cov.uncovered.find((u) => u.ruleId === 'R8');
   check(`C3 ${variant}. an uncited rule reads not-revealed with the pages tried`,
@@ -513,7 +558,7 @@ const cites = (p: PlannedScenario[], id: string): PlannedScenario | undefined =>
   calls.length = 0;
   const run = failRun!;
   const g = await planRun6(run.probes, run.disc.pages);
-  const baseline = await planRun6({ probes: [], revealed: [], lines: [] }, run.disc.pages);
+  const baseline = await planRun6({ probes: [], revealed: [], blocked: [], lines: [] }, run.disc.pages);
   check('G9. failed: the plan is the one main makes (same names, pages and citations as with no probe at all)',
     JSON.stringify(g.plan) === JSON.stringify(baseline.plan), JSON.stringify({ g: g.plan.map((p) => p.name), baseline: baseline.plan.map((p) => p.name) }));
   for (const id of ['R6', 'R7', 'R9']) {
@@ -564,8 +609,234 @@ const cites = (p: PlannedScenario[], id: string): PlannedScenario | undefined =>
   check('K5. its trace with a navigate to /checkout is refused as navigated-to-reached-page', res.ok === false && /navigated to \/checkout, a page that is reached by action from \//.test(res.error ?? ''), res.error);
 }
 
+/* ─── L. the item hop (invariant 78, run 59540f D2) ─────────────────────── */
+// Run 7's sitemap gave "/", /contact and /privacy, no product page; "Add to
+// cart" sits on a product's page, so the probe tried three pages and found
+// no trigger. Now a candidate with no trigger whose item links are none of
+// them candidates hops to its FIRST item link and looks there; the item page
+// is the origin, reached by clicking the item on the listing.
+const sitemapCandidates = (): DiscoveredPage[] => [{ url: `${base}/`, source: 'sitemap' }, { url: `${base}/contact`, source: 'sitemap' }];
+const probeCards = async (robots: string[]) => {
+  site.hits = [];
+  const r = await runStateProbes({ map, candidates: sitemapCandidates(), robots: { disallow: robots }, featureTokens: featureTokenMap(map), delayMs: 0, anchorWaitMs: 300, revealWaitMs: 1500, settleCapMs: 2000 });
+  return { r, hits: [...site.hits] };
+};
+const ITEM = `${base}${PRODUCT}`;
+const ITEM_CONTROL = 'getByRole("link", {"name":"Combination Pliers"})';
+/** Plan the run 7 page set ("/" untagged, as the sitemap passthrough leaves it; /contact tagged contact), or "/" model-tagged cart. */
+async function planCards(probes: StateProbesResult, homeTag?: string): Promise<{ plan: PlannedScenario[]; lines: string[]; pages: DiscoveredPage[] }> {
+  const lines: string[] = [];
+  const filtered: DiscoveredPage[] = [{ url: `${base}/`, source: 'sitemap', ...(homeTag ? { feature: homeTag } : {}) }, { url: `${base}/contact`, source: 'sitemap', feature: 'contact' }];
+  const built = buildPlanTargets({ pages: filtered, map, revealed: probes.revealed, blocked: probes.blocked, candidates: sitemapCandidates() });
+  const r = await planAcrossPages({ targets: built.targets, planFn: (a) => plan({ ...a, client: fixtureClient }), onMessage: (t) => lines.push(t), featureTokens: featureTokenMap(map) });
+  return { plan: r.combined, lines, pages: built.pages };
+}
+const noItemNavigate = (p: PlannedScenario[]): boolean => p.every((x) => x.pageUrl !== ITEM && x.pageUrl !== undefined && !x.pageUrl.includes('/product/'));
+console.log('\n--- the item hop ---');
+{
+  site.variant = 'cards';
+  const { r, hits } = await probeCards([]);
+  const probe = r.probes[0];
+  for (const l of r.lines) console.log(l);
+  check('L1. the hop: one probe, outcome revealed, /checkout from the item page, hopped from "/"',
+    r.probes.length === 1 && probe?.outcome === 'revealed' && probe.revealed === `${base}/checkout` && probe.origins[0] === ITEM && JSON.stringify(probe.hop) === JSON.stringify({ listing: `${base}/`, item: ITEM, control: ITEM_CONTROL }), JSON.stringify(probe));
+  check('L2. the line says which listing was hopped from and which item page was used',
+    r.lines[0] === `State probe "cart": revealed /checkout from item page ${PRODUCT}, hopped from listing / (click the item ${ITEM_CONTROL}, getByTestId("add-to-cart"), getByTestId("nav-cart"))`, r.lines[0]);
+  check('L3. tried: "/" names the hop, the item page names the click and the reveal',
+    probe?.tried[0]?.url === `${base}/` && probe.tried[0].result === `no trigger; hopped to item page ${PRODUCT} by ${ITEM_CONTROL}` && probe.tried[1]?.url === ITEM && probe.tried[1].result === 'clicked getByTestId("add-to-cart"), revealed /checkout', JSON.stringify(probe?.tried));
+  check('L4. the FIRST item link only: the second product and the category listing were never loaded; the item page load counts against the page cap',
+    !hits.includes(PRODUCT_2) && !hits.includes('/category/hand-tools') && hits.filter((h) => h === '/' || h === '/contact' || h.startsWith('/product/')).length <= STATE_PROBE_PAGE_CAP, JSON.stringify(hits));
+  check('L5. the item link is clicked by its visible name, the price cut off (RULE 8) and the generated test id never used (RULE 6)', !ITEM_CONTROL.includes('$') && !ITEM_CONTROL.includes('01HX'));
+  const rev = r.revealed[0]!;
+  check('L6. the item page is the origin: recorded as reached by action (a click on the item from "/"), with its own snapshot showing the trigger',
+    JSON.stringify(rev.originPage?.page) === JSON.stringify({ url: ITEM, source: 'action', feature: 'cart', volatile: true, reachedBy: { origin: `${base}/`, feature: 'cart', actions: [{ kind: 'click', via: 'item-link', control: ITEM_CONTROL }] } })
+    && !!rev.originPage?.snapshot.buttons.some((b) => /add to cart/i.test(b.label ?? '')), JSON.stringify(rev.originPage?.page));
+  check('L7. the revealed page starts on "/" and clicks the item first',
+    JSON.stringify(rev.page.reachedBy) === JSON.stringify({ origin: `${base}/`, feature: 'cart', actions: [{ kind: 'click', via: 'item-link', control: ITEM_CONTROL }, { kind: 'click', control: 'getByTestId("add-to-cart")' }, { kind: 'click', control: 'getByTestId("nav-cart")' }] }), JSON.stringify(rev.page.reachedBy));
+  calls.length = 0;
+  const g = await planCards(r);
+  const r6 = cites(g.plan, 'R6');
+  check('L8. R6 (origin side, the header count on the item page) is planned on its own call from the item page\'s snapshot, with reachedBy: start on "/", click the item',
+    r6?.pageUrl === `${base}/` && JSON.stringify(r6.reachedBy) === JSON.stringify({ pageUrl: ITEM, origin: `${base}/`, actions: [{ kind: 'click', via: 'item-link', control: ITEM_CONTROL }] }) && g.lines.some((l) => l.startsWith(`Planner [2/4] ${ITEM} (reached by action from ${base}/): 1 scenario(s)`)), JSON.stringify({ r6, lines: g.lines }));
+  const revealedOnes = ['R7', 'R8', 'R9'].map((id) => cites(g.plan, id));
+  check('L9. R7 R8 R9 are planned on the revealed snapshot, pageUrl "/", reachedBy.pageUrl /checkout',
+    revealedOnes.every((x) => x?.pageUrl === `${base}/` && x.reachedBy?.pageUrl === `${base}/checkout`), JSON.stringify(revealedOnes));
+  check('L10. no plan entry opens the item\'s URL: every pageUrl is a stable page; the item URL is only reachedBy.pageUrl', noItemNavigate(g.plan) && g.plan.filter((x) => x.reachedBy?.pageUrl === ITEM).length === 1, JSON.stringify(g.plan.map((x) => [x.name, x.pageUrl, x.reachedBy?.pageUrl])));
+  const tagged = await planCards(r, 'cart');
+  const r6t = cites(tagged.plan, 'R6');
+  check('L11. with "/" model-tagged cart, the item page copy of R6 (page evidence) is kept over the "/" copy (a model tag)',
+    tagged.plan.filter((x) => (x.ruleIds ?? []).includes('R6')).length === 1 && r6t?.reachedBy?.pageUrl === ITEM && tagged.lines.some((l) => l.startsWith('Rejected cross-page duplicate:') && l.endsWith(`as the scenario kept on ${ITEM})`)), JSON.stringify(tagged.lines));
+  // end_scenario on the runtime's own entries: the click path is accepted, a navigate to the item URL is refused.
+  const stubPage = { on: () => {}, off: () => {} } as unknown as Page;
+  const ctx = createContext(stubPage, 80);
+  ctx.plannedNames = g.plan.map((x) => x.name);
+  ctx.plannedPages = plannedPagesFor(g.plan, reachedPagesOf({ method: 'sitemap', pages: [], warnings: [], stateProbes: r.probes }), map);
+  const target: SelectorRecord = { level: 'role', arg: { role: 'heading', name: 'Combination Pliers' }, intent: 'product heading' };
+  const drive = async (name: string, steps: TraceStep[], label: string) => {
+    const begun = await runTool(ctx, { name: 'begin_scenario', input: { name, category: 'happy', feature: 'cart' } });
+    check(`${label} begin_scenario accepted`, begun.ok === true, begun.error);
+    ctx.current!.steps.push(...steps);
+    return runTool(ctx, { name: 'end_scenario', input: {} });
+  };
+  const viaItemUrl = await drive(r6!.name, [{ kind: 'navigate', url: ITEM } as TraceStep, { kind: 'click', target } as TraceStep, { kind: 'assert', assertion: { type: 'toBeVisible', target } } as unknown as TraceStep], 'L12a.');
+  check('L12. R6 recorded by navigating to the item\'s URL is refused (planned on "/")', viaItemUrl.ok === false && new RegExp(`planned on /, but the trace navigated to ${PRODUCT.replace(/\//g, '\\/')}`).test(viaItemUrl.error ?? ''), viaItemUrl.error);
+  const viaClick = await drive(r6!.name, [{ kind: 'navigate', url: `${base}/` } as TraceStep, { kind: 'click', target } as TraceStep, { kind: 'click', target } as TraceStep, { kind: 'assert', assertion: { type: 'toBeVisible', target } } as unknown as TraceStep], 'L13a.');
+  check('L13. R6 recorded by the click path (open "/", click the item, add) is accepted', viaClick.ok === true, viaClick.error);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-state-probe-hop-'));
+  writeDiscoveryJson(dir, { method: 'sitemap', pages: g.pages, candidates: sitemapCandidates(), warnings: [], stateProbes: r.probes });
+  const json = JSON.parse(fs.readFileSync(path.join(dir, 'discovery.json'), 'utf8')) as { pages: DiscoveredPage[]; stateProbes: Array<{ hop?: unknown }> };
+  check('L14. discovery.json: the item page and /checkout are recorded as reached by action, the probe record names the hop',
+    json.pages.some((x) => x.url === ITEM && x.source === 'action' && x.reachedBy?.origin === `${base}/`) && json.pages.some((x) => x.url === `${base}/checkout` && x.source === 'action') && JSON.stringify(json.stateProbes[0]?.hop) === JSON.stringify({ listing: `${base}/`, item: ITEM, control: ITEM_CONTROL }), JSON.stringify(json));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+{
+  // The cart page path disallowed by robots (Toolshop's /checkout).
+  site.variant = 'cards-robots';
+  const { r } = await probeCards(['/checkout']);
+  const probe = r.probes[0];
+  for (const l of r.lines) console.log(l);
+  check('L15. robots: the outcome reads robots, nothing is revealed, the origin found by the hop is recorded with the path and the rule',
+    probe?.outcome === 'robots' && r.revealed.length === 0 && JSON.stringify(probe.robotsBlocked) === JSON.stringify({ origin: ITEM, path: '/checkout', rule: '/checkout' }) && JSON.stringify(probe.hop) === JSON.stringify({ listing: `${base}/`, item: ITEM, control: ITEM_CONTROL }), JSON.stringify(probe));
+  check('L16. the line names the hop and says R6 is planned on the item page and the other rules report robots-disallowed',
+    r.lines[0] === `State probe "cart": no page revealed; tried / (no trigger; hopped to item page ${PRODUCT} by ${ITEM_CONTROL}), ${PRODUCT} (clicked getByTestId("add-to-cart"), a new link to /checkout appeared, but robots.txt disallows /checkout), /contact (no trigger); its origin rule R6 is planned on item page ${PRODUCT}, reached from listing / by a click; any of its 3 other rules still uncited after planning will report robots-disallowed`, r.lines[0]);
+  check('L17. the blocked origin carries the item page, reached by action', r.blocked.length === 1 && r.blocked[0]!.origin === `${base}/` && r.blocked[0]!.originPage?.page.url === ITEM && JSON.stringify(r.blocked[0]!.originRuleIds) === '["R6"]', JSON.stringify(r.blocked));
+  calls.length = 0;
+  const g = await planCards(r);
+  const r6 = cites(g.plan, 'R6');
+  check('L18. robots: R6 is still planned on the item page, reached by action from "/"', r6?.pageUrl === `${base}/` && r6.reachedBy?.pageUrl === ITEM && r6.reachedBy.origin === `${base}/`, JSON.stringify(r6));
+  check('L19. robots: nothing is narrowed: "/" still gets every cart rule (R7 R9 planned there as on main, R8 rejected by page-fit), and no plan entry opens the item\'s URL',
+    !!cites(g.plan, 'R7') && cites(g.plan, 'R7')!.pageUrl === `${base}/` && cites(g.plan, 'R7')!.reachedBy === undefined && !cites(g.plan, 'R8') && noItemNavigate(g.plan), JSON.stringify(g.plan.map((x) => [x.name, x.pageUrl, x.reachedBy?.pageUrl])));
+  const detail = `the action on ${PRODUCT} reveals /checkout, which robots.txt disallows (rule Disallow: /checkout); not loaded`;
+  const cov = computeRuleCoverage({ map, planned: g.plan, scenarios: [], notRevealed: notRevealedFeatures(r.probes), probeRules: probeRuleReasons(r.probes) });
+  const u8 = cov.uncovered.find((u) => u.ruleId === 'R8');
+  check('L20. robots: the uncited revealed-side rule (R8) reads robots-disallowed with that detail; cited rules keep their reasons; none reads not-revealed',
+    u8?.reason === 'robots-disallowed' && u8.detail === detail && !cov.uncovered.some((u) => u.reason === 'not-revealed') && cov.uncovered.find((u) => u.ruleId === 'R6')?.reason === 'planned-but-dropped', JSON.stringify(cov.uncovered));
+  const none = computeRuleCoverage({ map, planned: [], scenarios: [], notRevealed: notRevealedFeatures(r.probes), probeRules: probeRuleReasons(r.probes) });
+  check('L21. robots, nothing planned: R7 R8 R9 read robots-disallowed; R6 (planned for on the origin) reads not-planned, never not-revealed',
+    ['R7', 'R8', 'R9'].every((id) => none.uncovered.find((u) => u.ruleId === id)?.reason === 'robots-disallowed') && none.uncovered.find((u) => u.ruleId === 'R6')?.reason === 'not-planned', JSON.stringify(none.uncovered));
+  console.log('--- proof: rule coverage, the robots hop, every planned scenario counted as shipped ---');
+  for (const l of renderRuleCoverage(computeRuleCoverage({ map, planned: g.plan, scenarios: g.plan, notRevealed: notRevealedFeatures(r.probes), probeRules: probeRuleReasons(r.probes) }))) console.log(l);
+}
+{
+  // An item page that is already a candidate is probed on its own, as before: no hop.
+  site.variant = 'cards';
+  const r = await runStateProbes({ map, candidates: [...sitemapCandidates(), { url: ITEM, source: 'crawl', volatile: true, linkedFrom: `${base}/` }], robots: { disallow: [] }, featureTokens: featureTokenMap(map), delayMs: 0, anchorWaitMs: 300, revealWaitMs: 1500, settleCapMs: 2000 });
+  check('L22. no hop when an item link is a candidate: "/" reads "no trigger", origin "/" (the stable page that linked to it), no hop record',
+    r.probes[0]?.outcome === 'revealed' && r.probes[0].hop === undefined && r.probes[0].tried[0]?.result === 'no trigger' && r.probes[0].origins[0] === `${base}/`, JSON.stringify(r.probes[0]));
+}
+
+{
+  // The hop's load counts against the page cap: "/", the item page, /plain/1
+  // and /plain/2 are four loads, so /plain/3 is named as not tried.
+  site.variant = 'cards';
+  const r = await runStateProbes({ map, candidates: [{ url: `${base}/`, source: 'sitemap' }, ...[1, 2, 3].map((n): DiscoveredPage => ({ url: `${base}/plain/${n}`, source: 'sitemap' }))], robots: { disallow: [] }, featureTokens: featureTokenMap(map), delayMs: 0, anchorWaitMs: 200, revealWaitMs: 1500, settleCapMs: 1000 });
+  check(`L23. the item page load counts against the page cap (${STATE_PROBE_PAGE_CAP}): "/", the item page, /plain/1 and /plain/2 load, /plain/3 is named as not tried`,
+    r.probes[0]?.outcome === 'revealed' && r.probes[0].capped === `page cap ${STATE_PROBE_PAGE_CAP} reached; not tried: /plain/3`, JSON.stringify(r.probes[0]));
+}
+{
+  // The crawl delay applies before the hop's load like any other page load.
+  site.variant = 'cards';
+  site.times = [];
+  await runStateProbes({ map, candidates: [{ url: `${base}/`, source: 'sitemap' }], robots: { disallow: [] }, featureTokens: featureTokenMap(map), delayMs: 1500, anchorWaitMs: 100, revealWaitMs: 1500, settleCapMs: 500 });
+  const home = site.times.find((x) => x.p === '/')?.t ?? 0;
+  const item = site.times.find((x) => x.p === PRODUCT)?.t ?? 0;
+  check('L24. the crawl delay (1500 ms here) separates the listing load from the item page load', home > 0 && item > 0 && item - home >= 1500, `gap ${item - home} ms`);
+}
+{
+  // robots.txt is honored for the item page: a disallowed item page is never loaded.
+  site.variant = 'cards';
+  const { r, hits } = await probeCards(['/product']);
+  const probe = r.probes[0];
+  check('L25. robots is honored for the item page: it is named as disallowed, never loaded, and nothing is clicked',
+    probe?.outcome === 'robots' && probe.tried.some((t) => t.url === ITEM && t.result === `robots.txt disallows ${PRODUCT}`) && !hits.includes(PRODUCT) && probe.robotsBlocked === undefined && r.blocked.length === 0, JSON.stringify({ probe, hits }));
+}
+{
+  // The emitted-spec check's coverage rebuild gives the same robots reason.
+  site.variant = 'cards-robots';
+  const { r } = await probeCards(['/checkout']);
+  const g = await planCards(r);
+  const report = {
+    url: `${base}/`, language: 'ts', startedAt: '', finishedAt: '', steps: 0, cascadeStats: {},
+    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, usd: 0 },
+    scenarios: [], findings: [], plan: g.plan,
+    discovery: { method: 'sitemap', pages: g.pages, candidates: sitemapCandidates(), warnings: [], stateProbes: r.probes },
+    skipped: g.plan.map((x) => ({ scenario: x.name, reason: 'fixture' })),
+    ruleCoverage: { covered: [], uncovered: [] },
+  } as unknown as RunReport;
+  rebuildAccounting(report, map, () => {});
+  const u8 = report.ruleCoverage?.uncovered.find((x) => x.ruleId === 'R8');
+  check('L26. after the emitted check rebuilds coverage, the uncited revealed-side rule reads robots-disallowed with the detail',
+    u8?.reason === 'robots-disallowed' && u8.detail === `the action on ${PRODUCT} reveals /checkout, which robots.txt disallows (rule Disallow: /checkout); not loaded`, JSON.stringify(report.ruleCoverage?.uncovered));
+}
+/* ─── M. the item hop end to end: explore() in process (invariant 78) ───── */
+// Run 7's shape through the runtime itself: the fetch crawl finds "/" and
+// /contact only (the product cards are rendered by script), the filter
+// passes them through untagged, the probe hops from "/" into the first
+// product, /checkout is disallowed, and the Planner is a local stand-in.
+{
+  site.variant = 'cards-run';
+  for (const k of Object.keys(process.env)) if (k.startsWith('QA_CORE_TEST_') || /^QA_CORE_.*MODEL/.test(k)) delete process.env[k];
+  const DASH = '—';
+  const planLine = (id: string): string => `<plan>\n1. ${PLAN_LINES[id]!.replace(' — ', ` ${DASH} `)}\n</plan>`;
+  const r9 = PLAN_LINES.R9!.split('] ')[1]!.split(' — ')[0]!;
+  const r6 = PLAN_LINES.R6!.split('] ')[1]!.split(' — ')[0]!;
+  const r1 = PLAN_LINES.R1!.split('] ')[1]!.split(' — ')[0]!;
+  const explorer: FakeContent[][] = [
+    ...[r9, r6, r1].map((name): FakeContent[] => [{ type: 'tool_use', name: 'skip_scenario', input: { name, reason: 'fixture run: the smoke checks discovery and planning only' } }]),
+    [{ type: 'tool_use', name: 'finish', input: { summary: 'every planned scenario skipped' } }],
+  ];
+  // The plan calls in target order: "/", the item page (origin), /contact.
+  const api = await startFakeAnthropic({ planner: [planLine('R9'), planLine('R6'), planLine('R1')], explorer, critic: [] });
+  const prevBase = process.env.ANTHROPIC_BASE_URL;
+  process.env.ANTHROPIC_BASE_URL = api.baseUrl;
+  process.env.ANTHROPIC_API_KEY = 'fixture-key-never-sent';
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-core-hop-run-'));
+  const agentCwd = process.cwd();
+  process.chdir(outDir);
+  const messages: string[] = [];
+  try {
+    const { explore } = await import('../src/agent/runtime.js');
+    const report = await explore({
+      url: `${base}/`, language: 'ts', outDir, requirements: map, requirementsUsd: 0,
+      skipReplay: true, skipStability: true, stabilize: false, loginPreflightDone: true,
+      onEvent: (e) => { if (e.type === 'message') messages.push(e.text); },
+    }) as RunReport;
+    const onDisk = JSON.parse(fs.readFileSync(path.join(outDir, 'run-report.json'), 'utf8')) as RunReport;
+    const coverage = JSON.parse(fs.readFileSync(path.join(outDir, 'rule-coverage.json'), 'utf8')) as NonNullable<RunReport['ruleCoverage']>;
+    console.log('\n--- M run: the probe line and the planner lines ---');
+    for (const m of messages.filter((x) => x.startsWith('State probe') || x.startsWith('Planner [') || x.startsWith('discovery:'))) console.log(m.replaceAll(base, '<site>'));
+    console.log('---');
+    check('M1. every scripted call made and every tool call ok (standing rule 7)', api.toolErrors.length === 0 && api.calls.planner === 3 && api.calls.explorer === explorer.length && api.calls.other === 0, JSON.stringify({ errors: api.toolErrors, calls: api.calls }));
+    const candidates = (onDisk.discovery?.candidates ?? []).map((c) => new URL(c.url).pathname);
+    check('M2. discovery found "/" and /contact only (no product page among the candidates, as in run 7)', JSON.stringify(candidates) === '["/","/contact"]', JSON.stringify(onDisk.discovery?.candidates));
+    const probe = onDisk.discovery?.stateProbes?.[0];
+    check('M3. the run\'s probe hopped: outcome robots, the hop and the blocked path recorded on run-report.json',
+      probe?.outcome === 'robots' && JSON.stringify(probe.hop) === JSON.stringify({ listing: `${base}/`, item: ITEM, control: ITEM_CONTROL }) && JSON.stringify(probe.robotsBlocked) === JSON.stringify({ origin: ITEM, path: '/checkout', rule: '/checkout' }), JSON.stringify(probe));
+    check('M4. the probe line reached the run\'s messages whole',
+      messages.includes(`State probe "cart": no page revealed; tried / (no trigger; hopped to item page ${PRODUCT} by ${ITEM_CONTROL}), ${PRODUCT} (clicked getByTestId("add-to-cart"), a new link to /checkout appeared, but robots.txt disallows /checkout), /contact (no trigger); its origin rule R6 is planned on item page ${PRODUCT}, reached from listing / by a click; any of its 3 other rules still uncited after planning will report robots-disallowed`),
+      JSON.stringify(messages.filter((m) => m.startsWith('State probe'))));
+    check('M5. the item page is a planned page reached by action, planned right after "/" on its own call; /checkout is no page',
+      (onDisk.discovery?.pages ?? []).some((p) => p.url === ITEM && p.source === 'action' && p.reachedBy?.origin === `${base}/`) && !(onDisk.discovery?.pages ?? []).some((p) => p.url.includes('/checkout'))
+      && messages.some((m) => m.startsWith(`Planner [2/3] ${ITEM} (reached by action from ${base}/): 1 scenario(s)`)), JSON.stringify(onDisk.discovery?.pages));
+    const r6plan = (onDisk.plan ?? []).find((p) => (p.ruleIds ?? []).includes('R6'));
+    check('M6. R6 is planned with reachedBy (start on "/", click the item); no plan entry opens the item\'s URL',
+      r6plan?.pageUrl === `${base}/` && r6plan.reachedBy?.pageUrl === ITEM && (onDisk.plan ?? []).every((p) => !(p.pageUrl ?? '').includes('/product/')), JSON.stringify(onDisk.plan));
+    const u = (id: string) => coverage.uncovered.find((x) => x.ruleId === id);
+    const detail = `the action on ${PRODUCT} reveals /checkout, which robots.txt disallows (rule Disallow: /checkout); not loaded`;
+    check('M7. rule-coverage.json: R7 and R8 (revealed side, uncited) read robots-disallowed with the detail; no rule reads not-revealed',
+      u('R7')?.reason === 'robots-disallowed' && u('R7')?.detail === detail && u('R8')?.reason === 'robots-disallowed' && !coverage.uncovered.some((x) => x.reason === 'not-revealed'), JSON.stringify(coverage.uncovered));
+    check('M8. the in-memory report and the file agree', JSON.stringify(report.discovery?.stateProbes) === JSON.stringify(onDisk.discovery?.stateProbes));
+  } finally {
+    process.chdir(agentCwd);
+    if (prevBase === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = prevBase;
+    delete process.env.ANTHROPIC_API_KEY;
+    await api.close();
+  }
+  fs.rmSync(outDir, { recursive: true, force: true });
+}
+
 server.close();
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 if (fail > 0) process.exit(1);
-console.log('OK: the state probe reveals a page that exists only after an action, records it as reached by that action, plans its rules from the post-action snapshot, refuses a navigate to it, and when it reveals nothing leaves planning as on main with only uncited rules reading not-revealed.');
+console.log('OK: the state probe reveals a page that exists only after an action, records it as reached by that action, plans its rules from the post-action snapshot, refuses a navigate to it, and when it reveals nothing leaves planning as on main with only uncited rules reading not-revealed; from a listing with no trigger it hops into the first item, makes that item page the origin reached by a click, and under a robots-disallowed cart page still plans the origin rules there while the rest read robots-disallowed.');
